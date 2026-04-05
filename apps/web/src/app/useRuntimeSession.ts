@@ -18,9 +18,8 @@ export function useRuntimeSession({ onStatus }: UseRuntimeSessionOptions) {
   const [sessionKey, setSessionKey] = useState(0);
 
   const syncFromMatchState = useCallback(() => {
-    const match = runtimeRef.current.getMatchState();
-    setPlayerIds(match.playerIds);
-    setRuntimeRevision(match.terrainRevision);
+    setPlayerIds([...runtimeRef.current.getPlayerIds()]);
+    setRuntimeRevision(runtimeRef.current.getWorld().getTerrainRevision());
   }, []);
 
   const enterEditor = useCallback(

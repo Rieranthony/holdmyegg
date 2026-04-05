@@ -21,8 +21,8 @@ const storageState = vi.hoisted(() => {
   };
 });
 
-vi.mock("../components/GameCanvas", () => ({
-  GameCanvas: ({ mode, onReturnToMenu }: { mode: string; onReturnToMenu?: () => void }) => (
+vi.mock("../components/GameCanvasBoundary", () => ({
+  GameCanvasBoundary: ({ mode, onReturnToMenu }: { mode: string; onReturnToMenu?: () => void }) => (
     <div>
       <div data-testid="game-canvas">{mode}</div>
       {onReturnToMenu ? (
@@ -34,7 +34,8 @@ vi.mock("../components/GameCanvas", () => ({
         </button>
       ) : null}
     </div>
-  )
+  ),
+  preloadGameCanvas: vi.fn()
 }));
 
 vi.mock("../data/mapStorage", () => ({
@@ -112,7 +113,7 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Map Workshop" }));
     expect(screen.getByRole("heading", { name: "Map Workshop" })).toBeInTheDocument();
     expect(screen.getByDisplayValue("Default Arena")).toBeInTheDocument();
-    expect(screen.getByTestId("game-canvas")).toHaveTextContent("editor");
+    expect(await screen.findByTestId("game-canvas")).toHaveTextContent("editor");
 
     await waitFor(() => {
       expect(screen.getByRole("option", { name: "Select a save" })).toBeInTheDocument();
@@ -134,7 +135,7 @@ describe("App", () => {
     expect(
       screen.getByText("Look `Mouse`, move `W/S`, strafe `A/D`, jump `Space`, jetpack `Space` again and hold, harvest `LMB`, build `E`, egg `Q`, push `F`, pause `Esc`.")
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Mock Menu" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Mock Menu" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Mock Menu" }));
     expect(screen.getByRole("button", { name: "Skirmish" })).toBeInTheDocument();

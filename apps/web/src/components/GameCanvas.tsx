@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import type { CSSProperties, MutableRefObject } from "react";
 import { type MutableVoxelWorld, type Vec3i } from "@out-of-bounds/map";
-import type { GameMode, OutOfBoundsSimulation } from "@out-of-bounds/sim";
+import type { GameMode, OutOfBoundsSimulation, SimulationPerformanceDiagnostics } from "@out-of-bounds/sim";
 import {
   aimCameraConfig,
   applyFreeLookDelta,
@@ -17,6 +17,7 @@ import {
   getRuntimeFocusRayDistance,
   getYawFromPlanarVector
 } from "../game/camera";
+import { useRendererQualityProfile } from "../game/quality";
 import {
   emptyFocusState,
   getFocusVisualState,
@@ -48,6 +49,20 @@ interface RuntimeOrbitInputState {
   pendingDeltaY: number;
 }
 
+interface FrameDiagnostics {
+  fps: number;
+  p95FrameMs: number;
+  renderCalls: number;
+  renderTriangles: number;
+  geometries: number;
+  textures: number;
+  runtime: RuntimePhaseDiagnostics;
+}
+
+interface RuntimePhaseDiagnostics extends SimulationPerformanceDiagnostics {
+  dirtyChunkCallbackMs: number;
+}
+
 const emptyTerrainStats = (): TerrainRenderStats => ({
   chunkCount: 0,
   frustumVisibleChunkCount: 0,
@@ -57,6 +72,32 @@ const emptyTerrainStats = (): TerrainRenderStats => ({
   rebuildDurationMs: 0,
   renderer: "groupedMaterials"
 });
+
+const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
+
+const emptyRuntimePhaseDiagnostics = (): RuntimePhaseDiagnostics => ({
+  skyDropUpdateMs: 0,
+  skyDropLandingMs: 0,
+  detachedComponentMs: 0,
+  fallingClusterLandingMs: 0,
+  dirtyChunkCallbackMs: 0
+});
+
+const mergeRuntimePhaseDiagnostics = (
+  target: RuntimePhaseDiagnostics,
+  source: SimulationPerformanceDiagnostics
+) => {
+  target.skyDropUpdateMs = Math.max(target.skyDropUpdateMs, source.skyDropUpdateMs);
+  target.skyDropLandingMs = Math.max(target.skyDropLandingMs, source.skyDropLandingMs);
+  target.detachedComponentMs = Math.max(target.detachedComponentMs, source.detachedComponentMs);
+  target.fallingClusterLandingMs = Math.max(target.fallingClusterLandingMs, source.fallingClusterLandingMs);
+};
+
+const consumeRuntimePhaseDiagnostics = (ref: MutableRefObject<RuntimePhaseDiagnostics>) => {
+  const snapshot = { ...ref.current };
+  ref.current = emptyRuntimePhaseDiagnostics();
+  return snapshot;
+};
 
 interface GameCanvasProps {
   mode: ActiveMode;
@@ -98,6 +139,7 @@ export function GameCanvas({
     pendingDeltaX: 0,
     pendingDeltaY: 0
   });
+  const runtimePhaseDiagnosticsRef = useRef<RuntimePhaseDiagnostics>(emptyRuntimePhaseDiagnostics());
   const [reticleVisual, setReticleVisual] = useState<FocusVisualState>(() =>
     getFocusVisualState(emptyFocusState())
   );
@@ -106,6 +148,8 @@ export function GameCanvas({
   const [pointerLocked, setPointerLocked] = useState(false);
   const [runtimeHasCapturedPointer, setRuntimeHasCapturedPointer] = useState(false);
   const [terrainStats, setTerrainStats] = useState<TerrainRenderStats>(() => emptyTerrainStats());
+  const [frameDiagnostics, setFrameDiagnostics] = useState<FrameDiagnostics | null>(null);
+  const qualityProfile = useRendererQualityProfile();
   const isEditor = mode === "editor";
   const isRuntime = !isEditor;
   const world = isEditor ? editorWorld : runtime.getWorld();
@@ -132,6 +176,7 @@ export function GameCanvas({
       pendingDeltaX: 0,
       pendingDeltaY: 0
     };
+    runtimePhaseDiagnosticsRef.current = emptyRuntimePhaseDiagnostics();
     setPointerLocked(false);
     setRuntimeHasCapturedPointer(false);
     setRuntimePaused(mode !== "editor");
@@ -229,9 +274,9 @@ export function GameCanvas({
     <>
       <Canvas
         camera={{ position: [20, 18, 20], fov: 40 }}
-        dpr={[1, 1.5]}
-        gl={{ antialias: true }}
-        performance={{ min: 0.65 }}
+        dpr={qualityProfile.dpr}
+        gl={{ antialias: qualityProfile.antialias, powerPreference: "high-performance" }}
+        performance={{ min: qualityProfile.tier === "low" ? 0.5 : 0.65 }}
         onCreated={({ gl }) => {
           canvasElementRef.current = gl.domElement;
           setCanvasMountVersion((value) => value + 1);
@@ -256,14 +301,21 @@ export function GameCanvas({
           color="#fef7df"
           groundColor="#4c6156"
         />
-        <Sky
-          distance={skyDistance}
-          sunPosition={[6, 12, 4]}
-          inclination={0.48}
-          azimuth={0.23}
-        />
-        <SkyClouds worldSize={world.size} />
-        <SkyBirds worldSize={world.size} />
+        {qualityProfile.enableAtmosphereSky && (
+          <Sky
+            distance={skyDistance}
+            sunPosition={[6, 12, 4]}
+            inclination={0.48}
+            azimuth={0.23}
+          />
+        )}
+        {qualityProfile.enableClouds && (
+          <SkyClouds
+            maxCloudCount={qualityProfile.tier === "high" ? 5 : 3}
+            worldSize={world.size}
+          />
+        )}
+        {qualityProfile.enableBirds && <SkyBirds worldSize={world.size} />}
         <mesh
           rotation={[-Math.PI / 2, 0, 0]}
           position={[world.size.x / 2, -0.01, world.size.z / 2]}
@@ -277,9 +329,10 @@ export function GameCanvas({
           dirtyChunkKeys={dirtyChunkKeys}
           editable={isEditor}
           onInteract={onEditorInteract}
-          onTerrainStatsChange={setTerrainStats}
+          onTerrainStatsChange={import.meta.env.DEV ? setTerrainStats : undefined}
         />
         <WorldPropsLayer
+          decorationDensity={qualityProfile.decorationDensity}
           world={world}
           revision={revision}
           editable={isEditor}
@@ -291,14 +344,21 @@ export function GameCanvas({
             playerIds={playerIds}
             localPlayerId={runtime.getLocalPlayerId()}
             matchColorSeed={matchColorSeed}
+            detailDistance={qualityProfile.avatarDetailDistance}
           />
         )}
         {!isEditor && <FallingClustersLayer runtime={runtime} />}
-        {!isEditor && <EggScatterDebrisLayer runtime={runtime} />}
+        {!isEditor && (
+          <EggScatterDebrisLayer
+            maxInstances={qualityProfile.maxEggDebrisInstances}
+            runtime={runtime}
+          />
+        )}
         {!isEditor && <EggsLayer runtime={runtime} />}
         {!isEditor && <SkyDropsLayer runtime={runtime} />}
         {!isEditor && (
           <ImpactBurstsLayer
+            maxBursts={qualityProfile.maxImpactBursts}
             runtime={runtime}
             playerIds={playerIds}
           />
@@ -316,6 +376,7 @@ export function GameCanvas({
             cameraForwardRef={cameraForwardRef}
             focusStateRef={runtimeFocusRef}
             runtimeActionsRef={runtimeActionsRef}
+            runtimePhaseDiagnosticsRef={runtimePhaseDiagnosticsRef}
             paused={runtimePaused}
             runtime={runtime}
             onRuntimeTerrainChange={onRuntimeTerrainChange}
@@ -329,12 +390,23 @@ export function GameCanvas({
           />
         )}
         {isEditor && <EditorCamera world={world} />}
+        {import.meta.env.DEV && (
+          <PerformanceProbe
+            onFrameDiagnosticsChange={setFrameDiagnostics}
+            runtimePhaseDiagnosticsRef={runtimePhaseDiagnosticsRef}
+          />
+        )}
       </Canvas>
       <RuntimeReticle
         mode={mode}
         visual={reticleVisual}
       />
-      <TerrainStatsOverlay stats={terrainStats} />
+      <DevPerformanceOverlay
+        frameDiagnostics={frameDiagnostics}
+        qualityLabel={qualityProfile.tier}
+        stats={terrainStats}
+        targetFps={qualityProfile.budgets.targetFps}
+      />
       {isRuntime && runtimePaused && (
         <RuntimePauseOverlay
           hasStarted={runtimeHasCapturedPointer}
@@ -351,6 +423,7 @@ function GameLoop({
   cameraForwardRef,
   focusStateRef,
   runtimeActionsRef,
+  runtimePhaseDiagnosticsRef,
   paused,
   runtime,
   onRuntimeTerrainChange
@@ -359,6 +432,7 @@ function GameLoop({
   cameraForwardRef: MutableRefObject<{ x: number; z: number }>;
   focusStateRef: MutableRefObject<VoxelFocusState>;
   runtimeActionsRef: MutableRefObject<RuntimeActionCounts>;
+  runtimePhaseDiagnosticsRef: MutableRefObject<RuntimePhaseDiagnostics>;
   paused: boolean;
   runtime: OutOfBoundsSimulation;
   onRuntimeTerrainChange: (revision: number, dirtyChunkKeys: string[]) => void;
@@ -405,6 +479,7 @@ function GameLoop({
       previousEggPressedRef.current = keyboardRef.current.egg;
 
       runtime.step(localPlayerId ? { [localPlayerId]: command } : {}, step);
+      mergeRuntimePhaseDiagnostics(runtimePhaseDiagnosticsRef.current, runtime.consumePerformanceDiagnostics());
       keyboardRef.current.jumpPressed = false;
       keyboardRef.current.jumpReleased = false;
       accumulatorRef.current -= step;
@@ -413,7 +488,12 @@ function GameLoop({
     const terrainRevision = runtime.getWorld().getTerrainRevision();
     if (terrainRevision !== lastTerrainRevisionRef.current) {
       lastTerrainRevisionRef.current = terrainRevision;
+      const callbackStart = now();
       onRuntimeTerrainChange(terrainRevision, runtime.consumeDirtyChunkKeys());
+      runtimePhaseDiagnosticsRef.current.dirtyChunkCallbackMs = Math.max(
+        runtimePhaseDiagnosticsRef.current.dirtyChunkCallbackMs,
+        now() - callbackStart
+      );
     }
   });
 
@@ -445,8 +525,8 @@ function CameraRig({
       return;
     }
 
-    const player = runtime.getPlayerState(localPlayerId);
-    if (!player || !player.visible) {
+    const player = runtime.getPlayerRuntimeState(localPlayerId);
+    if (!player || (!player.fallingOut && (!player.alive || player.respawning))) {
       return;
     }
 
@@ -563,7 +643,7 @@ function FocusTargetingLayer({
   useFrame(() => {
     const emptyState = emptyFocusState();
     const localPlayerId = runtime.getLocalPlayerId();
-    const localPlayer = localPlayerId ? runtime.getPlayerState(localPlayerId) : null;
+    const localPlayer = localPlayerId ? runtime.getPlayerRuntimeState(localPlayerId) : null;
 
     if (!localPlayer || !localPlayer.alive) {
       focusStateRef.current = emptyState;
@@ -718,20 +798,42 @@ function RuntimeReticle({
   );
 }
 
-function TerrainStatsOverlay({ stats }: { stats: TerrainRenderStats }) {
-  if (!import.meta.env.DEV || stats.chunkCount === 0) {
+function DevPerformanceOverlay({
+  stats,
+  frameDiagnostics,
+  qualityLabel,
+  targetFps
+}: {
+  stats: TerrainRenderStats;
+  frameDiagnostics: FrameDiagnostics | null;
+  qualityLabel: string;
+  targetFps: number;
+}) {
+  if (!import.meta.env.DEV || stats.chunkCount === 0 || !frameDiagnostics) {
     return null;
   }
 
   return (
     <div className="terrain-stats-overlay">
+      <p>Tier {qualityLabel.toUpperCase()}</p>
+      <p>Budget {targetFps} FPS</p>
+      <p>FPS {frameDiagnostics.fps.toFixed(1)}</p>
+      <p>P95 Frame {frameDiagnostics.p95FrameMs.toFixed(2)}ms</p>
+      <p>GL Calls {frameDiagnostics.renderCalls.toLocaleString()}</p>
+      <p>GL Triangles {frameDiagnostics.renderTriangles.toLocaleString()}</p>
       <p>Chunks {stats.chunkCount.toLocaleString()}</p>
       <p>Visible Now {stats.frustumVisibleChunkCount.toLocaleString()}</p>
       <p>Draws {stats.drawCallCount.toLocaleString()}</p>
       <p>Triangles {stats.triangleCount.toLocaleString()}</p>
       <p>Surface Voxels {stats.visibleVoxelCount.toLocaleString()}</p>
       <p>Last Rebuild {stats.rebuildDurationMs.toFixed(2)}ms</p>
-      <p>Renderer {stats.renderer}</p>
+      <p>Geometries {frameDiagnostics.geometries.toLocaleString()}</p>
+      <p>Textures {frameDiagnostics.textures.toLocaleString()}</p>
+      <p>Sky Update {frameDiagnostics.runtime.skyDropUpdateMs.toFixed(2)}ms</p>
+      <p>Sky Landing {frameDiagnostics.runtime.skyDropLandingMs.toFixed(2)}ms</p>
+      <p>Collapse Scan {frameDiagnostics.runtime.detachedComponentMs.toFixed(2)}ms</p>
+      <p>Cluster Landing {frameDiagnostics.runtime.fallingClusterLandingMs.toFixed(2)}ms</p>
+      <p>Terrain Sync {frameDiagnostics.runtime.dirtyChunkCallbackMs.toFixed(2)}ms</p>
     </div>
   );
 }
@@ -790,13 +892,52 @@ function updateFocusVisual(
   onVisualChange(nextVisual);
 }
 
+function PerformanceProbe({
+  onFrameDiagnosticsChange,
+  runtimePhaseDiagnosticsRef
+}: {
+  onFrameDiagnosticsChange: (next: FrameDiagnostics) => void;
+  runtimePhaseDiagnosticsRef: MutableRefObject<RuntimePhaseDiagnostics>;
+}) {
+  const { gl } = useThree();
+  const sampleWindowRef = useRef<Float32Array>(new Float32Array(180));
+  const sampleCountRef = useRef(0);
+  const sampleIndexRef = useRef(0);
+  const cooldownRef = useRef(0);
+
+  useFrame((_, delta) => {
+    sampleWindowRef.current[sampleIndexRef.current] = delta * 1000;
+    sampleIndexRef.current = (sampleIndexRef.current + 1) % sampleWindowRef.current.length;
+    sampleCountRef.current = Math.min(sampleCountRef.current + 1, sampleWindowRef.current.length);
+
+    cooldownRef.current += delta;
+    if (cooldownRef.current < 1) {
+      return;
+    }
+
+    cooldownRef.current = 0;
+    const samples = Array.from(sampleWindowRef.current.slice(0, sampleCountRef.current)).sort((left, right) => left - right);
+    const p95FrameMs = samples[Math.max(0, Math.floor(samples.length * 0.95) - 1)] ?? 0;
+    onFrameDiagnosticsChange({
+      fps: delta > 0 ? 1 / delta : 0,
+      p95FrameMs,
+      renderCalls: gl.info.render.calls,
+      renderTriangles: gl.info.render.triangles,
+      geometries: gl.info.memory.geometries,
+      textures: gl.info.memory.textures,
+      runtime: consumeRuntimePhaseDiagnostics(runtimePhaseDiagnosticsRef)
+    });
+  });
+
+  return null;
+}
+
 function isPlacementBlockedByPlayer(runtime: OutOfBoundsSimulation, targetVoxel: Vec3i) {
-  const matchState = runtime.getMatchState();
   const playerRadius = runtime.config.playerRadius;
   const playerHeight = runtime.config.playerHeight;
 
-  return matchState.playerIds.some((playerId) => {
-    const player = runtime.getPlayerState(playerId);
+  return runtime.getPlayerIds().some((playerId) => {
+    const player = runtime.getPlayerRuntimeState(playerId);
     if (!player || !player.alive) {
       return false;
     }
@@ -818,8 +959,13 @@ function isPlacementBlockedByPlayer(runtime: OutOfBoundsSimulation, targetVoxel:
 }
 
 function isPlacementBlockedByFallingClusters(runtime: OutOfBoundsSimulation, targetVoxel: Vec3i) {
-  return runtime.getFallingClusters().some((cluster) =>
-    cluster.voxels.some((voxel) => {
+  return runtime.getFallingClusterIds().some((clusterId) => {
+    const cluster = runtime.getFallingClusterRuntimeState(clusterId);
+    if (!cluster) {
+      return false;
+    }
+
+    return cluster.voxels.some((voxel) => {
       if (voxel.x !== targetVoxel.x || voxel.z !== targetVoxel.z) {
         return false;
       }
@@ -827,12 +973,17 @@ function isPlacementBlockedByFallingClusters(runtime: OutOfBoundsSimulation, tar
       const voxelMinY = voxel.y + cluster.offsetY;
       const voxelMaxY = voxelMinY + 1;
       return !(targetVoxel.y + 1 <= voxelMinY || targetVoxel.y >= voxelMaxY);
-    })
-  );
+    });
+  });
 }
 
 function isPlacementBlockedBySkyDrops(runtime: OutOfBoundsSimulation, targetVoxel: Vec3i) {
-  return runtime.getSkyDrops().some((skyDrop) => {
+  return runtime.getSkyDropIds().some((skyDropId) => {
+    const skyDrop = runtime.getSkyDropRuntimeState(skyDropId);
+    if (!skyDrop) {
+      return false;
+    }
+
     if (skyDrop.landingVoxel.x !== targetVoxel.x || skyDrop.landingVoxel.z !== targetVoxel.z) {
       return false;
     }

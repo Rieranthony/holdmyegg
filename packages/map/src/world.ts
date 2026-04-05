@@ -63,6 +63,30 @@ const mergeDirtyChunkSets = (target: DirtyChunkSet, source: DirtyChunkSet) => {
   }
 };
 
+const sortDetachedComponents = (components: DetachedVoxelComponent[]) =>
+  components.sort((left, right) => {
+    const leftFirst = left.voxels[0]!;
+    const rightFirst = right.voxels[0]!;
+    if (leftFirst.y !== rightFirst.y) {
+      return leftFirst.y - rightFirst.y;
+    }
+
+    if (leftFirst.z !== rightFirst.z) {
+      return leftFirst.z - rightFirst.z;
+    }
+
+    return leftFirst.x - rightFirst.x;
+  });
+
+const componentTraversalOffsets = [
+  [0, -1, 0],
+  [1, 0, 0],
+  [-1, 0, 0],
+  [0, 0, 1],
+  [0, 0, -1],
+  [0, 1, 0]
+] as const;
+
 interface PropVoxelEntry {
   propId: string;
   kind: MapPropKind;
@@ -78,6 +102,9 @@ export class MutableVoxelWorld {
   private readonly propMap = new Map<string, MapProp>();
   private readonly propVoxelMap = new Map<string, PropVoxelEntry>();
   private readonly surfaceChunkMap = new Map<string, Map<string, VisibleVoxelInstance>>();
+  private readonly topTerrainYByColumn: Int16Array;
+  private readonly topGroundYByColumn: Int16Array;
+  private readonly topSolidYByColumn: Int16Array;
   private terrainRevision = 0;
 
   constructor(document: MapDocumentV1) {
@@ -85,6 +112,10 @@ export class MutableVoxelWorld {
     this.size = { ...parsed.size };
     this.boundary = { ...parsed.boundary };
     this.meta = { ...parsed.meta };
+    const columnCount = this.size.x * this.size.z;
+    this.topTerrainYByColumn = new Int16Array(columnCount).fill(-1);
+    this.topGroundYByColumn = new Int16Array(columnCount).fill(-1);
+    this.topSolidYByColumn = new Int16Array(columnCount).fill(-1);
 
     for (const voxel of parsed.voxels) {
       this.voxelMap.set(createVoxelKey(voxel.x, voxel.y, voxel.z), { ...voxel });
@@ -100,6 +131,7 @@ export class MutableVoxelWorld {
 
     this.rebuildPropVoxelIndex();
     this.rebuildSurfaceChunkIndex();
+    this.rebuildColumnHeightCache();
   }
 
   clone() {
@@ -136,33 +168,27 @@ export class MutableVoxelWorld {
   }
 
   getTopTerrainY(x: number, z: number) {
-    for (let y = this.size.y - 1; y >= 0; y -= 1) {
-      if (this.hasVoxel(x, y, z)) {
-        return y;
-      }
+    if (!this.isColumnInBounds(x, z)) {
+      return -1;
     }
 
-    return -1;
+    return this.topTerrainYByColumn[this.getColumnIndex(x, z)] ?? -1;
   }
 
   getTopGroundY(x: number, z: number) {
-    for (let y = this.size.y - 1; y >= 0; y -= 1) {
-      if (this.getVoxelKind(x, y, z) === "ground") {
-        return y;
-      }
+    if (!this.isColumnInBounds(x, z)) {
+      return -1;
     }
 
-    return -1;
+    return this.topGroundYByColumn[this.getColumnIndex(x, z)] ?? -1;
   }
 
   getTopSolidY(x: number, z: number) {
-    for (let y = this.size.y - 1; y >= 0; y -= 1) {
-      if (this.hasSolid(x, y, z)) {
-        return y;
-      }
+    if (!this.isColumnInBounds(x, z)) {
+      return -1;
     }
 
-    return -1;
+    return this.topSolidYByColumn[this.getColumnIndex(x, z)] ?? -1;
   }
 
   listSpawns() {
@@ -249,6 +275,7 @@ export class MutableVoxelWorld {
 
     this.propMap.set(id, { id, kind, x, y, z });
     this.rebuildPropVoxelIndex();
+    this.rebuildTopSolidHeightCache();
     this.touchMeta();
     return id;
   }
@@ -257,6 +284,7 @@ export class MutableVoxelWorld {
     const deleted = this.propMap.delete(id);
     if (deleted) {
       this.rebuildPropVoxelIndex();
+      this.rebuildTopSolidHeightCache();
       this.touchMeta();
     }
 
@@ -291,37 +319,99 @@ export class MutableVoxelWorld {
   }
 
   setVoxel(x: number, y: number, z: number, kind: BlockKind, chunkSize = DEFAULT_CHUNK_SIZE): DirtyChunkSet {
-    if (!isInBounds(this.size, x, y, z)) {
-      return new Set();
-    }
-
-    const key = createVoxelKey(x, y, z);
-    const existing = this.voxelMap.get(key);
-    if (existing?.kind === kind) {
-      return new Set();
-    }
-
-    this.voxelMap.set(key, { x, y, z, kind });
-    this.syncSurfaceChunkIndexAround(x, y, z);
-    this.terrainRevision += 1;
-    this.touchMeta();
-    return collectDirtyChunkKeysAround(this.size, x, y, z, chunkSize);
+    return this.setVoxels([{ x, y, z, kind }], chunkSize);
   }
 
   removeVoxel(x: number, y: number, z: number, chunkSize = DEFAULT_CHUNK_SIZE): DirtyChunkSet {
-    if (!isInBounds(this.size, x, y, z)) {
+    return this.removeVoxels([{ x, y, z }], chunkSize);
+  }
+
+  setVoxels(cells: Iterable<VoxelCell>, chunkSize = DEFAULT_CHUNK_SIZE): DirtyChunkSet {
+    const pending = new Map<string, VoxelCell>();
+    for (const cell of cells) {
+      if (!isInBounds(this.size, cell.x, cell.y, cell.z)) {
+        continue;
+      }
+
+      pending.set(createVoxelKey(cell.x, cell.y, cell.z), {
+        x: cell.x,
+        y: cell.y,
+        z: cell.z,
+        kind: cell.kind
+      });
+    }
+
+    if (pending.size === 0) {
       return new Set();
     }
 
-    const deleted = this.voxelMap.delete(createVoxelKey(x, y, z));
-    if (!deleted) {
+    const dirtyChunkKeys: DirtyChunkSet = new Set();
+    const touchedColumns = new Set<number>();
+    const surfaceSyncKeys = new Set<string>();
+    let changed = false;
+
+    for (const cell of pending.values()) {
+      const existing = this.voxelMap.get(createVoxelKey(cell.x, cell.y, cell.z));
+      if (existing?.kind === cell.kind) {
+        continue;
+      }
+
+      this.voxelMap.set(createVoxelKey(cell.x, cell.y, cell.z), cell);
+      mergeDirtyChunkSets(dirtyChunkKeys, collectDirtyChunkKeysAround(this.size, cell.x, cell.y, cell.z, chunkSize));
+      touchedColumns.add(this.getColumnIndex(cell.x, cell.z));
+      this.collectSurfaceSyncKeys(surfaceSyncKeys, cell.x, cell.y, cell.z);
+      changed = true;
+    }
+
+    if (!changed) {
+      return dirtyChunkKeys;
+    }
+
+    this.commitTerrainMutationBatch(surfaceSyncKeys, touchedColumns);
+    return dirtyChunkKeys;
+  }
+
+  removeVoxels(cells: Iterable<Pick<VoxelCell, "x" | "y" | "z">>, chunkSize = DEFAULT_CHUNK_SIZE): DirtyChunkSet {
+    const pending = new Map<string, Pick<VoxelCell, "x" | "y" | "z">>();
+    for (const cell of cells) {
+      if (!isInBounds(this.size, cell.x, cell.y, cell.z)) {
+        continue;
+      }
+
+      pending.set(createVoxelKey(cell.x, cell.y, cell.z), {
+        x: cell.x,
+        y: cell.y,
+        z: cell.z
+      });
+    }
+
+    if (pending.size === 0) {
       return new Set();
     }
 
-    this.syncSurfaceChunkIndexAround(x, y, z);
-    this.terrainRevision += 1;
-    this.touchMeta();
-    return collectDirtyChunkKeysAround(this.size, x, y, z, chunkSize);
+    const dirtyChunkKeys: DirtyChunkSet = new Set();
+    const touchedColumns = new Set<number>();
+    const surfaceSyncKeys = new Set<string>();
+    let changed = false;
+
+    for (const cell of pending.values()) {
+      const deleted = this.voxelMap.delete(createVoxelKey(cell.x, cell.y, cell.z));
+      if (!deleted) {
+        continue;
+      }
+
+      mergeDirtyChunkSets(dirtyChunkKeys, collectDirtyChunkKeysAround(this.size, cell.x, cell.y, cell.z, chunkSize));
+      touchedColumns.add(this.getColumnIndex(cell.x, cell.z));
+      this.collectSurfaceSyncKeys(surfaceSyncKeys, cell.x, cell.y, cell.z);
+      changed = true;
+    }
+
+    if (!changed) {
+      return dirtyChunkKeys;
+    }
+
+    this.commitTerrainMutationBatch(surfaceSyncKeys, touchedColumns);
+    return dirtyChunkKeys;
   }
 
   getEditableSpawnPosition(x: number, z: number) {
@@ -433,19 +523,97 @@ export class MutableVoxelWorld {
       });
     }
 
-    return detached.sort((left, right) => {
-      const leftFirst = left.voxels[0]!;
-      const rightFirst = right.voxels[0]!;
-      if (leftFirst.y !== rightFirst.y) {
-        return leftFirst.y - rightFirst.y;
+    return sortDetachedComponents(detached);
+  }
+
+  collectDetachedComponentsNear(mutatedVoxels: Iterable<Pick<VoxelCell, "x" | "y" | "z">>): DetachedVoxelComponent[] {
+    const seedKeys = new Set<string>();
+
+    for (const voxel of mutatedVoxels) {
+      for (const [ox, oy, oz] of surfaceNeighbors) {
+        const neighborKey = createVoxelKey(voxel.x + ox, voxel.y + oy, voxel.z + oz);
+        if (!this.voxelMap.has(neighborKey)) {
+          continue;
+        }
+
+        seedKeys.add(neighborKey);
+      }
+    }
+
+    if (seedKeys.size === 0) {
+      return [];
+    }
+
+    const explored = new Set<string>();
+    const detached: DetachedVoxelComponent[] = [];
+    const sortedSeeds = [...seedKeys]
+      .map((key) => this.parsePositionKey(key))
+      .sort((left, right) => {
+        if (left.y !== right.y) {
+          return left.y - right.y;
+        }
+
+        if (left.z !== right.z) {
+          return left.z - right.z;
+        }
+
+        return left.x - right.x;
+      });
+
+    for (const seed of sortedSeeds) {
+      const seedKey = createVoxelKey(seed.x, seed.y, seed.z);
+      if (explored.has(seedKey)) {
+        continue;
       }
 
-      if (leftFirst.z !== rightFirst.z) {
-        return leftFirst.z - rightFirst.z;
+      const componentKeys = new Set<string>();
+      const componentQueue = [seedKey];
+      let anchored = false;
+
+      while (componentQueue.length > 0) {
+        const key = componentQueue.pop()!;
+        if (componentKeys.has(key)) {
+          continue;
+        }
+
+        const current = this.voxelMap.get(key);
+        if (!current) {
+          continue;
+        }
+
+        componentKeys.add(key);
+        if (this.isAnchorVoxel(current)) {
+          anchored = true;
+          break;
+        }
+
+        for (let index = componentTraversalOffsets.length - 1; index >= 0; index -= 1) {
+          const [ox, oy, oz] = componentTraversalOffsets[index]!;
+          const neighborKey = createVoxelKey(current.x + ox, current.y + oy, current.z + oz);
+          if (!this.voxelMap.has(neighborKey) || componentKeys.has(neighborKey)) {
+            continue;
+          }
+
+          componentQueue.push(neighborKey);
+        }
       }
 
-      return leftFirst.x - rightFirst.x;
-    });
+      for (const key of componentKeys) {
+        explored.add(key);
+      }
+
+      if (!anchored) {
+        detached.push({
+          voxels: sortVoxels(
+            [...componentKeys]
+              .map((key) => this.voxelMap.get(key))
+              .filter((voxel): voxel is VoxelCell => voxel !== undefined)
+          )
+        });
+      }
+    }
+
+    return sortDetachedComponents(detached);
   }
 
   getComponentDropDistance(voxels: Iterable<Pick<VoxelCell, "x" | "y" | "z">>) {
@@ -485,11 +653,10 @@ export class MutableVoxelWorld {
       };
     }
 
-    for (const component of detached) {
-      for (const voxel of component.voxels) {
-        mergeDirtyChunkSets(dirtyChunkKeys, this.removeVoxel(voxel.x, voxel.y, voxel.z, chunkSize));
-      }
-    }
+    mergeDirtyChunkSets(
+      dirtyChunkKeys,
+      this.removeVoxels(detached.flatMap((component) => component.voxels), chunkSize)
+    );
 
     const settledComponents = detached
       .slice()
@@ -507,9 +674,7 @@ export class MutableVoxelWorld {
           }))
         };
 
-        for (const voxel of settled.voxels) {
-          mergeDirtyChunkSets(dirtyChunkKeys, this.setVoxel(voxel.x, voxel.y, voxel.z, voxel.kind, chunkSize));
-        }
+        mergeDirtyChunkSets(dirtyChunkKeys, this.setVoxels(settled.voxels, chunkSize));
 
         return settled;
       });
@@ -545,6 +710,64 @@ export class MutableVoxelWorld {
     }
   }
 
+  private rebuildColumnHeightCache() {
+    for (let x = 0; x < this.size.x; x += 1) {
+      for (let z = 0; z < this.size.z; z += 1) {
+        this.rebuildColumnHeightEntry(x, z);
+      }
+    }
+  }
+
+  private rebuildTopSolidHeightCache() {
+    for (let x = 0; x < this.size.x; x += 1) {
+      for (let z = 0; z < this.size.z; z += 1) {
+        const columnIndex = this.getColumnIndex(x, z);
+        this.topSolidYByColumn[columnIndex] = this.findTopSolidY(x, z);
+      }
+    }
+  }
+
+  private rebuildColumnHeightEntry(x: number, z: number) {
+    if (!this.isColumnInBounds(x, z)) {
+      return;
+    }
+
+    const columnIndex = this.getColumnIndex(x, z);
+    this.topTerrainYByColumn[columnIndex] = this.findTopTerrainY(x, z);
+    this.topGroundYByColumn[columnIndex] = this.findTopGroundY(x, z);
+    this.topSolidYByColumn[columnIndex] = this.findTopSolidY(x, z);
+  }
+
+  private findTopTerrainY(x: number, z: number) {
+    for (let y = this.size.y - 1; y >= 0; y -= 1) {
+      if (this.hasVoxel(x, y, z)) {
+        return y;
+      }
+    }
+
+    return -1;
+  }
+
+  private findTopGroundY(x: number, z: number) {
+    for (let y = this.size.y - 1; y >= 0; y -= 1) {
+      if (this.getVoxelKind(x, y, z) === "ground") {
+        return y;
+      }
+    }
+
+    return -1;
+  }
+
+  private findTopSolidY(x: number, z: number) {
+    for (let y = this.size.y - 1; y >= 0; y -= 1) {
+      if (this.hasSolid(x, y, z)) {
+        return y;
+      }
+    }
+
+    return -1;
+  }
+
   private rebuildSurfaceChunkIndex() {
     this.surfaceChunkMap.clear();
 
@@ -562,6 +785,26 @@ export class MutableVoxelWorld {
     for (const [ox, oy, oz] of surfaceMutationOffsets) {
       this.syncSurfaceChunkEntry(x + ox, y + oy, z + oz);
     }
+  }
+
+  private collectSurfaceSyncKeys(target: Set<string>, x: number, y: number, z: number) {
+    for (const [ox, oy, oz] of surfaceMutationOffsets) {
+      target.add(createVoxelKey(x + ox, y + oy, z + oz));
+    }
+  }
+
+  private commitTerrainMutationBatch(surfaceSyncKeys: Set<string>, touchedColumns: Set<number>) {
+    for (const key of surfaceSyncKeys) {
+      const position = this.parsePositionKey(key);
+      this.syncSurfaceChunkEntry(position.x, position.y, position.z);
+    }
+
+    for (const columnIndex of touchedColumns) {
+      this.rebuildColumnHeightEntry(columnIndex % this.size.x, Math.floor(columnIndex / this.size.x));
+    }
+
+    this.terrainRevision += 1;
+    this.touchMeta();
   }
 
   private syncSurfaceChunkEntry(x: number, y: number, z: number) {
@@ -693,6 +936,14 @@ export class MutableVoxelWorld {
       voxel.x === this.size.x - 1 ||
       voxel.z === this.size.z - 1
     );
+  }
+
+  private isColumnInBounds(x: number, z: number) {
+    return x >= 0 && x < this.size.x && z >= 0 && z < this.size.z;
+  }
+
+  private getColumnIndex(x: number, z: number) {
+    return z * this.size.x + x;
   }
 
   private parsePositionKey(key: string) {

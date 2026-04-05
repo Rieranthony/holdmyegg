@@ -159,6 +159,38 @@ export interface PlayerViewState {
   eliminatedAt: number | null;
 }
 
+export interface RuntimePlayerState {
+  id: string;
+  name: string;
+  kind: PlayerKind;
+  alive: boolean;
+  fallingOut: boolean;
+  grounded: boolean;
+  mass: number;
+  livesRemaining: number;
+  maxLives: number;
+  respawning: boolean;
+  invulnerableRemaining: number;
+  stunRemaining: number;
+  position: Vector3;
+  velocity: Vector3;
+  facing: Vector2;
+  jetpackActive: boolean;
+  eliminatedAt: number | null;
+}
+
+export interface RuntimeFallingClusterState {
+  id: string;
+  phase: FallingClusterPhase;
+  warningRemaining: number;
+  offsetY: number;
+  voxels: FallingClusterVoxelView[];
+}
+
+export type RuntimeEggState = EggViewState;
+export type RuntimeEggScatterDebrisState = EggScatterDebrisViewState;
+export type RuntimeSkyDropState = SkyDropViewState;
+
 export interface MatchPlayerState {
   id: string;
   name: string;
@@ -205,6 +237,13 @@ export interface HudState {
   localPlayerId: string | null;
   localPlayer: HudPlayerState | null;
   ranking: HudRankingEntry[];
+}
+
+export interface SimulationPerformanceDiagnostics {
+  skyDropUpdateMs: number;
+  skyDropLandingMs: number;
+  detachedComponentMs: number;
+  fallingClusterLandingMs: number;
 }
 
 export interface SimulationSnapshot {

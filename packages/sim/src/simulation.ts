@@ -14,8 +14,14 @@ import type {
   PlayerCommand,
   PlayerKind,
   PlayerViewState,
+  RuntimeEggScatterDebrisState,
+  RuntimeEggState,
+  RuntimeFallingClusterState,
+  RuntimePlayerState,
+  RuntimeSkyDropState,
   SkyDropPhase,
   SkyDropViewState,
+  SimulationPerformanceDiagnostics,
   SimulationConfig,
   SimulationResetOptions,
   SimulationSnapshot,
@@ -26,6 +32,7 @@ import { defaultSimulationConfig } from "./config";
 
 const EPSILON = 0.0001;
 const RING_OUT_FALL_CULL_DEPTH = 12;
+const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
 
 interface SimPlayer {
   id: string;
@@ -158,6 +165,21 @@ export class OutOfBoundsSimulation {
   private readonly eggs = new Map<string, SimEgg>();
   private readonly eggScatterDebris = new Map<string, SimEggScatterDebris>();
   private readonly skyDrops = new Map<string, SimSkyDrop>();
+  private playerCollectionVersion = 0;
+  private fallingClusterCollectionVersion = 0;
+  private eggCollectionVersion = 0;
+  private eggScatterDebrisCollectionVersion = 0;
+  private skyDropCollectionVersion = 0;
+  private playerIdsDirty = true;
+  private fallingClusterIdsDirty = true;
+  private eggIdsDirty = true;
+  private eggScatterDebrisIdsDirty = true;
+  private skyDropIdsDirty = true;
+  private playerIdsCache: string[] = [];
+  private fallingClusterIdsCache: string[] = [];
+  private eggIdsCache: string[] = [];
+  private eggScatterDebrisIdsCache: string[] = [];
+  private skyDropIdsCache: string[] = [];
   private dirtyChunkKeys = new Set<string>();
   private nextFallingClusterId = 1;
   private nextEggId = 1;
@@ -165,6 +187,12 @@ export class OutOfBoundsSimulation {
   private nextSkyDropId = 1;
   private skyDropCooldown = 0;
   private rngState = 1;
+  private readonly performanceDiagnostics: SimulationPerformanceDiagnostics = {
+    skyDropUpdateMs: 0,
+    skyDropLandingMs: 0,
+    detachedComponentMs: 0,
+    fallingClusterLandingMs: 0
+  };
 
   constructor(config: Partial<SimulationConfig> = {}) {
     this.config = {
@@ -189,7 +217,16 @@ export class OutOfBoundsSimulation {
     this.nextSkyDropId = 1;
     this.rngState = hashString(`${mode}:${mapDocument.meta.name}:${mapDocument.meta.createdAt}:${mapDocument.meta.updatedAt}`) || 1;
     this.skyDropCooldown = this.nextSkyDropInterval();
+    this.performanceDiagnostics.skyDropUpdateMs = 0;
+    this.performanceDiagnostics.skyDropLandingMs = 0;
+    this.performanceDiagnostics.detachedComponentMs = 0;
+    this.performanceDiagnostics.fallingClusterLandingMs = 0;
     this.world = new MutableVoxelWorld(mapDocument);
+    this.invalidatePlayerCollection();
+    this.invalidateFallingClusterCollection();
+    this.invalidateEggCollection();
+    this.invalidateEggScatterDebrisCollection();
+    this.invalidateSkyDropCollection();
 
     const local = this.spawnPlayer("human", options.localPlayerName ?? "You", 0);
     this.localPlayerId = local.id;
@@ -212,6 +249,24 @@ export class OutOfBoundsSimulation {
     return this.localPlayerId;
   }
 
+  getPlayerIds() {
+    if (this.playerIdsDirty) {
+      this.playerIdsCache = [...this.players.keys()].sort();
+      this.playerIdsDirty = false;
+    }
+
+    return this.playerIdsCache;
+  }
+
+  getPlayerCollectionVersion() {
+    return this.playerCollectionVersion;
+  }
+
+  getPlayerRuntimeState(playerId: string): RuntimePlayerState | null {
+    const player = this.players.get(playerId);
+    return player ? (player as RuntimePlayerState) : null;
+  }
+
   getPlayerState(playerId: string) {
     const player = this.players.get(playerId);
     return player ? this.toViewState(player) : null;
@@ -227,6 +282,24 @@ export class OutOfBoundsSimulation {
       .map((cluster) => this.toFallingClusterViewState(cluster));
   }
 
+  getFallingClusterIds() {
+    if (this.fallingClusterIdsDirty) {
+      this.fallingClusterIdsCache = [...this.fallingClusters.keys()].sort();
+      this.fallingClusterIdsDirty = false;
+    }
+
+    return this.fallingClusterIdsCache;
+  }
+
+  getFallingClusterCollectionVersion() {
+    return this.fallingClusterCollectionVersion;
+  }
+
+  getFallingClusterRuntimeState(clusterId: string): RuntimeFallingClusterState | null {
+    const cluster = this.fallingClusters.get(clusterId);
+    return cluster ? (cluster as RuntimeFallingClusterState) : null;
+  }
+
   getFallingClusterState(clusterId: string) {
     const cluster = this.fallingClusters.get(clusterId);
     return cluster ? this.toFallingClusterViewState(cluster) : null;
@@ -236,6 +309,24 @@ export class OutOfBoundsSimulation {
     return [...this.eggs.values()]
       .sort((left, right) => left.id.localeCompare(right.id))
       .map((egg) => this.toEggViewState(egg));
+  }
+
+  getEggIds() {
+    if (this.eggIdsDirty) {
+      this.eggIdsCache = [...this.eggs.keys()].sort();
+      this.eggIdsDirty = false;
+    }
+
+    return this.eggIdsCache;
+  }
+
+  getEggCollectionVersion() {
+    return this.eggCollectionVersion;
+  }
+
+  getEggRuntimeState(eggId: string): RuntimeEggState | null {
+    const egg = this.eggs.get(eggId);
+    return egg ? (egg as RuntimeEggState) : null;
   }
 
   getEggState(eggId: string) {
@@ -249,6 +340,24 @@ export class OutOfBoundsSimulation {
       .map((debris) => this.toEggScatterDebrisViewState(debris));
   }
 
+  getEggScatterDebrisIds() {
+    if (this.eggScatterDebrisIdsDirty) {
+      this.eggScatterDebrisIdsCache = [...this.eggScatterDebris.keys()].sort();
+      this.eggScatterDebrisIdsDirty = false;
+    }
+
+    return this.eggScatterDebrisIdsCache;
+  }
+
+  getEggScatterDebrisCollectionVersion() {
+    return this.eggScatterDebrisCollectionVersion;
+  }
+
+  getEggScatterDebrisRuntimeState(debrisId: string): RuntimeEggScatterDebrisState | null {
+    const debris = this.eggScatterDebris.get(debrisId);
+    return debris ? (debris as RuntimeEggScatterDebrisState) : null;
+  }
+
   getEggScatterDebrisState(debrisId: string) {
     const debris = this.eggScatterDebris.get(debrisId);
     return debris ? this.toEggScatterDebrisViewState(debris) : null;
@@ -258,6 +367,24 @@ export class OutOfBoundsSimulation {
     return [...this.skyDrops.values()]
       .sort((left, right) => left.id.localeCompare(right.id))
       .map((skyDrop) => this.toSkyDropViewState(skyDrop));
+  }
+
+  getSkyDropIds() {
+    if (this.skyDropIdsDirty) {
+      this.skyDropIdsCache = [...this.skyDrops.keys()].sort();
+      this.skyDropIdsDirty = false;
+    }
+
+    return this.skyDropIdsCache;
+  }
+
+  getSkyDropCollectionVersion() {
+    return this.skyDropCollectionVersion;
+  }
+
+  getSkyDropRuntimeState(skyDropId: string): RuntimeSkyDropState | null {
+    const skyDrop = this.skyDrops.get(skyDropId);
+    return skyDrop ? (skyDrop as RuntimeSkyDropState) : null;
   }
 
   getSkyDropState(skyDropId: string) {
@@ -301,6 +428,15 @@ export class OutOfBoundsSimulation {
     const keys = [...this.dirtyChunkKeys];
     this.dirtyChunkKeys.clear();
     return keys;
+  }
+
+  consumePerformanceDiagnostics(): SimulationPerformanceDiagnostics {
+    const diagnostics = { ...this.performanceDiagnostics };
+    this.performanceDiagnostics.skyDropUpdateMs = 0;
+    this.performanceDiagnostics.skyDropLandingMs = 0;
+    this.performanceDiagnostics.detachedComponentMs = 0;
+    this.performanceDiagnostics.fallingClusterLandingMs = 0;
+    return diagnostics;
   }
 
   getSnapshot(): SimulationSnapshot {
@@ -428,7 +564,33 @@ export class OutOfBoundsSimulation {
     };
 
     this.players.set(id, player);
+    this.invalidatePlayerCollection();
     return player;
+  }
+
+  private invalidatePlayerCollection() {
+    this.playerCollectionVersion += 1;
+    this.playerIdsDirty = true;
+  }
+
+  private invalidateFallingClusterCollection() {
+    this.fallingClusterCollectionVersion += 1;
+    this.fallingClusterIdsDirty = true;
+  }
+
+  private invalidateEggCollection() {
+    this.eggCollectionVersion += 1;
+    this.eggIdsDirty = true;
+  }
+
+  private invalidateEggScatterDebrisCollection() {
+    this.eggScatterDebrisCollectionVersion += 1;
+    this.eggScatterDebrisIdsDirty = true;
+  }
+
+  private invalidateSkyDropCollection() {
+    this.skyDropCollectionVersion += 1;
+    this.skyDropIdsDirty = true;
   }
 
   private toViewState(player: SimPlayer): PlayerViewState {
@@ -731,12 +893,13 @@ export class OutOfBoundsSimulation {
       return;
     }
 
-    const dirty = this.world.removeVoxel(targetVoxel.x, targetVoxel.y, targetVoxel.z);
-    for (const chunkKey of dirty) {
-      this.dirtyChunkKeys.add(chunkKey);
-    }
-
-    this.spawnDetachedComponentsAsFallingClusters();
+    const removedVoxel = {
+      x: targetVoxel.x,
+      y: targetVoxel.y,
+      z: targetVoxel.z
+    };
+    this.addDirtyChunkKeys(this.world.removeVoxels([removedVoxel]));
+    this.spawnDetachedComponentsNearMutations([removedVoxel]);
     player.mass = clamp(player.mass + this.config.destroyGain, 0, this.config.maxMass);
   }
 
@@ -779,10 +942,16 @@ export class OutOfBoundsSimulation {
       return;
     }
 
-    const dirty = this.world.setVoxel(placement.x, placement.y, placement.z, "ground");
-    for (const chunkKey of dirty) {
-      this.dirtyChunkKeys.add(chunkKey);
-    }
+    this.addDirtyChunkKeys(
+      this.world.setVoxels([
+        {
+          x: placement.x,
+          y: placement.y,
+          z: placement.z,
+          kind: "ground"
+        }
+      ])
+    );
 
     player.mass -= this.config.placeCost;
   }
@@ -816,6 +985,7 @@ export class OutOfBoundsSimulation {
     };
 
     this.eggs.set(egg.id, egg);
+    this.invalidateEggCollection();
     player.mass -= this.config.eggCost;
   }
 
@@ -1136,6 +1306,9 @@ export class OutOfBoundsSimulation {
 
   private updateEggScatterDebris(dt: number) {
     const debrisEntries = [...this.eggScatterDebris.values()].sort((left, right) => left.id.localeCompare(right.id));
+    const landedVoxelsByKey = new Map<string, VoxelCell>();
+    const settledDebrisIds: string[] = [];
+
     for (const debris of debrisEntries) {
       if (!this.eggScatterDebris.has(debris.id)) {
         continue;
@@ -1151,15 +1324,32 @@ export class OutOfBoundsSimulation {
         y: Math.floor(debris.destination.y),
         z: Math.floor(debris.destination.z)
       };
-      if (!this.world.hasSolid(landingVoxel.x, landingVoxel.y, landingVoxel.z)) {
-        const dirtyChunkKeys = this.world.setVoxel(landingVoxel.x, landingVoxel.y, landingVoxel.z, debris.kind);
-        for (const chunkKey of dirtyChunkKeys) {
-          this.dirtyChunkKeys.add(chunkKey);
-        }
+      const landingKey = `${landingVoxel.x},${landingVoxel.y},${landingVoxel.z}`;
+      if (
+        !landedVoxelsByKey.has(landingKey) &&
+        !this.world.hasSolid(landingVoxel.x, landingVoxel.y, landingVoxel.z)
+      ) {
+        landedVoxelsByKey.set(landingKey, {
+          x: landingVoxel.x,
+          y: landingVoxel.y,
+          z: landingVoxel.z,
+          kind: debris.kind
+        });
       }
 
-      this.eggScatterDebris.delete(debris.id);
-      this.spawnDetachedComponentsAsFallingClusters();
+      settledDebrisIds.push(debris.id);
+    }
+
+    if (landedVoxelsByKey.size > 0) {
+      this.addDirtyChunkKeys(this.world.setVoxels(landedVoxelsByKey.values()));
+    }
+
+    if (settledDebrisIds.length > 0) {
+      for (const debrisId of settledDebrisIds) {
+        this.eggScatterDebris.delete(debrisId);
+      }
+
+      this.invalidateEggScatterDebrisCollection();
     }
   }
 
@@ -1321,14 +1511,14 @@ export class OutOfBoundsSimulation {
       });
     }
 
+    const explodedVoxels = this.collectEggExplosionVoxels(explosionCenter);
+    if (explodedVoxels.length > 0) {
+      this.addDirtyChunkKeys(this.world.removeVoxels(explodedVoxels));
+    }
+
     const reservedLandingKeys = new Set<string>();
     let scatterCount = 0;
-    for (const voxel of this.collectEggExplosionVoxels(explosionCenter)) {
-      const dirtyChunkKeys = this.world.removeVoxel(voxel.x, voxel.y, voxel.z);
-      for (const chunkKey of dirtyChunkKeys) {
-        this.dirtyChunkKeys.add(chunkKey);
-      }
-
+    for (const voxel of explodedVoxels) {
       const destroyDepth = explosionCenter.y - (voxel.y + 0.5);
       if (destroyDepth > this.config.eggBlastDestroyDepth || scatterCount >= this.config.eggScatterBudget) {
         continue;
@@ -1345,7 +1535,8 @@ export class OutOfBoundsSimulation {
     }
 
     this.eggs.delete(egg.id);
-    this.spawnDetachedComponentsAsFallingClusters();
+    this.invalidateEggCollection();
+    this.spawnDetachedComponentsNearMutations(explodedVoxels);
   }
 
   private collectEggExplosionVoxels(center: Vector3) {
@@ -1479,6 +1670,7 @@ export class OutOfBoundsSimulation {
       elapsed: 0,
       duration: this.config.eggScatterFlightDuration
     });
+    this.invalidateEggScatterDebrisCollection();
   }
 
   private handleRingOut(player: SimPlayer, fallingOut: boolean) {
@@ -1609,12 +1801,15 @@ export class OutOfBoundsSimulation {
       this.applyCollapseDamage(cluster);
 
       if (cluster.offsetY <= landingOffsetY + EPSILON) {
+        const landingStart = now();
         this.landFallingCluster(cluster, landingDropDistance);
+        this.recordPerformanceDiagnostic("fallingClusterLandingMs", landingStart);
       }
     }
   }
 
   private updateSkyDrops(dt: number) {
+    const updateStart = now();
     if (this.mode !== "explore" && this.mode !== "skirmish") {
       return;
     }
@@ -1646,9 +1841,13 @@ export class OutOfBoundsSimulation {
       this.applySkyDropDamage(skyDrop);
 
       if (skyDrop.offsetY <= EPSILON) {
+        const landingStart = now();
         this.landSkyDrop(skyDrop);
+        this.recordPerformanceDiagnostic("skyDropLandingMs", landingStart);
       }
     }
+
+    this.recordPerformanceDiagnostic("skyDropUpdateMs", updateStart);
   }
 
   private resolvePlayerCollisions(iterations = 2) {
@@ -1715,25 +1914,31 @@ export class OutOfBoundsSimulation {
     player.velocity.z -= normalZ * velocityAlongNormal * direction;
   }
 
-  private spawnDetachedComponentsAsFallingClusters() {
-    const detachedComponents = this.world.collectDetachedComponents();
+  private spawnDetachedComponentsNearMutations(mutatedVoxels: Iterable<Pick<VoxelCell, "x" | "y" | "z">>) {
+    const mutations = [...mutatedVoxels].map((voxel) => ({
+      x: voxel.x,
+      y: voxel.y,
+      z: voxel.z
+    }));
+    if (mutations.length === 0) {
+      return;
+    }
+
+    const collectionStart = now();
+    const detachedComponents = this.world.collectDetachedComponentsNear(mutations);
+    this.recordPerformanceDiagnostic("detachedComponentMs", collectionStart);
     if (detachedComponents.length === 0) {
       return;
     }
 
-    for (const component of detachedComponents) {
-      for (const voxel of component.voxels) {
-        const dirtyChunkKeys = this.world.removeVoxel(voxel.x, voxel.y, voxel.z);
-        for (const chunkKey of dirtyChunkKeys) {
-          this.dirtyChunkKeys.add(chunkKey);
-        }
-      }
-    }
+    this.addDirtyChunkKeys(this.world.removeVoxels(detachedComponents.flatMap((component) => component.voxels)));
 
     for (const component of detachedComponents) {
       const cluster = this.createFallingCluster(component);
       this.fallingClusters.set(cluster.id, cluster);
     }
+
+    this.invalidateFallingClusterCollection();
   }
 
   private createFallingCluster(component: DetachedVoxelComponent): SimFallingCluster {
@@ -1754,15 +1959,19 @@ export class OutOfBoundsSimulation {
   private landFallingCluster(cluster: SimFallingCluster, dropDistance: number) {
     this.applyCollapseDamage(cluster);
 
-    for (const voxel of cluster.voxels) {
-      const dirtyChunkKeys = this.world.setVoxel(voxel.x, voxel.y - dropDistance, voxel.z, voxel.kind);
-      for (const chunkKey of dirtyChunkKeys) {
-        this.dirtyChunkKeys.add(chunkKey);
-      }
-    }
+    this.addDirtyChunkKeys(
+      this.world.setVoxels(
+        cluster.voxels.map((voxel) => ({
+          x: voxel.x,
+          y: voxel.y - dropDistance,
+          z: voxel.z,
+          kind: voxel.kind
+        }))
+      )
+    );
 
     this.fallingClusters.delete(cluster.id);
-    this.spawnDetachedComponentsAsFallingClusters();
+    this.invalidateFallingClusterCollection();
   }
 
   private applyCollapseDamage(cluster: SimFallingCluster) {
@@ -1805,6 +2014,7 @@ export class OutOfBoundsSimulation {
     };
     this.nextSkyDropId += 1;
     this.skyDrops.set(skyDrop.id, skyDrop);
+    this.invalidateSkyDropCollection();
     return skyDrop;
   }
 
@@ -1909,18 +2119,19 @@ export class OutOfBoundsSimulation {
   private landSkyDrop(skyDrop: SimSkyDrop) {
     this.applySkyDropDamage(skyDrop);
 
-    const dirtyChunkKeys = this.world.setVoxel(
-      skyDrop.landingVoxel.x,
-      skyDrop.landingVoxel.y,
-      skyDrop.landingVoxel.z,
-      "ground"
+    this.addDirtyChunkKeys(
+      this.world.setVoxels([
+        {
+          x: skyDrop.landingVoxel.x,
+          y: skyDrop.landingVoxel.y,
+          z: skyDrop.landingVoxel.z,
+          kind: "ground"
+        }
+      ])
     );
-    for (const chunkKey of dirtyChunkKeys) {
-      this.dirtyChunkKeys.add(chunkKey);
-    }
 
     this.skyDrops.delete(skyDrop.id);
-    this.spawnDetachedComponentsAsFallingClusters();
+    this.invalidateSkyDropCollection();
   }
 
   private getClusterCenter(cluster: SimFallingCluster): Vector3 {
@@ -1939,6 +2150,19 @@ export class OutOfBoundsSimulation {
       y: total.y / count,
       z: total.z / count
     };
+  }
+
+  private addDirtyChunkKeys(chunkKeys: Iterable<string>) {
+    for (const chunkKey of chunkKeys) {
+      this.dirtyChunkKeys.add(chunkKey);
+    }
+  }
+
+  private recordPerformanceDiagnostic(
+    key: keyof SimulationPerformanceDiagnostics,
+    startTimeMs: number
+  ) {
+    this.performanceDiagnostics[key] = Math.max(this.performanceDiagnostics[key], now() - startTimeMs);
   }
 
   private getSkyDropCenter(skyDrop: SimSkyDrop): Vector3 {

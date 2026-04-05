@@ -25,9 +25,16 @@ interface DecorationCandidate {
   spacing: number;
 }
 
+interface AcceptedDecorationEntry {
+  x: number;
+  z: number;
+  spacing: number;
+}
+
 const DECORATION_DENSITY = 0.07;
 const MIN_GRASS_SPACING = 1.7;
 const MIN_FLOWER_SPACING = 2.2;
+const DECORATION_SPATIAL_HASH_CELL_SIZE = MIN_GRASS_SPACING;
 
 const hashString = (value: string) => {
   let hash = 2166136261;
@@ -52,6 +59,54 @@ const addBufferedColumn = (blockedColumns: Set<string>, x: number, z: number, bu
 
 const flowerKindByHash = (value: number): SurfaceDecorationKind =>
   value < 0.333 ? "flower-yellow" : value < 0.666 ? "flower-pink" : "flower-white";
+
+const getDecorationCellCoord = (value: number) => Math.floor(value / DECORATION_SPATIAL_HASH_CELL_SIZE);
+const getDecorationCellKey = (x: number, z: number) => `${x}:${z}`;
+
+const canPlaceDecoration = (
+  acceptedByCell: Map<string, AcceptedDecorationEntry[]>,
+  x: number,
+  z: number,
+  spacing: number
+) => {
+  const cellX = getDecorationCellCoord(x);
+  const cellZ = getDecorationCellCoord(z);
+  const cellRadius = Math.ceil(MIN_FLOWER_SPACING / DECORATION_SPATIAL_HASH_CELL_SIZE);
+
+  for (let dx = -cellRadius; dx <= cellRadius; dx += 1) {
+    for (let dz = -cellRadius; dz <= cellRadius; dz += 1) {
+      const cell = acceptedByCell.get(getDecorationCellKey(cellX + dx, cellZ + dz));
+      if (!cell) {
+        continue;
+      }
+
+      for (const decoration of cell) {
+        if (Math.hypot(decoration.x - x, decoration.z - z) < Math.max(spacing, decoration.spacing)) {
+          return false;
+        }
+      }
+    }
+  }
+
+  return true;
+};
+
+const addAcceptedDecoration = (
+  acceptedByCell: Map<string, AcceptedDecorationEntry[]>,
+  decoration: AcceptedDecorationEntry
+) => {
+  const cellKey = getDecorationCellKey(
+    getDecorationCellCoord(decoration.x),
+    getDecorationCellCoord(decoration.z)
+  );
+  const cell = acceptedByCell.get(cellKey);
+  if (cell) {
+    cell.push(decoration);
+    return;
+  }
+
+  acceptedByCell.set(cellKey, [decoration]);
+};
 
 const createDecorationCandidate = (x: number, y: number, z: number): DecorationCandidate | null => {
   const placementRoll = normalizedHash(`flora-placement:${x}:${z}`);
@@ -81,6 +136,7 @@ const createDecorationCandidate = (x: number, y: number, z: number): DecorationC
 
 export const buildSurfaceDecorations = (world: MutableVoxelWorld): SurfaceDecoration[] => {
   const blockedColumns = new Set<string>();
+  const acceptedByCell = new Map<string, AcceptedDecorationEntry[]>();
 
   for (const spawn of world.listSpawns()) {
     addBufferedColumn(blockedColumns, Math.floor(spawn.x), Math.floor(spawn.z), 1);
@@ -132,15 +188,15 @@ export const buildSurfaceDecorations = (world: MutableVoxelWorld): SurfaceDecora
   for (const candidate of candidates) {
     const actualX = candidate.x + 0.5 + candidate.offsetX;
     const actualZ = candidate.z + 0.5 + candidate.offsetZ;
-    if (
-      decorations.some((decoration) => {
-        const decorationSpacing = decoration.kind === "grass" ? MIN_GRASS_SPACING : MIN_FLOWER_SPACING;
-        return Math.hypot(decoration.x - actualX, decoration.z - actualZ) < Math.max(candidate.spacing, decorationSpacing);
-      })
-    ) {
+    if (!canPlaceDecoration(acceptedByCell, actualX, actualZ, candidate.spacing)) {
       continue;
     }
 
+    addAcceptedDecoration(acceptedByCell, {
+      x: actualX,
+      z: actualZ,
+      spacing: candidate.spacing
+    });
     decorations.push({
       id: `flora:${candidate.x}:${candidate.z}`,
       kind: candidate.kind,

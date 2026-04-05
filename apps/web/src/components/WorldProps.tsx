@@ -7,15 +7,17 @@ import {
 } from "@out-of-bounds/map";
 import * as THREE from "three";
 import { propMaterials } from "../game/propMaterials";
-import { buildSurfaceDecorations } from "../game/surfaceDecorations";
+import { buildSurfaceDecorations, type SurfaceDecoration } from "../game/surfaceDecorations";
 import { resolveTerrainRaycastHit } from "../game/terrainRaycast";
 import { sharedVoxelGeometry } from "../game/voxelMaterials";
 import type { VoxelInteractPayload } from "./VoxelWorld";
+import { StaticInstancedMesh, type StaticInstanceTransform } from "./StaticInstancedMesh";
 
 interface WorldPropsLayerProps {
   world: MutableVoxelWorld;
   revision: number;
   editable?: boolean;
+  decorationDensity?: number;
   onInteract?: (payload: VoxelInteractPayload) => void;
 }
 
@@ -25,6 +27,91 @@ const grassBladeGeometry = new THREE.BoxGeometry(0.08, 0.46, 0.18);
 const flowerStemGeometry = new THREE.BoxGeometry(0.08, 0.4, 0.08);
 const flowerPetalGeometry = new THREE.BoxGeometry(0.12, 0.12, 0.12);
 const flowerCenterGeometry = new THREE.BoxGeometry(0.1, 0.1, 0.1);
+const parentObject = new THREE.Object3D();
+const childObject = new THREE.Object3D();
+
+const nestTwigLocalTransforms = [
+  { position: [0, 0.08, 0.26], rotation: [0, 0.12, 0] },
+  { position: [0.22, 0.08, 0.18], rotation: [0, 0.62, 0] },
+  { position: [0.26, 0.08, -0.04], rotation: [0, 1.24, 0] },
+  { position: [0.15, 0.08, -0.24], rotation: [0, 1.86, 0] },
+  { position: [-0.12, 0.08, -0.26], rotation: [0, 2.58, 0] },
+  { position: [-0.28, 0.08, -0.08], rotation: [0, 3.18, 0] },
+  { position: [-0.2, 0.08, 0.16], rotation: [0, 3.92, 0] },
+  { position: [-0.02, 0.08, 0.28], rotation: [0, 4.44, 0] }
+] as const satisfies readonly StaticInstanceTransform[];
+
+const nestEggLocalTransforms = [
+  { position: [-0.08, 0.2, 0.02], rotation: [0, 0.18, -0.12] },
+  { position: [0.08, 0.18, -0.04], rotation: [0.12, -0.3, 0.12] }
+] as const satisfies readonly StaticInstanceTransform[];
+
+const grassLocalTransforms = [
+  { position: [0, 0.2, 0] },
+  { position: [0.07, 0.18, -0.03], rotation: [0, 0.6, 0.22] },
+  { position: [-0.06, 0.17, 0.04], rotation: [0, -0.48, -0.18] }
+] as const satisfies readonly StaticInstanceTransform[];
+
+const flowerStemLocalTransform = [{ position: [0, 0.16, 0] }] as const satisfies readonly StaticInstanceTransform[];
+const flowerCenterLocalTransform = [{ position: [0, 0.38, 0] }] as const satisfies readonly StaticInstanceTransform[];
+const flowerPetalLocalTransforms = [
+  { position: [0.12, 0.38, 0] },
+  { position: [-0.12, 0.38, 0] },
+  { position: [0, 0.38, 0.12] },
+  { position: [0, 0.38, -0.12] }
+] as const satisfies readonly StaticInstanceTransform[];
+
+const hashString = (value: string) => {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+
+  return hash >>> 0;
+};
+
+const filterDecorationsByDensity = (decorations: SurfaceDecoration[], density: number) => {
+  if (density >= 0.999) {
+    return decorations;
+  }
+
+  return decorations.filter((decoration) => hashString(decoration.id) / 4294967295 <= density);
+};
+
+const composeMatrices = (
+  parentTransform: StaticInstanceTransform,
+  localTransforms: readonly StaticInstanceTransform[]
+) => {
+  const parentRotation = parentTransform.rotation ?? [0, 0, 0];
+  const parentScale = parentTransform.scale ?? 1;
+  parentObject.position.set(
+    parentTransform.position[0],
+    parentTransform.position[1],
+    parentTransform.position[2]
+  );
+  parentObject.rotation.set(parentRotation[0], parentRotation[1], parentRotation[2]);
+  if (typeof parentScale === "number") {
+    parentObject.scale.setScalar(parentScale);
+  } else {
+    parentObject.scale.set(parentScale[0], parentScale[1], parentScale[2]);
+  }
+  parentObject.updateMatrix();
+
+  return localTransforms.map((transform) => {
+    const rotation = transform.rotation ?? [0, 0, 0];
+    const scale = transform.scale ?? 1;
+    childObject.position.set(transform.position[0], transform.position[1], transform.position[2]);
+    childObject.rotation.set(rotation[0], rotation[1], rotation[2]);
+    if (typeof scale === "number") {
+      childObject.scale.setScalar(scale);
+    } else {
+      childObject.scale.set(scale[0], scale[1], scale[2]);
+    }
+    childObject.updateMatrix();
+    return new THREE.Matrix4().multiplyMatrices(parentObject.matrix, childObject.matrix);
+  });
+};
 
 const handlePropInteract = (
   event: ThreeEvent<PointerEvent>,
@@ -47,193 +134,171 @@ const handlePropInteract = (
   });
 };
 
-export function WorldPropsLayer({ world, revision, editable = false, onInteract }: WorldPropsLayerProps) {
-  const props = world.listProps();
-  const decorations = useMemo(() => buildSurfaceDecorations(world), [world, revision]);
+const buildTreeMatrices = (props: MapProp[]) => {
+  const barkMatrices: THREE.Matrix4[] = [];
+  const leafMatrices: THREE.Matrix4[] = [];
 
-  return (
-    <group>
-      {props.map((prop) => (
-        <MapPropMesh
-          editable={editable}
-          key={prop.id}
-          onInteract={onInteract}
-          prop={prop}
-        />
-      ))}
-      <SpawnNests world={world} />
-      <SurfaceDecorations decorations={decorations} />
-    </group>
-  );
-}
+  for (const prop of props) {
+    for (const voxel of getMapPropVoxels(prop)) {
+      const matrix = new THREE.Matrix4().compose(
+        new THREE.Vector3(voxel.x + 0.5, voxel.y + 0.5, voxel.z + 0.5),
+        new THREE.Quaternion(),
+        new THREE.Vector3(1, 1, 1)
+      );
+      if (voxel.kind === "wood") {
+        barkMatrices.push(matrix);
+      } else {
+        leafMatrices.push(matrix);
+      }
+    }
+  }
 
-function MapPropMesh({
-  prop,
-  editable,
+  return {
+    barkMatrices,
+    leafMatrices
+  };
+};
+
+const buildNestMatrices = (world: MutableVoxelWorld) => {
+  const twigMatrices: THREE.Matrix4[] = [];
+  const eggMatrices: THREE.Matrix4[] = [];
+
+  for (const spawn of world.listSpawns()) {
+    const parentTransform: StaticInstanceTransform = {
+      position: [spawn.x, spawn.y - 1.02, spawn.z]
+    };
+    twigMatrices.push(...composeMatrices(parentTransform, nestTwigLocalTransforms));
+    eggMatrices.push(...composeMatrices(parentTransform, nestEggLocalTransforms));
+  }
+
+  return {
+    twigMatrices,
+    eggMatrices
+  };
+};
+
+const buildDecorationMatrices = (decorations: SurfaceDecoration[]) => {
+  const grassMatrices: THREE.Matrix4[] = [];
+  const flowerStemMatrices: THREE.Matrix4[] = [];
+  const flowerCenterMatrices: THREE.Matrix4[] = [];
+  const flowerYellowPetalMatrices: THREE.Matrix4[] = [];
+  const flowerPinkPetalMatrices: THREE.Matrix4[] = [];
+  const flowerWhitePetalMatrices: THREE.Matrix4[] = [];
+
+  for (const decoration of decorations) {
+    const parentTransform: StaticInstanceTransform = {
+      position: [decoration.x, decoration.y, decoration.z],
+      rotation: [0, decoration.rotation, 0],
+      scale: decoration.scale
+    };
+
+    if (decoration.kind === "grass") {
+      grassMatrices.push(...composeMatrices(parentTransform, grassLocalTransforms));
+      continue;
+    }
+
+    flowerStemMatrices.push(...composeMatrices(parentTransform, flowerStemLocalTransform));
+    flowerCenterMatrices.push(...composeMatrices(parentTransform, flowerCenterLocalTransform));
+    const petalMatrices = composeMatrices(parentTransform, flowerPetalLocalTransforms);
+    if (decoration.kind === "flower-yellow") {
+      flowerYellowPetalMatrices.push(...petalMatrices);
+    } else if (decoration.kind === "flower-pink") {
+      flowerPinkPetalMatrices.push(...petalMatrices);
+    } else {
+      flowerWhitePetalMatrices.push(...petalMatrices);
+    }
+  }
+
+  return {
+    grassMatrices,
+    flowerStemMatrices,
+    flowerCenterMatrices,
+    flowerYellowPetalMatrices,
+    flowerPinkPetalMatrices,
+    flowerWhitePetalMatrices
+  };
+};
+
+export function WorldPropsLayer({
+  world,
+  revision,
+  editable = false,
+  decorationDensity = 1,
   onInteract
-}: {
-  prop: MapProp;
-  editable: boolean;
-  onInteract?: (payload: VoxelInteractPayload) => void;
-}) {
-  const voxels = getMapPropVoxels(prop);
-
-  return (
-    <group>
-      {voxels.map((voxel, index) => (
-        <mesh
-          castShadow
-          geometry={sharedVoxelGeometry}
-          key={`${prop.id}:${index}`}
-          material={voxel.kind === "wood" ? propMaterials.bark : propMaterials.leaves}
-          onPointerDown={(event) => handlePropInteract(event, editable, onInteract)}
-          position={[voxel.x + 0.5, voxel.y + 0.5, voxel.z + 0.5]}
-          receiveShadow
-        />
-      ))}
-    </group>
+}: WorldPropsLayerProps) {
+  const props = useMemo(() => world.listProps(), [revision, world]);
+  const instancedPropMatrices = useMemo(() => buildTreeMatrices(props), [props]);
+  const nestMatrices = useMemo(() => buildNestMatrices(world), [revision, world]);
+  const decorations = useMemo(
+    () => filterDecorationsByDensity(buildSurfaceDecorations(world), decorationDensity),
+    [decorationDensity, revision, world]
   );
-}
-
-function SpawnNests({ world }: { world: MutableVoxelWorld }) {
-  return (
-    <group>
-      {world.listSpawns().map((spawn) => {
-        const nestY = spawn.y - 1.02;
-        return (
-          <group
-            key={spawn.id}
-            position={[spawn.x, nestY, spawn.z]}
-          >
-            {[
-              { x: 0, z: 0.26, rotation: 0.12 },
-              { x: 0.22, z: 0.18, rotation: 0.62 },
-              { x: 0.26, z: -0.04, rotation: 1.24 },
-              { x: 0.15, z: -0.24, rotation: 1.86 },
-              { x: -0.12, z: -0.26, rotation: 2.58 },
-              { x: -0.28, z: -0.08, rotation: 3.18 },
-              { x: -0.2, z: 0.16, rotation: 3.92 },
-              { x: -0.02, z: 0.28, rotation: 4.44 }
-            ].map((twig, index) => (
-              <mesh
-                geometry={nestTwigGeometry}
-                key={`${spawn.id}:twig:${index}`}
-                material={propMaterials.nest}
-                position={[twig.x, 0.08, twig.z]}
-                rotation={[0, twig.rotation, 0]}
-              />
-            ))}
-            <mesh
-              geometry={nestEggGeometry}
-              material={propMaterials.egg}
-              position={[-0.08, 0.2, 0.02]}
-              rotation={[0, 0.18, -0.12]}
-            />
-            <mesh
-              geometry={nestEggGeometry}
-              material={propMaterials.egg}
-              position={[0.08, 0.18, -0.04]}
-              rotation={[0.12, -0.3, 0.12]}
-            />
-          </group>
-        );
-      })}
-    </group>
+  const decorationMatrices = useMemo(() => buildDecorationMatrices(decorations), [decorations]);
+  const handleInstancedPropInteract = useMemo(
+    () =>
+      editable && onInteract
+        ? (event: ThreeEvent<PointerEvent>) => handlePropInteract(event, editable, onInteract)
+        : undefined,
+    [editable, onInteract]
   );
-}
 
-function SurfaceDecorations({
-  decorations
-}: {
-  decorations: ReturnType<typeof buildSurfaceDecorations>;
-}) {
   return (
     <group>
-      {decorations.map((decoration) => (
-        <group
-          key={decoration.id}
-          position={[decoration.x, decoration.y, decoration.z]}
-          rotation={[0, decoration.rotation, 0]}
-          scale={decoration.scale}
-        >
-          {decoration.kind === "grass" ? (
-            <GrassDecoration />
-          ) : (
-            <FlowerDecoration kind={decoration.kind} />
-          )}
-        </group>
-      ))}
-    </group>
-  );
-}
-
-function GrassDecoration() {
-  return (
-    <group>
-      <mesh
+      <StaticInstancedMesh
+        castShadow
+        geometry={sharedVoxelGeometry}
+        material={propMaterials.bark}
+        matrices={instancedPropMatrices.barkMatrices}
+        onPointerDown={handleInstancedPropInteract}
+        receiveShadow
+      />
+      <StaticInstancedMesh
+        castShadow
+        geometry={sharedVoxelGeometry}
+        material={propMaterials.leaves}
+        matrices={instancedPropMatrices.leafMatrices}
+        onPointerDown={handleInstancedPropInteract}
+        receiveShadow
+      />
+      <StaticInstancedMesh
+        geometry={nestTwigGeometry}
+        material={propMaterials.nest}
+        matrices={nestMatrices.twigMatrices}
+      />
+      <StaticInstancedMesh
+        geometry={nestEggGeometry}
+        material={propMaterials.egg}
+        matrices={nestMatrices.eggMatrices}
+      />
+      <StaticInstancedMesh
         geometry={grassBladeGeometry}
         material={propMaterials.grass}
-        position={[0, 0.2, 0]}
+        matrices={decorationMatrices.grassMatrices}
       />
-      <mesh
-        geometry={grassBladeGeometry}
-        material={propMaterials.grass}
-        position={[0.07, 0.18, -0.03]}
-        rotation={[0, 0.6, 0.22]}
-      />
-      <mesh
-        geometry={grassBladeGeometry}
-        material={propMaterials.grass}
-        position={[-0.06, 0.17, 0.04]}
-        rotation={[0, -0.48, -0.18]}
-      />
-    </group>
-  );
-}
-
-function FlowerDecoration({
-  kind
-}: {
-  kind: "flower-yellow" | "flower-pink" | "flower-white";
-}) {
-  const petalMaterial =
-    kind === "flower-yellow"
-      ? propMaterials.flowerYellow
-      : kind === "flower-pink"
-        ? propMaterials.flowerPink
-        : propMaterials.flowerWhite;
-
-  return (
-    <group>
-      <mesh
+      <StaticInstancedMesh
         geometry={flowerStemGeometry}
         material={propMaterials.stem}
-        position={[0, 0.16, 0]}
+        matrices={decorationMatrices.flowerStemMatrices}
       />
-      <mesh
+      <StaticInstancedMesh
         geometry={flowerPetalGeometry}
-        material={petalMaterial}
-        position={[0.12, 0.38, 0]}
+        material={propMaterials.flowerYellow}
+        matrices={decorationMatrices.flowerYellowPetalMatrices}
       />
-      <mesh
+      <StaticInstancedMesh
         geometry={flowerPetalGeometry}
-        material={petalMaterial}
-        position={[-0.12, 0.38, 0]}
+        material={propMaterials.flowerPink}
+        matrices={decorationMatrices.flowerPinkPetalMatrices}
       />
-      <mesh
+      <StaticInstancedMesh
         geometry={flowerPetalGeometry}
-        material={petalMaterial}
-        position={[0, 0.38, 0.12]}
+        material={propMaterials.flowerWhite}
+        matrices={decorationMatrices.flowerWhitePetalMatrices}
       />
-      <mesh
-        geometry={flowerPetalGeometry}
-        material={petalMaterial}
-        position={[0, 0.38, -0.12]}
-      />
-      <mesh
+      <StaticInstancedMesh
         geometry={flowerCenterGeometry}
         material={propMaterials.egg}
-        position={[0, 0.38, 0]}
+        matrices={decorationMatrices.flowerCenterMatrices}
       />
     </group>
   );

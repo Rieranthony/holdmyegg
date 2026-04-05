@@ -3,32 +3,54 @@ import { useFrame } from "@react-three/fiber";
 import type { Vec3i } from "@out-of-bounds/map";
 import * as THREE from "three";
 import { cloudPresets, getVoxelCloudPosition } from "../game/clouds";
+import { StaticInstancedMesh, type StaticInstanceTransform } from "./StaticInstancedMesh";
 
-export function SkyClouds({ worldSize }: { worldSize: Vec3i }) {
+const cloudGeometry = new THREE.BoxGeometry(1.6, 0.9, 1.6);
+const mainMaterial = new THREE.MeshStandardMaterial({
+  color: "#ffffff",
+  roughness: 1,
+  metalness: 0
+});
+const shadeMaterial = new THREE.MeshStandardMaterial({
+  color: "#dde7f2",
+  roughness: 1,
+  metalness: 0
+});
+
+const buildCloudTransforms = (preset: (typeof cloudPresets)[number]) => {
+  const mainTransforms: StaticInstanceTransform[] = [];
+  const shadeTransforms: StaticInstanceTransform[] = [];
+
+  for (const cube of preset.cubes) {
+    const transform = {
+      position: [cube.x, cube.y, cube.z] as const
+    };
+    if (cube.tone === "shade") {
+      shadeTransforms.push(transform);
+    } else {
+      mainTransforms.push(transform);
+    }
+  }
+
+  return {
+    mainTransforms,
+    shadeTransforms
+  };
+};
+
+export function SkyClouds({
+  worldSize,
+  maxCloudCount = cloudPresets.length
+}: {
+  worldSize: Vec3i;
+  maxCloudCount?: number;
+}) {
   const cloudRefs = useRef<Array<THREE.Group | null>>([]);
-  const cloudGeometry = useMemo(() => new THREE.BoxGeometry(1.6, 0.9, 1.6), []);
-  const mainMaterial = useMemo(
-    () =>
-      new THREE.MeshStandardMaterial({
-        color: "#ffffff",
-        roughness: 1,
-        metalness: 0
-      }),
-    []
-  );
-  const shadeMaterial = useMemo(
-    () =>
-      new THREE.MeshStandardMaterial({
-        color: "#dde7f2",
-        roughness: 1,
-        metalness: 0
-      }),
-    []
-  );
+  const visiblePresets = useMemo(() => cloudPresets.slice(0, maxCloudCount), [maxCloudCount]);
 
   useFrame(({ clock }) => {
     const elapsedSeconds = clock.elapsedTime;
-    cloudPresets.forEach((preset, index) => {
+    visiblePresets.forEach((preset, index) => {
       const cloud = cloudRefs.current[index];
       if (!cloud) {
         return;
@@ -41,7 +63,8 @@ export function SkyClouds({ worldSize }: { worldSize: Vec3i }) {
 
   return (
     <group>
-      {cloudPresets.map((preset, presetIndex) => {
+      {visiblePresets.map((preset, presetIndex) => {
+        const transforms = buildCloudTransforms(preset);
         const initialPosition = getVoxelCloudPosition(preset, 0, worldSize);
         return (
           <group
@@ -51,14 +74,16 @@ export function SkyClouds({ worldSize }: { worldSize: Vec3i }) {
               cloudRefs.current[presetIndex] = node;
             }}
           >
-            {preset.cubes.map((cube, cubeIndex) => (
-              <mesh
-                geometry={cloudGeometry}
-                key={`${preset.id}-${cubeIndex}`}
-                material={cube.tone === "shade" ? shadeMaterial : mainMaterial}
-                position={[cube.x, cube.y, cube.z]}
-              />
-            ))}
+            <StaticInstancedMesh
+              geometry={cloudGeometry}
+              material={mainMaterial}
+              transforms={transforms.mainTransforms}
+            />
+            <StaticInstancedMesh
+              geometry={cloudGeometry}
+              material={shadeMaterial}
+              transforms={transforms.shadeTransforms}
+            />
           </group>
         );
       })}

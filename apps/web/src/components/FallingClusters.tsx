@@ -1,52 +1,55 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useLayoutEffect, useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
-import type { FallingClusterViewState, OutOfBoundsSimulation } from "@out-of-bounds/sim";
+import type { RuntimeFallingClusterState, OutOfBoundsSimulation } from "@out-of-bounds/sim";
 import { getFallingClusterVisualState } from "../game/fallingClusters";
 import {
+  fallingClusterMaterialsByProfile,
+  fallingClusterSharedMaterials
+} from "../game/sceneAssets";
+import { finalizeStaticInstancedMesh } from "../game/instancedMeshes";
+import {
   getBlockRenderProfile,
-  getVoxelMaterials,
   sharedVoxelGeometry,
   type BlockRenderProfile
 } from "../game/voxelMaterials";
+import { useVersionedRuntimeCollectionIds } from "../hooks/useVersionedRuntimeCollection";
 
 const tempObject = new THREE.Object3D();
 
-const cloneProfileMaterials = (profile: BlockRenderProfile) =>
-  getVoxelMaterials(profile).map((material) => {
-    const clone = material.clone();
-    if (clone instanceof THREE.MeshStandardMaterial) {
-      clone.emissive = new THREE.Color("#f0db8a");
-      clone.emissiveIntensity = 0;
-    }
-    return clone;
-  }) as THREE.MeshStandardMaterial[];
-
 export function FallingClustersLayer({ runtime }: { runtime: OutOfBoundsSimulation }) {
-  const [clusters, setClusters] = useState(() => runtime.getFallingClusters());
-  const clusterIdsRef = useRef(clusters.map((cluster) => cluster.id));
+  const clusterIds = useVersionedRuntimeCollectionIds({
+    getIds: () => runtime.getFallingClusterIds(),
+    getVersion: () => runtime.getFallingClusterCollectionVersion()
+  });
 
-  useFrame(() => {
-    const nextClusters = runtime.getFallingClusters();
-    const nextIds = nextClusters.map((cluster) => cluster.id);
-    if (
-      nextIds.length === clusterIdsRef.current.length &&
-      nextIds.every((id, index) => id === clusterIdsRef.current[index])
-    ) {
-      return;
+  useFrame((state) => {
+    let emissiveIntensity = 0;
+
+    for (const clusterId of clusterIds) {
+      const cluster = runtime.getFallingClusterRuntimeState(clusterId);
+      if (!cluster || cluster.phase !== "warning") {
+        continue;
+      }
+
+      emissiveIntensity = Math.max(
+        emissiveIntensity,
+        getFallingClusterVisualState(cluster, state.clock.elapsedTime).emissiveIntensity
+      );
     }
 
-    clusterIdsRef.current = nextIds;
-    setClusters(nextClusters);
+    for (const material of fallingClusterSharedMaterials) {
+      material.emissiveIntensity = emissiveIntensity;
+    }
   });
 
   return (
     <group>
-      {clusters.map((cluster) => (
+      {clusterIds.map((clusterId) => (
         <FallingClusterMesh
-          key={cluster.id}
+          clusterId={clusterId}
+          key={clusterId}
           runtime={runtime}
-          initialCluster={cluster}
         />
       ))}
     </group>
@@ -55,25 +58,20 @@ export function FallingClustersLayer({ runtime }: { runtime: OutOfBoundsSimulati
 
 function FallingClusterMesh({
   runtime,
-  initialCluster
+  clusterId
 }: {
   runtime: OutOfBoundsSimulation;
-  initialCluster: FallingClusterViewState;
+  clusterId: string;
 }) {
   const groupRef = useRef<THREE.Group>(null);
-  const materialSets = useMemo(
-    () => ({
-      earthSurface: cloneProfileMaterials("earthSurface"),
-      earthSubsoil: cloneProfileMaterials("earthSubsoil"),
-      darkness: cloneProfileMaterials("darkness")
-    }),
-    []
-  );
-
   const profileGroups = useMemo(() => {
-    const groups = new Map<BlockRenderProfile, typeof initialCluster.voxels>();
+    const cluster = runtime.getFallingClusterRuntimeState(clusterId);
+    const groups = new Map<BlockRenderProfile, RuntimeFallingClusterState["voxels"]>();
+    if (!cluster) {
+      return [];
+    }
 
-    for (const voxel of initialCluster.voxels) {
+    for (const voxel of cluster.voxels) {
       const profile = getBlockRenderProfile(voxel.kind, voxel.y);
       const group = groups.get(profile) ?? [];
       group.push(voxel);
@@ -84,18 +82,10 @@ function FallingClusterMesh({
       profile,
       voxels
     }));
-  }, [initialCluster.voxels]);
-
-  useEffect(() => {
-    return () => {
-      for (const material of [...materialSets.earthSurface, ...materialSets.earthSubsoil, ...materialSets.darkness]) {
-        material.dispose();
-      }
-    };
-  }, [materialSets]);
+  }, [clusterId, runtime]);
 
   useFrame((state) => {
-    const cluster = runtime.getFallingClusterState(initialCluster.id);
+    const cluster = runtime.getFallingClusterRuntimeState(clusterId);
     const group = groupRef.current;
     if (!group) {
       return;
@@ -108,20 +98,15 @@ function FallingClusterMesh({
 
     const visualState = getFallingClusterVisualState(cluster, state.clock.elapsedTime);
     group.position.set(visualState.shakeX, cluster.offsetY, visualState.shakeZ);
-
-    for (const material of [...materialSets.earthSurface, ...materialSets.earthSubsoil, ...materialSets.darkness]) {
-      material.emissiveIntensity = visualState.emissiveIntensity;
-    }
   });
 
   return (
     <group ref={groupRef}>
       {profileGroups.map((group) => (
         <FallingClusterProfileMesh
-          key={`${initialCluster.id}-${group.profile}`}
-          profile={group.profile}
+          key={`${clusterId}-${group.profile}`}
+          materials={fallingClusterMaterialsByProfile[group.profile]}
           voxels={group.voxels}
-          materials={materialSets[group.profile]}
         />
       ))}
     </group>
@@ -129,12 +114,10 @@ function FallingClusterMesh({
 }
 
 function FallingClusterProfileMesh({
-  profile,
   voxels,
   materials
 }: {
-  profile: BlockRenderProfile;
-  voxels: FallingClusterViewState["voxels"];
+  voxels: RuntimeFallingClusterState["voxels"];
   materials: THREE.MeshStandardMaterial[];
 }) {
   const meshRef = useRef<THREE.InstancedMesh>(null);
@@ -153,14 +136,14 @@ function FallingClusterProfileMesh({
       mesh.setMatrixAt(index, tempObject.matrix);
     }
 
-    mesh.instanceMatrix.needsUpdate = true;
+    finalizeStaticInstancedMesh(mesh, voxels.length);
   }, [voxels]);
 
   return (
     <instancedMesh
       ref={meshRef}
-      args={[sharedVoxelGeometry, materials, voxels.length]}
-      userData={{ profile }}
+      args={[sharedVoxelGeometry, materials, Math.max(1, voxels.length)]}
+      matrixAutoUpdate={false}
     />
   );
 }

@@ -13,6 +13,7 @@
     "@out-of-bounds/sim": "workspace:*",
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.5.0",
+    "detect-gpu": "^5.0.70",
     "idb": "^8.0.3",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",

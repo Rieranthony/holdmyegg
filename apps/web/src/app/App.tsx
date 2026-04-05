@@ -1,6 +1,6 @@
-import { startTransition, useCallback, useMemo, useState, type ChangeEvent } from "react";
+import { startTransition, useCallback, useState, type ChangeEvent } from "react";
 import type { GameMode } from "@out-of-bounds/sim";
-import { GameCanvas } from "../components/GameCanvas";
+import { GameCanvasBoundary, preloadGameCanvas } from "../components/GameCanvasBoundary";
 import { Hud } from "../components/Hud";
 import { blockKindOptions, propKindOptions, useEditorSession } from "./useEditorSession";
 import { useMapPersistence } from "./useMapPersistence";
@@ -28,21 +28,24 @@ export function App() {
   });
 
   const createFreshArena = useCallback(() => {
+    preloadGameCanvas();
     editorSession.createFreshArena();
     mapPersistence.setSelectedMapId(null);
     runtimeSession.enterEditor("Loaded a fresh default arena.");
-  }, [editorSession, mapPersistence, runtimeSession]);
+  }, [editorSession, mapPersistence, preloadGameCanvas, runtimeSession]);
 
   const beginMode = useCallback(
     (nextMode: GameMode) => {
+      preloadGameCanvas();
       runtimeSession.beginMode(nextMode, editorSession.editorWorld.toDocument());
     },
-    [editorSession.editorWorld, runtimeSession]
+    [editorSession.editorWorld, preloadGameCanvas, runtimeSession]
   );
 
   const returnToEditor = useCallback(() => {
+    preloadGameCanvas();
     runtimeSession.enterEditor();
-  }, [runtimeSession]);
+  }, [preloadGameCanvas, runtimeSession]);
 
   const returnToMenu = useCallback(() => {
     runtimeSession.enterMenu();
@@ -58,9 +61,10 @@ export function App() {
       return;
     }
 
+    preloadGameCanvas();
     editorSession.applyDocument(record.document);
     runtimeSession.enterEditor(`Loaded "${record.name}".`);
-  }, [editorSession, mapPersistence, runtimeSession]);
+  }, [editorSession, mapPersistence, preloadGameCanvas, runtimeSession]);
 
   const deleteSelectedMap = useCallback(async () => {
     await mapPersistence.deleteCurrentMap();
@@ -83,6 +87,7 @@ export function App() {
           return;
         }
 
+        preloadGameCanvas();
         editorSession.applyDocument(document);
         mapPersistence.setSelectedMapId(null);
         runtimeSession.enterEditor(`Imported "${document.meta.name}".`);
@@ -90,12 +95,10 @@ export function App() {
         event.target.value = "";
       }
     },
-    [editorSession, mapPersistence, runtimeSession]
+    [editorSession, mapPersistence, preloadGameCanvas, runtimeSession]
   );
 
-  const canvasTitle = useMemo(() => {
-    return "Map Workshop";
-  }, []);
+  const canvasTitle = "Map Workshop";
 
   const isMenu = runtimeSession.mode === "menu";
   const isEditor = runtimeSession.mode === "editor";
@@ -114,6 +117,8 @@ export function App() {
             <button
               className="menu-action menu-action--primary"
               onClick={() => beginMode("explore")}
+              onFocus={preloadGameCanvas}
+              onMouseEnter={preloadGameCanvas}
               type="button"
             >
               Explore
@@ -121,6 +126,8 @@ export function App() {
             <button
               className="menu-action menu-action--primary"
               onClick={() => beginMode("skirmish")}
+              onFocus={preloadGameCanvas}
+              onMouseEnter={preloadGameCanvas}
               type="button"
             >
               Skirmish
@@ -129,6 +136,8 @@ export function App() {
           <button
             className="menu-action menu-action--secondary"
             onClick={returnToEditor}
+            onFocus={preloadGameCanvas}
+            onMouseEnter={preloadGameCanvas}
             type="button"
           >
             Map Workshop
@@ -145,8 +154,9 @@ export function App() {
     return (
       <main className="play-shell">
         <div className="play-canvas">
-          <GameCanvas
+          <GameCanvasBoundary
             key={`${playMode}-${runtimeSession.sessionKey}`}
+            loadingLabel="Loading arena renderer"
             mode={playMode}
             editorWorld={editorSession.editorWorld}
             editorRevision={editorSession.editorRevision}
@@ -187,25 +197,31 @@ export function App() {
             <h2>Mode</h2>
             <span className="mode-chip">{runtimeSession.mode.toUpperCase()}</span>
           </div>
-          <div className="button-grid">
-            <button
-              className={isEditor ? "is-active" : ""}
-              onClick={returnToEditor}
-              type="button"
-            >
-              Editor
-            </button>
-            <button
-              onClick={() => beginMode("explore")}
-              type="button"
-            >
-              Explore
-            </button>
-            <button
-              onClick={() => beginMode("skirmish")}
-              type="button"
-            >
-              Skirmish
+        <div className="button-grid">
+          <button
+            className={isEditor ? "is-active" : ""}
+            onClick={returnToEditor}
+            onFocus={preloadGameCanvas}
+            onMouseEnter={preloadGameCanvas}
+            type="button"
+          >
+            Editor
+          </button>
+          <button
+            onClick={() => beginMode("explore")}
+            onFocus={preloadGameCanvas}
+            onMouseEnter={preloadGameCanvas}
+            type="button"
+          >
+            Explore
+          </button>
+          <button
+            onClick={() => beginMode("skirmish")}
+            onFocus={preloadGameCanvas}
+            onMouseEnter={preloadGameCanvas}
+            type="button"
+          >
+            Skirmish
             </button>
           </div>
         </section>
@@ -379,8 +395,9 @@ export function App() {
         </header>
 
         <div className="canvas-card">
-          <GameCanvas
+          <GameCanvasBoundary
             key={`${editorMode}-${runtimeSession.sessionKey}`}
+            loadingLabel="Loading workshop renderer"
             mode={editorMode}
             editorWorld={editorSession.editorWorld}
             editorRevision={editorSession.editorRevision}

@@ -2,6 +2,8 @@ import { MutableVoxelWorld, type MapDocumentV1, type VoxelCell } from "@out-of-b
 import { describe, expect, it } from "vitest";
 import { buildSurfaceDecorations } from "./surfaceDecorations";
 
+const getDecorationSpacing = (kind: string) => (kind === "grass" ? 1.7 : 2.2);
+
 const createFlatArenaDocument = (): MapDocumentV1 => {
   const voxels: VoxelCell[] = [];
 
@@ -40,7 +42,10 @@ describe("buildSurfaceDecorations", () => {
     expect(first.some((decoration) => Math.floor(decoration.x) >= 7 && Math.floor(decoration.x) <= 9 && Math.floor(decoration.z) >= 7 && Math.floor(decoration.z) <= 9)).toBe(false);
     expect(
       first.every((decoration, index) =>
-        first.slice(index + 1).every((other) => Math.hypot(decoration.x - other.x, decoration.z - other.z) >= 1.7)
+        first.slice(index + 1).every((other) =>
+          Math.hypot(decoration.x - other.x, decoration.z - other.z) >=
+          Math.max(getDecorationSpacing(decoration.kind), getDecorationSpacing(other.kind))
+        )
       )
     ).toBe(true);
   });

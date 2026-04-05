@@ -108,6 +108,8 @@ export const VoxelWorldView = forwardRef<THREE.Group, VoxelWorldViewProps>(funct
     stats: TerrainRenderStats;
   } | null>(null);
   const lastFrustumVisibleChunkCountRef = useRef(0);
+  const terrainStatsRef = useRef<TerrainRenderStats | null>(null);
+  const statsUpdateCooldownRef = useRef(0);
 
   const getFrustumVisibleChunkCount = (chunks: TerrainChunkRenderData[]) =>
     countFrustumVisibleTerrainChunks(
@@ -128,8 +130,8 @@ export const VoxelWorldView = forwardRef<THREE.Group, VoxelWorldViewProps>(funct
   }
 
   const [renderedChunks, setRenderedChunks] = useState<TerrainChunkRenderData[]>(initialTerrainStateRef.current.chunks);
-  const [terrainStats, setTerrainStats] = useState<TerrainRenderStats>(initialTerrainStateRef.current.stats);
   const mountedWorldRef = useRef(world);
+  terrainStatsRef.current ??= initialTerrainStateRef.current.stats;
 
   useEffect(() => {
     if (mountedWorldRef.current === world) {
@@ -144,8 +146,11 @@ export const VoxelWorldView = forwardRef<THREE.Group, VoxelWorldViewProps>(funct
     current.forEach(disposeRenderedChunk);
     renderedChunksRef.current = next;
     lastFrustumVisibleChunkCountRef.current = frustumVisibleChunkCount;
+    terrainStatsRef.current = summarizeTerrainStats(next, now() - start, frustumVisibleChunkCount);
     setRenderedChunks(next);
-    setTerrainStats(summarizeTerrainStats(next, now() - start, frustumVisibleChunkCount));
+    if (import.meta.env.DEV) {
+      onTerrainStatsChange?.(terrainStatsRef.current);
+    }
   }, [world]);
 
   useEffect(() => {
@@ -176,32 +181,51 @@ export const VoxelWorldView = forwardRef<THREE.Group, VoxelWorldViewProps>(funct
     const frustumVisibleChunkCount = getFrustumVisibleChunkCount(next);
     renderedChunksRef.current = next;
     lastFrustumVisibleChunkCountRef.current = frustumVisibleChunkCount;
+    terrainStatsRef.current = summarizeTerrainStats(next, now() - start, frustumVisibleChunkCount);
     setRenderedChunks(next);
-    setTerrainStats(summarizeTerrainStats(next, now() - start, frustumVisibleChunkCount));
+    if (import.meta.env.DEV) {
+      onTerrainStatsChange?.(terrainStatsRef.current);
+    }
   }, [dirtyChunkKeys, revision, world]);
 
-  useFrame(() => {
+  useFrame((_, delta) => {
+    if (!import.meta.env.DEV || !onTerrainStatsChange) {
+      return;
+    }
+
+    statsUpdateCooldownRef.current += delta;
+    if (statsUpdateCooldownRef.current < 1) {
+      return;
+    }
+
+    statsUpdateCooldownRef.current = 0;
     const nextVisibleChunkCount = getFrustumVisibleChunkCount(renderedChunksRef.current);
     if (nextVisibleChunkCount === lastFrustumVisibleChunkCountRef.current) {
       return;
     }
 
     lastFrustumVisibleChunkCountRef.current = nextVisibleChunkCount;
-    setTerrainStats((current) => {
-      if (current.frustumVisibleChunkCount === nextVisibleChunkCount) {
-        return current;
-      }
+    const currentStats = terrainStatsRef.current;
+    if (!currentStats) {
+      return;
+    }
 
-      return {
-        ...current,
-        frustumVisibleChunkCount: nextVisibleChunkCount
-      };
-    });
+    terrainStatsRef.current = {
+      ...currentStats,
+      frustumVisibleChunkCount: nextVisibleChunkCount
+    };
+    onTerrainStatsChange(terrainStatsRef.current);
   });
 
   useEffect(() => {
-    onTerrainStatsChange?.(terrainStats);
-  }, [onTerrainStatsChange, terrainStats]);
+    if (!import.meta.env.DEV) {
+      return;
+    }
+
+    if (terrainStatsRef.current) {
+      onTerrainStatsChange?.(terrainStatsRef.current);
+    }
+  }, [onTerrainStatsChange]);
 
   useEffect(
     () => () => {

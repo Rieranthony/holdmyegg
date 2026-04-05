@@ -1,24 +1,19 @@
-import { useMemo, useRef } from "react";
+import { useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import type { Vec3i } from "@out-of-bounds/map";
 import * as THREE from "three";
 import { birdPresets, getSkyBirdPose } from "../game/birds";
+import {
+  skyBirdBodyGeometry,
+  skyBirdHeadGeometry,
+  skyBirdMaterial,
+  skyBirdWingGeometry
+} from "../game/sceneAssets";
 
 export function SkyBirds({ worldSize }: { worldSize: Vec3i }) {
   const birdRefs = useRef<Array<THREE.Group | null>>([]);
   const leftWingRefs = useRef<Array<THREE.Mesh | null>>([]);
   const rightWingRefs = useRef<Array<THREE.Mesh | null>>([]);
-  const bodyGeometry = useMemo(() => new THREE.BoxGeometry(0.6, 0.18, 0.38), []);
-  const headGeometry = useMemo(() => new THREE.BoxGeometry(0.16, 0.16, 0.16), []);
-  const wingGeometry = useMemo(() => new THREE.BoxGeometry(0.56, 0.08, 0.24), []);
-  const birdMaterial = useMemo(
-    () =>
-      new THREE.MeshBasicMaterial({
-        color: "#1f2429",
-        toneMapped: false
-      }),
-    []
-  );
 
   useFrame(({ clock }) => {
     const elapsedSeconds = clock.elapsedTime;
@@ -57,25 +52,25 @@ export function SkyBirds({ worldSize }: { worldSize: Vec3i }) {
             rotation={[0, initialPose.yaw, 0]}
           >
             <mesh
-              geometry={bodyGeometry}
-              material={birdMaterial}
+              geometry={skyBirdBodyGeometry}
+              material={skyBirdMaterial}
             />
             <mesh
-              geometry={headGeometry}
-              material={birdMaterial}
+              geometry={skyBirdHeadGeometry}
+              material={skyBirdMaterial}
               position={[0, 0.02, 0.22]}
             />
             <mesh
-              geometry={wingGeometry}
-              material={birdMaterial}
+              geometry={skyBirdWingGeometry}
+              material={skyBirdMaterial}
               position={[-0.38, 0, -0.02]}
               ref={(node) => {
                 leftWingRefs.current[index] = node;
               }}
             />
             <mesh
-              geometry={wingGeometry}
-              material={birdMaterial}
+              geometry={skyBirdWingGeometry}
+              material={skyBirdMaterial}
               position={[0.38, 0, -0.02]}
               ref={(node) => {
                 rightWingRefs.current[index] = node;

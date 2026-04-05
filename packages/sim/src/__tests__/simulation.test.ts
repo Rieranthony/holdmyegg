@@ -724,6 +724,57 @@ describe("OutOfBoundsSimulation", () => {
     expect(simulation.getPlayerState(localPlayerId)!.livesRemaining).toBe(postHitLives);
   });
 
+  it("spawns falling clusters when an egg blast removes the supporting voxel", () => {
+    const simulation = new OutOfBoundsSimulation({
+      eggBlastVoxelRadius: 1.1,
+      eggBlastDestroyDepth: 10,
+      skyDropIntervalMin: 999,
+      skyDropIntervalMax: 999
+    });
+    simulation.reset(
+      "explore",
+      createArenaDocument((world) => {
+        world.setVoxel(10, DEFAULT_SURFACE_Y, 10, "boundary");
+        world.setVoxel(10, DEFAULT_SURFACE_Y + 1, 10, "boundary");
+        world.setVoxel(10, DEFAULT_SURFACE_Y + 2, 10, "boundary");
+        world.setVoxel(10, COLLAPSE_SUPPORT_Y, 10, "boundary");
+        world.setVoxel(11, FLOATING_TEST_Y, 10, "ground");
+        world.setVoxel(12, FLOATING_TEST_Y, 10, "ground");
+        world.setVoxel(13, FLOATING_TEST_Y, 10, "ground");
+      }),
+      {
+        localPlayerName: "You"
+      }
+    );
+
+    const localPlayerId = simulation.getLocalPlayerId()!;
+    const localPlayer = getInternalPlayer(simulation, localPlayerId);
+    localPlayer.position = { x: 9.2, y: PLAYER_GROUND_Y, z: 10.5 };
+    localPlayer.velocity = { x: 0, y: 0, z: 0 };
+    localPlayer.facing = { x: 1, z: 0 };
+    localPlayer.grounded = true;
+
+    const eggs = (simulation as unknown as { eggs: Map<string, any> }).eggs;
+    eggs.set("manual-egg", {
+      id: "manual-egg",
+      ownerId: localPlayerId,
+      fuseRemaining: 0,
+      grounded: true,
+      position: { x: 10.2, y: COLLAPSE_SUPPORT_Y + 0.5, z: 10.5 },
+      velocity: { x: 0, y: 0, z: 0 }
+    });
+
+    simulation.step({
+      [localPlayerId]: idle()
+    });
+
+    const clusters = simulation.getFallingClusters();
+    expect(clusters).toHaveLength(1);
+    expect(simulation.getWorld().getVoxelKind(11, FLOATING_TEST_Y, 10)).toBeUndefined();
+    expect(simulation.getWorld().getVoxelKind(12, FLOATING_TEST_Y, 10)).toBeUndefined();
+    expect(simulation.getWorld().getVoxelKind(13, FLOATING_TEST_Y, 10)).toBeUndefined();
+  });
+
   it("spawns sky drops near alive players and lands them as permanent ground blocks", () => {
     const simulation = new OutOfBoundsSimulation({
       skyDropIntervalMin: 0.01,

@@ -47,6 +47,17 @@ const createTinyWorld = (
   spawns: MapDocumentV1["spawns"] = []
 ) => new MutableVoxelWorld(createTinyDocument({ voxels, spawns }));
 
+const mergeDirtyKeys = (...dirtySets: Set<string>[]) => {
+  const merged = new Set<string>();
+  for (const dirtySet of dirtySets) {
+    for (const key of dirtySet) {
+      merged.add(key);
+    }
+  }
+
+  return merged;
+};
+
 describe("MutableVoxelWorld", () => {
   it("builds visible chunks and can rebuild the same chunks by key", () => {
     const world = createTinyWorld([
@@ -268,6 +279,74 @@ describe("MutableVoxelWorld", () => {
       { x: 10, y: 14, z: 10, kind: "ground" },
       { x: 11, y: 14, z: 10, kind: "boundary" }
     ]);
+  });
+
+  it("collects the same detached components near a mutation as the full scan", () => {
+    const supportY = 10;
+    const world = createTinyWorld([]);
+    world.setVoxel(10, 1, 10, "boundary");
+    world.setVoxel(10, 2, 10, "boundary");
+    world.setVoxel(10, 3, 10, "boundary");
+    world.setVoxel(10, 4, 10, "boundary");
+    world.setVoxel(10, 5, 10, "boundary");
+    world.setVoxel(10, 6, 10, "boundary");
+    world.setVoxel(10, 7, 10, "boundary");
+    world.setVoxel(10, 8, 10, "boundary");
+    world.setVoxel(10, 9, 10, "boundary");
+    world.setVoxel(10, supportY, 10, "boundary");
+    world.setVoxel(11, supportY, 10, "ground");
+    world.setVoxel(12, supportY, 10, "ground");
+    world.setVoxel(13, supportY, 10, "ground");
+
+    const fullScanWorld = world.clone();
+    const localScanWorld = world.clone();
+    fullScanWorld.removeVoxel(10, supportY, 10);
+    localScanWorld.removeVoxel(10, supportY, 10);
+
+    expect(localScanWorld.collectDetachedComponentsNear([{ x: 10, y: supportY, z: 10 }])).toEqual(
+      fullScanWorld.collectDetachedComponents()
+    );
+  });
+
+  it("keeps batched voxel mutations aligned with repeated single-voxel edits", () => {
+    const repeatedWorld = createTinyWorld([
+      { x: 8, y: 1, z: 8, kind: "ground" },
+      { x: 8, y: 2, z: 8, kind: "ground" },
+      { x: 9, y: 1, z: 8, kind: "boundary" }
+    ]);
+    const batchedWorld = repeatedWorld.clone();
+    const addedVoxels = [
+      { x: 15, y: 1, z: 15, kind: "ground" as const },
+      { x: 16, y: 1, z: 15, kind: "ground" as const },
+      { x: 16, y: 2, z: 15, kind: "boundary" as const }
+    ];
+    const removedVoxels = [
+      { x: 8, y: 2, z: 8 },
+      { x: 9, y: 1, z: 8 }
+    ];
+
+    const repeatedAddDirty = mergeDirtyKeys(...addedVoxels.map((voxel) => repeatedWorld.setVoxel(voxel.x, voxel.y, voxel.z, voxel.kind)));
+    const batchedAddDirty = batchedWorld.setVoxels(addedVoxels);
+    expect(batchedAddDirty).toEqual(repeatedAddDirty);
+    expect(batchedWorld.getTerrainRevision()).toBe(1);
+
+    const repeatedRemoveDirty = mergeDirtyKeys(...removedVoxels.map((voxel) => repeatedWorld.removeVoxel(voxel.x, voxel.y, voxel.z)));
+    const batchedRemoveDirty = batchedWorld.removeVoxels(removedVoxels);
+    expect(batchedRemoveDirty).toEqual(repeatedRemoveDirty);
+    expect(batchedWorld.getTerrainRevision()).toBe(2);
+    expect(batchedWorld.toDocument()).toEqual(repeatedWorld.toDocument());
+    expect(batchedWorld.buildVisibleChunks()).toEqual(repeatedWorld.buildVisibleChunks());
+
+    for (const { x, z } of [
+      { x: 8, z: 8 },
+      { x: 9, z: 8 },
+      { x: 15, z: 15 },
+      { x: 16, z: 15 }
+    ]) {
+      expect(batchedWorld.getTopTerrainY(x, z)).toBe(repeatedWorld.getTopTerrainY(x, z));
+      expect(batchedWorld.getTopGroundY(x, z)).toBe(repeatedWorld.getTopGroundY(x, z));
+      expect(batchedWorld.getTopSolidY(x, z)).toBe(repeatedWorld.getTopSolidY(x, z));
+    }
   });
 
   it("settles detached components onto stable terrain immediately", () => {
