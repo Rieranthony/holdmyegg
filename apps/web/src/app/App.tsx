@@ -591,10 +591,7 @@ export function App({
             </div>
           </section>
 
-          <section
-            aria-label="Chicken Preview"
-            className="menu-preview-stage"
-          >
+          <section aria-label="Chicken Preview" className="menu-preview-stage">
             <ChickenPreview
               paletteName={selectedPreviewPaletteName}
               variant="menu"
@@ -966,7 +963,9 @@ function RulesAndControlsScreen({ onBack }: { onBack: () => void }) {
           </section>
           <section className="rules-screen__card">
             <h2>Matter</h2>
-            <p>Only harvested cubes refill matter, and every big move spends it.</p>
+            <p>
+              Only harvested cubes refill matter, and every big move spends it.
+            </p>
           </section>
         </div>
 
@@ -987,11 +986,16 @@ function RulesAndControlsScreen({ onBack }: { onBack: () => void }) {
             <div className="rules-screen__mode-grid">
               <article className="rules-screen__mini-card">
                 <h3>Explore</h3>
-                <p>Solo practice for movement, flying, building, pushing, and eggs.</p>
+                <p>
+                  Solo practice for movement, flying, building, pushing, and
+                  eggs.
+                </p>
               </article>
               <article className="rules-screen__mini-card">
                 <h3>Brawl</h3>
-                <p>Use that same toolkit to outlast everyone else on the arena.</p>
+                <p>
+                  Use that same toolkit to outlast everyone else on the arena.
+                </p>
               </article>
             </div>
           </section>
