@@ -244,6 +244,9 @@ export interface SimulationPerformanceDiagnostics {
   skyDropLandingMs: number;
   detachedComponentMs: number;
   fallingClusterLandingMs: number;
+  fixedStepMaxStepsPerFrame: number;
+  fixedStepClampedFrames: number;
+  fixedStepDroppedMs: number;
 }
 
 export interface SimulationSnapshot {

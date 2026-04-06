@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { defaultSimulationConfig, type PlayerCommand, OutOfBoundsSimulation } from "@out-of-bounds/sim";
 import { DEFAULT_SURFACE_Y } from "@out-of-bounds/map";
 import { createArenaDocument } from "@test/fixtures/maps";
@@ -660,6 +660,23 @@ describe("OutOfBoundsSimulation", () => {
     expect(simulationA.getWorld().getVoxelKind(12, DEFAULT_SURFACE_Y, 10)).toBe("ground");
     expect(simulationA.getWorld().getVoxelKind(13, DEFAULT_SURFACE_Y, 10)).toBe("ground");
     expect(normalizeSnapshot(simulationA.getSnapshot())).toEqual(normalizeSnapshot(simulationB.getSnapshot()));
+  });
+
+  it("caches falling-cluster landing distance while the cluster is descending", () => {
+    const { simulation, localPlayerId } = createCollapseSimulation();
+    const dropDistanceSpy = vi.spyOn(simulation.getWorld(), "getComponentDropDistance");
+
+    simulation.step({
+      [localPlayerId]: destroy({
+        targetVoxel: { x: 10, y: COLLAPSE_SUPPORT_Y, z: 10 }
+      })
+    });
+
+    advanceSimulation(simulation, 120, {
+      [localPlayerId]: idle()
+    });
+
+    expect(dropDistanceSpy).toHaveBeenCalledTimes(1);
   });
 
   it("applies crush damage and knockback without directly eliminating the player", () => {

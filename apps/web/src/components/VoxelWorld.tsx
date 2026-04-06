@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useRef, useState } from "react";
+import { forwardRef, startTransition, useEffect, useRef, useState } from "react";
 import { useFrame, useThree, type ThreeEvent } from "@react-three/fiber";
 import * as THREE from "three";
 import { DEFAULT_CHUNK_SIZE, type MutableVoxelWorld, type VisibleVoxelChunk } from "@out-of-bounds/map";
@@ -52,7 +52,16 @@ interface TerrainChunkRenderData {
   bounds: THREE.Box3;
 }
 
+interface DirtyChunkDrainResult<T> {
+  elapsedMs: number;
+  nextByKey: Map<string, T>;
+  processedKeys: string[];
+  remainingKeys: Set<string>;
+}
+
 const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
+export const MAX_DIRTY_CHUNKS_PER_FRAME = 4;
+export const DIRTY_CHUNK_REBUILD_BUDGET_MS = 3;
 
 const sortRenderChunks = (left: TerrainChunkRenderData, right: TerrainChunkRenderData) => left.key.localeCompare(right.key);
 
@@ -90,6 +99,71 @@ const summarizeTerrainStats = (
   renderer: "groupedMaterials"
 });
 
+export const enqueueDirtyChunkKeys = (queue: Set<string>, keys: Iterable<string>) => {
+  for (const key of keys) {
+    if (key) {
+      queue.add(key);
+    }
+  }
+
+  return queue;
+};
+
+export const drainDirtyChunkBuildQueue = <T,>({
+  currentByKey,
+  pendingKeys,
+  rebuildChunk,
+  disposeChunk,
+  maxChunkCount,
+  maxRebuildMs,
+  getNow = now
+}: {
+  currentByKey: ReadonlyMap<string, T>;
+  pendingKeys: Iterable<string>;
+  rebuildChunk: (key: string) => T | null;
+  disposeChunk: (chunk: T) => void;
+  maxChunkCount: number;
+  maxRebuildMs: number;
+  getNow?: () => number;
+}): DirtyChunkDrainResult<T> => {
+  const frameStart = getNow();
+  const nextByKey = new Map(currentByKey);
+  const remainingKeys = new Set(pendingKeys);
+  const processedKeys: string[] = [];
+
+  while (remainingKeys.size > 0 && processedKeys.length < maxChunkCount) {
+    const nextKey = remainingKeys.values().next().value as string | undefined;
+    if (!nextKey) {
+      break;
+    }
+
+    remainingKeys.delete(nextKey);
+    const existing = nextByKey.get(nextKey);
+    if (existing) {
+      disposeChunk(existing);
+    }
+
+    const rebuiltChunk = rebuildChunk(nextKey);
+    if (rebuiltChunk) {
+      nextByKey.set(nextKey, rebuiltChunk);
+    } else {
+      nextByKey.delete(nextKey);
+    }
+
+    processedKeys.push(nextKey);
+    if (processedKeys.length >= maxChunkCount || getNow() - frameStart >= maxRebuildMs) {
+      break;
+    }
+  }
+
+  return {
+    elapsedMs: getNow() - frameStart,
+    nextByKey,
+    processedKeys,
+    remainingKeys
+  };
+};
+
 export const VoxelWorldView = forwardRef<THREE.Group, VoxelWorldViewProps>(function VoxelWorldView(
   {
     world,
@@ -103,10 +177,12 @@ export const VoxelWorldView = forwardRef<THREE.Group, VoxelWorldViewProps>(funct
 ) {
   const camera = useThree((state) => state.camera);
   const renderedChunksRef = useRef<TerrainChunkRenderData[]>([]);
+  const renderedChunkMapRef = useRef<Map<string, TerrainChunkRenderData>>(new Map());
   const initialTerrainStateRef = useRef<{
     chunks: TerrainChunkRenderData[];
     stats: TerrainRenderStats;
   } | null>(null);
+  const pendingDirtyChunkKeysRef = useRef<Set<string>>(new Set());
   const lastFrustumVisibleChunkCountRef = useRef(0);
   const terrainStatsRef = useRef<TerrainRenderStats | null>(null);
   const statsUpdateCooldownRef = useRef(0);
@@ -122,6 +198,7 @@ export const VoxelWorldView = forwardRef<THREE.Group, VoxelWorldViewProps>(funct
     const next = createRenderedChunks(world.buildVisibleChunks(DEFAULT_CHUNK_SIZE));
     const frustumVisibleChunkCount = getFrustumVisibleChunkCount(next);
     renderedChunksRef.current = next;
+    renderedChunkMapRef.current = new Map(next.map((chunk) => [chunk.key, chunk]));
     lastFrustumVisibleChunkCountRef.current = frustumVisibleChunkCount;
     initialTerrainStateRef.current = {
       chunks: next,
@@ -145,6 +222,8 @@ export const VoxelWorldView = forwardRef<THREE.Group, VoxelWorldViewProps>(funct
     const current = renderedChunksRef.current;
     current.forEach(disposeRenderedChunk);
     renderedChunksRef.current = next;
+    renderedChunkMapRef.current = new Map(next.map((chunk) => [chunk.key, chunk]));
+    pendingDirtyChunkKeysRef.current.clear();
     lastFrustumVisibleChunkCountRef.current = frustumVisibleChunkCount;
     terrainStatsRef.current = summarizeTerrainStats(next, now() - start, frustumVisibleChunkCount);
     setRenderedChunks(next);
@@ -158,35 +237,44 @@ export const VoxelWorldView = forwardRef<THREE.Group, VoxelWorldViewProps>(funct
       return;
     }
 
-    const currentByKey = new Map(renderedChunksRef.current.map((chunk) => [chunk.key, chunk]));
-    const start = now();
-    const rebuiltChunks = createRenderedChunks(world.buildVisibleChunksForKeys(dirtyChunkKeys, DEFAULT_CHUNK_SIZE));
-    const rebuiltByKey = new Map(rebuiltChunks.map((chunk) => [chunk.key, chunk]));
+    enqueueDirtyChunkKeys(pendingDirtyChunkKeysRef.current, dirtyChunkKeys);
+  }, [dirtyChunkKeys]);
 
-    for (const key of dirtyChunkKeys) {
-      const existing = currentByKey.get(key);
-      if (existing) {
-        disposeRenderedChunk(existing);
-      }
-
-      const rebuilt = rebuiltByKey.get(key);
-      if (rebuilt) {
-        currentByKey.set(key, rebuilt);
-      } else {
-        currentByKey.delete(key);
-      }
+  useFrame(() => {
+    if (pendingDirtyChunkKeysRef.current.size === 0) {
+      return;
     }
 
-    const next = [...currentByKey.values()].sort(sortRenderChunks);
+    const drainResult = drainDirtyChunkBuildQueue({
+      currentByKey: renderedChunkMapRef.current,
+      pendingKeys: pendingDirtyChunkKeysRef.current,
+      rebuildChunk: (key) => {
+        const rebuiltChunk = world.buildVisibleChunkByKey(key, DEFAULT_CHUNK_SIZE);
+        return rebuiltChunk ? createRenderedChunk(rebuiltChunk) : null;
+      },
+      disposeChunk: disposeRenderedChunk,
+      maxChunkCount: MAX_DIRTY_CHUNKS_PER_FRAME,
+      maxRebuildMs: DIRTY_CHUNK_REBUILD_BUDGET_MS
+    });
+
+    if (drainResult.processedKeys.length === 0) {
+      return;
+    }
+
+    pendingDirtyChunkKeysRef.current = drainResult.remainingKeys;
+    const next = [...drainResult.nextByKey.values()].sort(sortRenderChunks);
     const frustumVisibleChunkCount = getFrustumVisibleChunkCount(next);
     renderedChunksRef.current = next;
+    renderedChunkMapRef.current = drainResult.nextByKey;
     lastFrustumVisibleChunkCountRef.current = frustumVisibleChunkCount;
-    terrainStatsRef.current = summarizeTerrainStats(next, now() - start, frustumVisibleChunkCount);
-    setRenderedChunks(next);
-    if (import.meta.env.DEV) {
+    terrainStatsRef.current = summarizeTerrainStats(next, drainResult.elapsedMs, frustumVisibleChunkCount);
+    startTransition(() => {
+      setRenderedChunks(next);
+    });
+    if (import.meta.env.DEV && terrainStatsRef.current) {
       onTerrainStatsChange?.(terrainStatsRef.current);
     }
-  }, [dirtyChunkKeys, revision, world]);
+  });
 
   useFrame((_, delta) => {
     if (!import.meta.env.DEV || !onTerrainStatsChange) {
@@ -229,6 +317,7 @@ export const VoxelWorldView = forwardRef<THREE.Group, VoxelWorldViewProps>(funct
 
   useEffect(
     () => () => {
+      pendingDirtyChunkKeysRef.current.clear();
       renderedChunksRef.current.forEach(disposeRenderedChunk);
     },
     []

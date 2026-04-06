@@ -66,6 +66,12 @@ interface SimFallingCluster {
   offsetY: number;
   velocityY: number;
   damagedPlayerIds: Set<string>;
+  cachedLandingDropDistance: number | null;
+  cachedLandingOffsetY: number | null;
+  footprintMinX: number;
+  footprintMaxX: number;
+  footprintMinZ: number;
+  footprintMaxZ: number;
 }
 
 interface SimEgg {
@@ -191,7 +197,10 @@ export class OutOfBoundsSimulation {
     skyDropUpdateMs: 0,
     skyDropLandingMs: 0,
     detachedComponentMs: 0,
-    fallingClusterLandingMs: 0
+    fallingClusterLandingMs: 0,
+    fixedStepMaxStepsPerFrame: 0,
+    fixedStepClampedFrames: 0,
+    fixedStepDroppedMs: 0
   };
 
   constructor(config: Partial<SimulationConfig> = {}) {
@@ -221,6 +230,9 @@ export class OutOfBoundsSimulation {
     this.performanceDiagnostics.skyDropLandingMs = 0;
     this.performanceDiagnostics.detachedComponentMs = 0;
     this.performanceDiagnostics.fallingClusterLandingMs = 0;
+    this.performanceDiagnostics.fixedStepMaxStepsPerFrame = 0;
+    this.performanceDiagnostics.fixedStepClampedFrames = 0;
+    this.performanceDiagnostics.fixedStepDroppedMs = 0;
     this.world = new MutableVoxelWorld(mapDocument);
     this.invalidatePlayerCollection();
     this.invalidateFallingClusterCollection();
@@ -436,6 +448,9 @@ export class OutOfBoundsSimulation {
     this.performanceDiagnostics.skyDropLandingMs = 0;
     this.performanceDiagnostics.detachedComponentMs = 0;
     this.performanceDiagnostics.fallingClusterLandingMs = 0;
+    this.performanceDiagnostics.fixedStepMaxStepsPerFrame = 0;
+    this.performanceDiagnostics.fixedStepClampedFrames = 0;
+    this.performanceDiagnostics.fixedStepDroppedMs = 0;
     return diagnostics;
   }
 
@@ -899,6 +914,7 @@ export class OutOfBoundsSimulation {
       z: targetVoxel.z
     };
     this.addDirtyChunkKeys(this.world.removeVoxels([removedVoxel]));
+    this.invalidateFallingClusterLandingCacheForMutations([removedVoxel]);
     this.spawnDetachedComponentsNearMutations([removedVoxel]);
     player.mass = clamp(player.mass + this.config.destroyGain, 0, this.config.maxMass);
   }
@@ -942,16 +958,14 @@ export class OutOfBoundsSimulation {
       return;
     }
 
-    this.addDirtyChunkKeys(
-      this.world.setVoxels([
-        {
-          x: placement.x,
-          y: placement.y,
-          z: placement.z,
-          kind: "ground"
-        }
-      ])
-    );
+    const placedVoxel = {
+      x: placement.x,
+      y: placement.y,
+      z: placement.z,
+      kind: "ground" as const
+    };
+    this.addDirtyChunkKeys(this.world.setVoxels([placedVoxel]));
+    this.invalidateFallingClusterLandingCacheForMutations([placedVoxel]);
 
     player.mass -= this.config.placeCost;
   }
@@ -1341,7 +1355,9 @@ export class OutOfBoundsSimulation {
     }
 
     if (landedVoxelsByKey.size > 0) {
-      this.addDirtyChunkKeys(this.world.setVoxels(landedVoxelsByKey.values()));
+      const landedVoxels = [...landedVoxelsByKey.values()];
+      this.addDirtyChunkKeys(this.world.setVoxels(landedVoxels));
+      this.invalidateFallingClusterLandingCacheForMutations(landedVoxels);
     }
 
     if (settledDebrisIds.length > 0) {
@@ -1514,6 +1530,7 @@ export class OutOfBoundsSimulation {
     const explodedVoxels = this.collectEggExplosionVoxels(explosionCenter);
     if (explodedVoxels.length > 0) {
       this.addDirtyChunkKeys(this.world.removeVoxels(explodedVoxels));
+      this.invalidateFallingClusterLandingCacheForMutations(explodedVoxels);
     }
 
     const reservedLandingKeys = new Set<string>();
@@ -1793,8 +1810,8 @@ export class OutOfBoundsSimulation {
       }
 
       cluster.velocityY -= this.config.collapseGravity * dt;
-      const landingDropDistance = this.world.getComponentDropDistance(cluster.voxels);
-      const landingOffsetY = -landingDropDistance;
+      const landingDropDistance = this.getCachedClusterLandingDropDistance(cluster);
+      const landingOffsetY = cluster.cachedLandingOffsetY ?? -landingDropDistance;
       const proposedOffsetY = cluster.offsetY + cluster.velocityY * dt;
       cluster.offsetY = Math.max(proposedOffsetY, landingOffsetY);
 
@@ -1932,6 +1949,7 @@ export class OutOfBoundsSimulation {
     }
 
     this.addDirtyChunkKeys(this.world.removeVoxels(detachedComponents.flatMap((component) => component.voxels)));
+    this.invalidateFallingClusterLandingCacheForMutations(detachedComponents.flatMap((component) => component.voxels));
 
     for (const component of detachedComponents) {
       const cluster = this.createFallingCluster(component);
@@ -1944,31 +1962,37 @@ export class OutOfBoundsSimulation {
   private createFallingCluster(component: DetachedVoxelComponent): SimFallingCluster {
     const clusterId = `collapse-${this.nextFallingClusterId}`;
     this.nextFallingClusterId += 1;
+    const voxels = component.voxels.map((voxel) => ({ ...voxel }));
+    const footprint = this.getClusterFootprint(voxels);
 
     return {
       id: clusterId,
       phase: "warning",
       warningRemaining: this.config.collapseWarningDuration,
-      voxels: component.voxels.map((voxel) => ({ ...voxel })),
+      voxels,
       offsetY: 0,
       velocityY: 0,
-      damagedPlayerIds: new Set()
+      damagedPlayerIds: new Set(),
+      cachedLandingDropDistance: null,
+      cachedLandingOffsetY: null,
+      footprintMinX: footprint.minX,
+      footprintMaxX: footprint.maxX,
+      footprintMinZ: footprint.minZ,
+      footprintMaxZ: footprint.maxZ
     };
   }
 
   private landFallingCluster(cluster: SimFallingCluster, dropDistance: number) {
     this.applyCollapseDamage(cluster);
+    const settledVoxels = cluster.voxels.map((voxel) => ({
+      x: voxel.x,
+      y: voxel.y - dropDistance,
+      z: voxel.z,
+      kind: voxel.kind
+    }));
 
-    this.addDirtyChunkKeys(
-      this.world.setVoxels(
-        cluster.voxels.map((voxel) => ({
-          x: voxel.x,
-          y: voxel.y - dropDistance,
-          z: voxel.z,
-          kind: voxel.kind
-        }))
-      )
-    );
+    this.addDirtyChunkKeys(this.world.setVoxels(settledVoxels));
+    this.invalidateFallingClusterLandingCacheForMutations(settledVoxels);
 
     this.fallingClusters.delete(cluster.id);
     this.invalidateFallingClusterCollection();
@@ -2118,17 +2142,15 @@ export class OutOfBoundsSimulation {
 
   private landSkyDrop(skyDrop: SimSkyDrop) {
     this.applySkyDropDamage(skyDrop);
+    const landedVoxel = {
+      x: skyDrop.landingVoxel.x,
+      y: skyDrop.landingVoxel.y,
+      z: skyDrop.landingVoxel.z,
+      kind: "ground" as const
+    };
 
-    this.addDirtyChunkKeys(
-      this.world.setVoxels([
-        {
-          x: skyDrop.landingVoxel.x,
-          y: skyDrop.landingVoxel.y,
-          z: skyDrop.landingVoxel.z,
-          kind: "ground"
-        }
-      ])
-    );
+    this.addDirtyChunkKeys(this.world.setVoxels([landedVoxel]));
+    this.invalidateFallingClusterLandingCacheForMutations([landedVoxel]);
 
     this.skyDrops.delete(skyDrop.id);
     this.invalidateSkyDropCollection();
@@ -2155,6 +2177,69 @@ export class OutOfBoundsSimulation {
   private addDirtyChunkKeys(chunkKeys: Iterable<string>) {
     for (const chunkKey of chunkKeys) {
       this.dirtyChunkKeys.add(chunkKey);
+    }
+  }
+
+  private getClusterFootprint(voxels: Iterable<Pick<VoxelCell, "x" | "z">>) {
+    let minX = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let minZ = Number.POSITIVE_INFINITY;
+    let maxZ = Number.NEGATIVE_INFINITY;
+
+    for (const voxel of voxels) {
+      minX = Math.min(minX, voxel.x);
+      maxX = Math.max(maxX, voxel.x);
+      minZ = Math.min(minZ, voxel.z);
+      maxZ = Math.max(maxZ, voxel.z);
+    }
+
+    return {
+      minX: Number.isFinite(minX) ? minX : 0,
+      maxX: Number.isFinite(maxX) ? maxX : 0,
+      minZ: Number.isFinite(minZ) ? minZ : 0,
+      maxZ: Number.isFinite(maxZ) ? maxZ : 0
+    };
+  }
+
+  private refreshClusterLandingCache(cluster: SimFallingCluster) {
+    const landingDropDistance = this.world.getComponentDropDistance(cluster.voxels);
+    cluster.cachedLandingDropDistance = landingDropDistance;
+    cluster.cachedLandingOffsetY = -landingDropDistance;
+    return landingDropDistance;
+  }
+
+  private getCachedClusterLandingDropDistance(cluster: SimFallingCluster) {
+    if (cluster.cachedLandingDropDistance === null) {
+      return this.refreshClusterLandingCache(cluster);
+    }
+
+    return cluster.cachedLandingDropDistance;
+  }
+
+  private invalidateFallingClusterLandingCacheForMutations(mutatedVoxels: Iterable<Pick<VoxelCell, "x" | "z">>) {
+    const mutations = [...mutatedVoxels];
+    if (mutations.length === 0 || this.fallingClusters.size === 0) {
+      return;
+    }
+
+    for (const cluster of this.fallingClusters.values()) {
+      if (cluster.phase !== "falling") {
+        continue;
+      }
+
+      const overlapsMutation = mutations.some(
+        (voxel) =>
+          voxel.x >= cluster.footprintMinX &&
+          voxel.x <= cluster.footprintMaxX &&
+          voxel.z >= cluster.footprintMinZ &&
+          voxel.z <= cluster.footprintMaxZ
+      );
+      if (!overlapsMutation) {
+        continue;
+      }
+
+      cluster.cachedLandingDropDistance = null;
+      cluster.cachedLandingOffsetY = null;
     }
   }
 

@@ -13,12 +13,21 @@ import { sharedVoxelGeometry } from "../game/voxelMaterials";
 import type { VoxelInteractPayload } from "./VoxelWorld";
 import { StaticInstancedMesh, type StaticInstanceTransform } from "./StaticInstancedMesh";
 
+export type WorldPropsUpdateMode = "editor-live" | "runtime-static";
+
 interface WorldPropsLayerProps {
   world: MutableVoxelWorld;
   revision: number;
+  updateMode?: WorldPropsUpdateMode;
   editable?: boolean;
   decorationDensity?: number;
   onInteract?: (payload: VoxelInteractPayload) => void;
+}
+
+interface WorldPropsRenderState {
+  instancedPropMatrices: ReturnType<typeof buildTreeMatrices>;
+  nestMatrices: ReturnType<typeof buildNestMatrices>;
+  decorationMatrices: ReturnType<typeof buildDecorationMatrices>;
 }
 
 const nestTwigGeometry = new THREE.BoxGeometry(0.5, 0.12, 0.16);
@@ -219,21 +228,102 @@ const buildDecorationMatrices = (decorations: SurfaceDecoration[]) => {
   };
 };
 
+export const createWorldPropsRenderState = (
+  world: MutableVoxelWorld,
+  decorationDensity: number
+): WorldPropsRenderState => {
+  const props = world.listProps();
+  const decorations = filterDecorationsByDensity(buildSurfaceDecorations(world), decorationDensity);
+
+  return {
+    instancedPropMatrices: buildTreeMatrices(props),
+    nestMatrices: buildNestMatrices(world),
+    decorationMatrices: buildDecorationMatrices(decorations)
+  };
+};
+
 export function WorldPropsLayer({
   world,
   revision,
+  updateMode = "editor-live",
   editable = false,
   decorationDensity = 1,
   onInteract
 }: WorldPropsLayerProps) {
-  const props = useMemo(() => world.listProps(), [revision, world]);
-  const instancedPropMatrices = useMemo(() => buildTreeMatrices(props), [props]);
-  const nestMatrices = useMemo(() => buildNestMatrices(world), [revision, world]);
-  const decorations = useMemo(
-    () => filterDecorationsByDensity(buildSurfaceDecorations(world), decorationDensity),
+  if (updateMode === "runtime-static") {
+    return (
+      <RuntimeStaticWorldPropsLayer
+        decorationDensity={decorationDensity}
+        editable={editable}
+        onInteract={onInteract}
+        revision={revision}
+        world={world}
+      />
+    );
+  }
+
+  return (
+    <EditorLiveWorldPropsLayer
+      decorationDensity={decorationDensity}
+      editable={editable}
+      onInteract={onInteract}
+      revision={revision}
+      world={world}
+    />
+  );
+}
+
+function RuntimeStaticWorldPropsLayer({
+  world,
+  revision,
+  editable,
+  decorationDensity,
+  onInteract
+}: WorldPropsLayerProps) {
+  const runtimeStaticRenderState = useMemo(
+    () => createWorldPropsRenderState(world, decorationDensity),
+    [decorationDensity, world]
+  );
+
+  return (
+    <WorldPropsMeshes
+      editable={editable}
+      onInteract={onInteract}
+      renderState={runtimeStaticRenderState}
+    />
+  );
+}
+
+function EditorLiveWorldPropsLayer({
+  world,
+  revision,
+  editable,
+  decorationDensity,
+  onInteract
+}: WorldPropsLayerProps) {
+  const renderState = useMemo(
+    () => createWorldPropsRenderState(world, decorationDensity),
     [decorationDensity, revision, world]
   );
-  const decorationMatrices = useMemo(() => buildDecorationMatrices(decorations), [decorations]);
+ 
+  return (
+    <WorldPropsMeshes
+      editable={editable}
+      onInteract={onInteract}
+      renderState={renderState}
+    />
+  );
+}
+
+function WorldPropsMeshes({
+  editable,
+  onInteract,
+  renderState
+}: {
+  editable: boolean;
+  onInteract?: (payload: VoxelInteractPayload) => void;
+  renderState: WorldPropsRenderState;
+}) {
   const handleInstancedPropInteract = useMemo(
     () =>
       editable && onInteract
@@ -248,7 +338,7 @@ export function WorldPropsLayer({
         castShadow
         geometry={sharedVoxelGeometry}
         material={propMaterials.bark}
-        matrices={instancedPropMatrices.barkMatrices}
+        matrices={renderState.instancedPropMatrices.barkMatrices}
         onPointerDown={handleInstancedPropInteract}
         receiveShadow
       />
@@ -256,49 +346,49 @@ export function WorldPropsLayer({
         castShadow
         geometry={sharedVoxelGeometry}
         material={propMaterials.leaves}
-        matrices={instancedPropMatrices.leafMatrices}
+        matrices={renderState.instancedPropMatrices.leafMatrices}
         onPointerDown={handleInstancedPropInteract}
         receiveShadow
       />
       <StaticInstancedMesh
         geometry={nestTwigGeometry}
         material={propMaterials.nest}
-        matrices={nestMatrices.twigMatrices}
+        matrices={renderState.nestMatrices.twigMatrices}
       />
       <StaticInstancedMesh
         geometry={nestEggGeometry}
         material={propMaterials.egg}
-        matrices={nestMatrices.eggMatrices}
+        matrices={renderState.nestMatrices.eggMatrices}
       />
       <StaticInstancedMesh
         geometry={grassBladeGeometry}
         material={propMaterials.grass}
-        matrices={decorationMatrices.grassMatrices}
+        matrices={renderState.decorationMatrices.grassMatrices}
       />
       <StaticInstancedMesh
         geometry={flowerStemGeometry}
         material={propMaterials.stem}
-        matrices={decorationMatrices.flowerStemMatrices}
+        matrices={renderState.decorationMatrices.flowerStemMatrices}
       />
       <StaticInstancedMesh
         geometry={flowerPetalGeometry}
         material={propMaterials.flowerYellow}
-        matrices={decorationMatrices.flowerYellowPetalMatrices}
+        matrices={renderState.decorationMatrices.flowerYellowPetalMatrices}
       />
       <StaticInstancedMesh
         geometry={flowerPetalGeometry}
         material={propMaterials.flowerPink}
-        matrices={decorationMatrices.flowerPinkPetalMatrices}
+        matrices={renderState.decorationMatrices.flowerPinkPetalMatrices}
       />
       <StaticInstancedMesh
         geometry={flowerPetalGeometry}
         material={propMaterials.flowerWhite}
-        matrices={decorationMatrices.flowerWhitePetalMatrices}
+        matrices={renderState.decorationMatrices.flowerWhitePetalMatrices}
       />
       <StaticInstancedMesh
         geometry={flowerCenterGeometry}
         material={propMaterials.egg}
-        matrices={decorationMatrices.flowerCenterMatrices}
+        matrices={renderState.decorationMatrices.flowerCenterMatrices}
       />
     </group>
   );

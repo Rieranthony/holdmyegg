@@ -63,6 +63,13 @@ interface RuntimePhaseDiagnostics extends SimulationPerformanceDiagnostics {
   dirtyChunkCallbackMs: number;
 }
 
+interface FixedStepCatchUpResult {
+  accumulator: number;
+  droppedMs: number;
+  clamped: boolean;
+  stepsToRun: number;
+}
+
 const emptyTerrainStats = (): TerrainRenderStats => ({
   chunkCount: 0,
   frustumVisibleChunkCount: 0,
@@ -80,8 +87,14 @@ const emptyRuntimePhaseDiagnostics = (): RuntimePhaseDiagnostics => ({
   skyDropLandingMs: 0,
   detachedComponentMs: 0,
   fallingClusterLandingMs: 0,
+  fixedStepMaxStepsPerFrame: 0,
+  fixedStepClampedFrames: 0,
+  fixedStepDroppedMs: 0,
   dirtyChunkCallbackMs: 0
 });
+
+const MAX_FIXED_STEPS_PER_FRAME = 5;
+const MAX_FRAME_DELTA_SECONDS = 0.1;
 
 const mergeRuntimePhaseDiagnostics = (
   target: RuntimePhaseDiagnostics,
@@ -91,6 +104,38 @@ const mergeRuntimePhaseDiagnostics = (
   target.skyDropLandingMs = Math.max(target.skyDropLandingMs, source.skyDropLandingMs);
   target.detachedComponentMs = Math.max(target.detachedComponentMs, source.detachedComponentMs);
   target.fallingClusterLandingMs = Math.max(target.fallingClusterLandingMs, source.fallingClusterLandingMs);
+  target.fixedStepMaxStepsPerFrame = Math.max(target.fixedStepMaxStepsPerFrame, source.fixedStepMaxStepsPerFrame);
+  target.fixedStepClampedFrames += source.fixedStepClampedFrames;
+  target.fixedStepDroppedMs += source.fixedStepDroppedMs;
+};
+
+export const resolveFixedStepCatchUp = (
+  accumulator: number,
+  delta: number,
+  step: number,
+  maxStepsPerFrame = MAX_FIXED_STEPS_PER_FRAME,
+  maxDeltaSeconds = MAX_FRAME_DELTA_SECONDS
+): FixedStepCatchUpResult => {
+  const boundedDelta = Math.min(delta, maxDeltaSeconds);
+  const nextAccumulator = accumulator + boundedDelta;
+  const availableSteps = Math.floor(nextAccumulator / step);
+
+  if (availableSteps <= maxStepsPerFrame) {
+    return {
+      accumulator: nextAccumulator - availableSteps * step,
+      droppedMs: 0,
+      clamped: false,
+      stepsToRun: availableSteps
+    };
+  }
+
+  const remainder = nextAccumulator - availableSteps * step;
+  return {
+    accumulator: remainder,
+    droppedMs: (availableSteps - maxStepsPerFrame) * step * 1000,
+    clamped: true,
+    stepsToRun: maxStepsPerFrame
+  };
 };
 
 const consumeRuntimePhaseDiagnostics = (ref: MutableRefObject<RuntimePhaseDiagnostics>) => {
@@ -335,6 +380,7 @@ export function GameCanvas({
           decorationDensity={qualityProfile.decorationDensity}
           world={world}
           revision={revision}
+          updateMode={isEditor ? "editor-live" : "runtime-static"}
           editable={isEditor}
           onInteract={onEditorInteract}
         />
@@ -456,9 +502,21 @@ function GameLoop({
     }
 
     const step = 1 / runtime.config.tickRate;
-    accumulatorRef.current += Math.min(delta, 0.1);
+    const catchUp = resolveFixedStepCatchUp(accumulatorRef.current, delta, step);
+    accumulatorRef.current = catchUp.accumulator;
 
-    while (accumulatorRef.current >= step) {
+    if (catchUp.stepsToRun > 0) {
+      runtimePhaseDiagnosticsRef.current.fixedStepMaxStepsPerFrame = Math.max(
+        runtimePhaseDiagnosticsRef.current.fixedStepMaxStepsPerFrame,
+        catchUp.stepsToRun
+      );
+    }
+    if (catchUp.clamped) {
+      runtimePhaseDiagnosticsRef.current.fixedStepClampedFrames += 1;
+      runtimePhaseDiagnosticsRef.current.fixedStepDroppedMs += catchUp.droppedMs;
+    }
+
+    for (let stepIndex = 0; stepIndex < catchUp.stepsToRun; stepIndex += 1) {
       const localPlayerId = runtime.getLocalPlayerId();
       const command = buildPlayerCommand(keyboardRef.current, cameraForwardRef.current);
       const focusState = focusStateRef.current;
@@ -482,7 +540,6 @@ function GameLoop({
       mergeRuntimePhaseDiagnostics(runtimePhaseDiagnosticsRef.current, runtime.consumePerformanceDiagnostics());
       keyboardRef.current.jumpPressed = false;
       keyboardRef.current.jumpReleased = false;
-      accumulatorRef.current -= step;
     }
 
     const terrainRevision = runtime.getWorld().getTerrainRevision();
@@ -834,6 +891,9 @@ function DevPerformanceOverlay({
       <p>Collapse Scan {frameDiagnostics.runtime.detachedComponentMs.toFixed(2)}ms</p>
       <p>Cluster Landing {frameDiagnostics.runtime.fallingClusterLandingMs.toFixed(2)}ms</p>
       <p>Terrain Sync {frameDiagnostics.runtime.dirtyChunkCallbackMs.toFixed(2)}ms</p>
+      <p>Catch-up Max {frameDiagnostics.runtime.fixedStepMaxStepsPerFrame.toLocaleString()}</p>
+      <p>Catch-up Clamps {frameDiagnostics.runtime.fixedStepClampedFrames.toLocaleString()}</p>
+      <p>Catch-up Dropped {frameDiagnostics.runtime.fixedStepDroppedMs.toFixed(2)}ms</p>
     </div>
   );
 }
