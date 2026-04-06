@@ -7,12 +7,12 @@ export const eggVisualDefaults = {
   baseScaleX: 0.82,
   baseScaleY: 1.08,
   baseScaleZ: 0.82,
-  jiggleAmplitudeMin: 0.012,
-  jiggleAmplitudeMax: 0.085,
+  jiggleAmplitudeMin: 0.018,
+  jiggleAmplitudeMax: 0.11,
   jiggleSpeedMin: 10,
-  jiggleSpeedMax: 28,
+  jiggleSpeedMax: 34,
   emissiveMin: 0.08,
-  emissiveMax: 0.95,
+  emissiveMax: 1.18,
   coolColor: "#fff0d9",
   hotColor: "#ff4f3d"
 } as const;
@@ -56,24 +56,28 @@ export const getEggVisualState = (
   const jigglePhase = elapsedTime * jiggleSpeed + seed;
   const jiggleY = Math.sin(jigglePhase) * jiggleAmplitude;
   const travelYaw = planarSpeed > 0.001 ? Math.atan2(egg.velocity.x, egg.velocity.z) : seed * Math.PI * 2;
-  const rollAngle = elapsedTime * (2.2 + planarSpeed * 5.4) + seed * Math.PI * 4;
+  const rollAngle = elapsedTime * (3.1 + planarSpeed * 6.6) + seed * Math.PI * 4;
   const groundRollAlpha = clamp(planarSpeed / 6.4, 0, 1) * clamp(1 - Math.abs(egg.velocity.y) / 2.2, 0, 1);
   const airTiltAlpha = clamp(Math.abs(egg.velocity.y) / 8.5, 0, 1);
-  const wobble = Math.sin(elapsedTime * 7.8 + seed * 12) * Math.min(0.16, totalSpeed * 0.02);
-  const stretchAlpha = clamp(totalSpeed / 13, 0, 1);
+  const wobble = Math.sin(elapsedTime * 8.8 + seed * 12) * Math.min(0.24, totalSpeed * 0.026);
+  const stretchAlpha = clamp(totalSpeed / 11.5, 0, 1);
+  const pulseAlpha = Math.sin(fuseProgress * Math.PI) * fuseProgress;
 
   return {
     jiggleY,
-    scaleX: eggVisualDefaults.baseScaleX + fuseProgress * 0.08 + stretchAlpha * 0.04 + groundRollAlpha * 0.08,
+    scaleX:
+      eggVisualDefaults.baseScaleX + fuseProgress * 0.1 + stretchAlpha * 0.08 + groundRollAlpha * 0.1 + pulseAlpha * 0.04,
     scaleY:
       eggVisualDefaults.baseScaleY -
-      Math.abs(Math.sin(jigglePhase)) * 0.12 -
-      groundRollAlpha * 0.08 -
-      stretchAlpha * 0.03,
-    scaleZ: eggVisualDefaults.baseScaleZ + fuseProgress * 0.08 + stretchAlpha * 0.04 + groundRollAlpha * 0.08,
-    rotationX: Math.cos(travelYaw) * rollAngle + airTiltAlpha * 0.16,
-    rotationY: travelYaw + wobble,
-    rotationZ: -Math.sin(travelYaw) * rollAngle + wobble * 0.4,
+      Math.abs(Math.sin(jigglePhase)) * 0.16 -
+      groundRollAlpha * 0.1 -
+      stretchAlpha * 0.06 -
+      pulseAlpha * 0.03,
+    scaleZ:
+      eggVisualDefaults.baseScaleZ + fuseProgress * 0.1 + stretchAlpha * 0.08 + groundRollAlpha * 0.1 + pulseAlpha * 0.04,
+    rotationX: Math.cos(travelYaw) * rollAngle + airTiltAlpha * 0.24 + wobble * 0.18,
+    rotationY: travelYaw + wobble * 1.3,
+    rotationZ: -Math.sin(travelYaw) * rollAngle + wobble * 0.75,
     heatAlpha: fuseProgress,
     emissiveIntensity: lerp(eggVisualDefaults.emissiveMin, eggVisualDefaults.emissiveMax, fuseProgress)
   };

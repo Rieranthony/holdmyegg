@@ -37,6 +37,7 @@ import { getPlayerBlobShadowState } from "../game/cheapShadows";
 import { createChickenAvatarRig, type ChickenAvatarRig } from "../game/chickenModel";
 import { getChickenPalette, type ChickenPaletteName } from "../game/colors";
 import { getEggVisualState } from "../game/eggs";
+import { detectEggLaunchPlatform, isEggLaunchKeyCode } from "../game/eggLaunchControls";
 import { getFallingClusterVisualState } from "../game/fallingClusters";
 import { buildPlayerCommand, initialKeyboardInputState, type KeyboardInputState } from "../game/input";
 import { configureDynamicInstancedMesh, finalizeDynamicInstancedMesh, finalizeStaticInstancedMesh } from "../game/instancedMeshes";
@@ -228,9 +229,9 @@ const MAX_EGG_SCATTER_INSTANCES_PER_PROFILE = 64;
 const MAX_HARVEST_BURST_INSTANCES_PER_PROFILE = 128;
 const MAX_EGG_EXPLOSION_BURST_INSTANCES = 512;
 const MAX_EGG_EXPLOSION_SHOCKWAVE_INSTANCES = 32;
-const EGG_TRAJECTORY_MAX_POINTS = 40;
-const EGG_TRAJECTORY_TIME_STEP = 0.055;
-const EGG_TRAJECTORY_MAX_DURATION = 1.9;
+const EGG_TRAJECTORY_MAX_POINTS = 56;
+const EGG_TRAJECTORY_TIME_STEP = 0.05;
+const EGG_TRAJECTORY_MAX_DURATION = 2.55;
 const PLAYER_DETAIL_DISTANCE = 18;
 const SPEED_TRACE_DEPTH = 2.4;
 const SPEED_TRACE_PUSH_BURST_DURATION = 0.2;
@@ -421,17 +422,18 @@ const createEggTrajectoryPreview = (maxPoints: number): EggTrajectoryPreviewReso
   geometry.setAttribute("position", positionAttribute);
   geometry.setDrawRange(0, 0);
   const material = new THREE.LineBasicMaterial({
-    color: "#fff6c4",
+    color: "#fff8d6",
     transparent: true,
     opacity: 0.92,
+    blending: THREE.AdditiveBlending,
     toneMapped: false
   });
   const line = new THREE.Line(geometry, material);
   line.frustumCulled = false;
 
-  const landingGeometry = new THREE.RingGeometry(0.3, 0.44, 24);
+  const landingGeometry = new THREE.RingGeometry(0.34, 0.54, 28);
   const landingMaterial = new THREE.MeshBasicMaterial({
-    color: "#ffd965",
+    color: "#ffe07f",
     transparent: true,
     opacity: 0.82,
     side: THREE.DoubleSide,
@@ -629,6 +631,7 @@ export class GameClient {
   private readonly playerVisuals = new Map<string, PlayerVisual>();
   private readonly eggVisuals = new Map<string, EggVisual>();
   private readonly eggScatterMeshes = new Map<BlockRenderProfile, THREE.InstancedMesh>();
+  private readonly eggLaunchPlatform = detectEggLaunchPlatform();
   private readonly harvestBurstMeshes = new Map<BlockRenderProfile, DynamicOpacityMeshResource>();
   private readonly skyDropVisuals = new Map<string, SkyDropVisual>();
   private readonly clusterVisuals = new Map<string, ClusterVisual>();
@@ -1005,7 +1008,7 @@ export class GameClient {
     this.eggExplosionShockwaveMesh = createDynamicOpacityMeshResource(
       MAX_EGG_EXPLOSION_SHOCKWAVE_INSTANCES,
       new THREE.MeshBasicMaterial({
-        color: "#ffe49a",
+        color: "#fff0be",
         opacity: 1,
         transparent: true,
         side: THREE.DoubleSide,
@@ -1013,7 +1016,7 @@ export class GameClient {
         depthWrite: false,
         toneMapped: false
       }),
-      new THREE.RingGeometry(0.6, 0.86, 24)
+      new THREE.RingGeometry(0.72, 1.16, 32)
     );
     this.voxelFxDisposables.push(...this.eggExplosionShockwaveMesh.materials);
     this.voxelFxGeometries.push(this.eggExplosionShockwaveMesh.geometry);
@@ -1606,7 +1609,7 @@ export class GameClient {
 
     this.eggTrajectoryPreview.positionAttribute.needsUpdate = true;
     this.eggTrajectoryPreview.geometry.setDrawRange(0, pointCount);
-    this.eggTrajectoryPreview.material.opacity = 0.62 + this.eggChargeState.chargeAlpha * 0.28;
+    this.eggTrajectoryPreview.material.opacity = 0.72 + this.eggChargeState.chargeAlpha * 0.24;
     this.eggTrajectoryPreview.group.visible = pointCount > 1;
 
     if (!landingPoint) {
@@ -1617,9 +1620,9 @@ export class GameClient {
     this.eggTrajectoryPreview.landingRing.visible = true;
     this.eggTrajectoryPreview.landingRing.position.copy(landingPoint);
     this.eggTrajectoryPreview.landingRing.position.y += 0.04;
-    this.eggTrajectoryPreview.landingMaterial.opacity = 0.48 + this.eggChargeState.chargeAlpha * 0.24;
+    this.eggTrajectoryPreview.landingMaterial.opacity = 0.58 + this.eggChargeState.chargeAlpha * 0.24;
     this.eggTrajectoryPreview.landingRing.scale.setScalar(
-      (0.92 + this.eggChargeState.chargeAlpha * 0.72) * (1 + Math.sin(elapsedTime * 10.4) * 0.08)
+      (1.08 + this.eggChargeState.chargeAlpha * 0.9) * (1 + Math.sin(elapsedTime * 10.4) * 0.1)
     );
   }
 
@@ -1639,6 +1642,23 @@ export class GameClient {
 
   private readonly handleKeyDown = (event: KeyboardEvent) => {
     if (isFormElement(event.target)) {
+      return;
+    }
+
+    if (isEggLaunchKeyCode(event.code, this.eggLaunchPlatform)) {
+      event.preventDefault();
+      if (this.keyboardState.egg) {
+        return;
+      }
+      this.keyboardState.egg = true;
+      if (
+        isRuntimeMode(this.mode) &&
+        this.pointerLocked &&
+        !this.runtimePaused &&
+        this.canStartGroundEggCharge(this.getLocalRuntimePlayer())
+      ) {
+        this.beginEggCharge();
+      }
       return;
     }
 
@@ -1672,24 +1692,19 @@ export class GameClient {
       case "KeyF":
         this.keyboardState.push = true;
         break;
-      case "KeyQ":
-        if (this.keyboardState.egg) {
-          break;
-        }
-        this.keyboardState.egg = true;
-        if (
-          isRuntimeMode(this.mode) &&
-          this.pointerLocked &&
-          !this.runtimePaused &&
-          this.canStartGroundEggCharge(this.getLocalRuntimePlayer())
-        ) {
-          this.beginEggCharge();
-        }
-        break;
     }
   };
 
   private readonly handleKeyUp = (event: KeyboardEvent) => {
+    if (isEggLaunchKeyCode(event.code, this.eggLaunchPlatform)) {
+      event.preventDefault();
+      this.keyboardState.egg = false;
+      if (this.eggChargeState.active) {
+        this.queueGroundEggThrow();
+      }
+      return;
+    }
+
     switch (event.code) {
       case "KeyW":
       case "ArrowUp":
@@ -1719,12 +1734,6 @@ export class GameClient {
       case "KeyF":
         this.keyboardState.push = false;
         break;
-      case "KeyQ":
-        this.keyboardState.egg = false;
-        if (this.eggChargeState.active) {
-          this.queueGroundEggThrow();
-        }
-        break;
     }
   };
 
@@ -1735,6 +1744,8 @@ export class GameClient {
     if (isRuntimeMode(this.mode)) {
       if (!locked) {
         this.pendingResumeAfterPointerLock = false;
+        this.keyboardState.egg = false;
+        this.previousEggPressed = false;
         this.cancelEggCharge();
         this.setRuntimePaused(true);
         return;
@@ -1753,6 +1764,8 @@ export class GameClient {
   setRuntimePaused(paused: boolean) {
     this.runtimePaused = paused;
     if (paused) {
+      this.keyboardState.egg = false;
+      this.previousEggPressed = false;
       this.cancelEggCharge();
     }
     this.worker.postMessage({

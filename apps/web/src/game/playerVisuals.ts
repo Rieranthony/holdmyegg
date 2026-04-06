@@ -78,21 +78,21 @@ const LANDING_FEATHER_SWING = 0.09;
 const PLAYER_STATUS_INVULNERABLE_PULSE_SPEED = 18;
 const PLAYER_STATUS_INVULNERABLE_OPACITY_MIN = 0.68;
 const PLAYER_STATUS_INVULNERABLE_OPACITY_MAX = 1.18;
-const EGG_CHARGE_BODY_PITCH = 0.16;
-const EGG_CHARGE_BODY_ROLL = 0.24;
-const EGG_CHARGE_BODY_YAW = 0.06;
-const EGG_CHARGE_HEAD_YAW = 0.14;
-const EGG_CHARGE_HEAD_PITCH = 0.04;
-const EGG_CHARGE_FORWARD_OFFSET = 0.07;
-const EGG_CHARGE_WING_OFFSET = 0.08;
-const EGG_CHARGE_RIGHT_WING_BOOST = 0.56;
-const EGG_CHARGE_LEFT_WING_BOOST = 0.12;
-const EGG_CHARGE_WING_SPAN_BOOST = 0.08;
-const EGG_RELEASE_FOLLOW_THROUGH_DURATION = 0.18;
-const EGG_RELEASE_BODY_PITCH = 0.14;
-const EGG_RELEASE_BODY_ROLL = 0.18;
-const EGG_RELEASE_FORWARD_OFFSET = 0.11;
-const EGG_RELEASE_HEAD_YAW = 0.08;
+const EGG_CHARGE_BODY_PITCH = 0.26;
+const EGG_CHARGE_BODY_ROLL = 0.34;
+const EGG_CHARGE_BODY_YAW = 0.12;
+const EGG_CHARGE_HEAD_YAW = 0.22;
+const EGG_CHARGE_HEAD_PITCH = 0.1;
+const EGG_CHARGE_FORWARD_OFFSET = 0.13;
+const EGG_CHARGE_WING_OFFSET = 0.18;
+const EGG_CHARGE_RIGHT_WING_BOOST = 0.82;
+const EGG_CHARGE_LEFT_WING_BOOST = 0.2;
+const EGG_CHARGE_WING_SPAN_BOOST = 0.18;
+const EGG_RELEASE_FOLLOW_THROUGH_DURATION = 0.24;
+const EGG_RELEASE_BODY_PITCH = 0.28;
+const EGG_RELEASE_BODY_ROLL = 0.28;
+const EGG_RELEASE_FORWARD_OFFSET = 0.18;
+const EGG_RELEASE_HEAD_YAW = 0.14;
 
 export interface ChickenFeatherOffset {
   x: number;
@@ -440,14 +440,14 @@ export const getChickenWingVisualState = ({
       leftWingAngle: clampWingAngle(
         FOLDED_WING_ANGLE +
           chargeAlpha * EGG_CHARGE_LEFT_WING_BOOST +
-          releasePulse * 0.08
+          releasePulse * 0.12
       ),
       rightWingAngle: clampWingAngle(
         FOLDED_WING_ANGLE +
           chargeAlpha * EGG_CHARGE_RIGHT_WING_BOOST +
-          releasePulse * 0.12
+          releasePulse * 0.28
       ),
-      wingSpanScale: 1 + chargeAlpha * EGG_CHARGE_WING_SPAN_BOOST + releasePulse * 0.04,
+      wingSpanScale: 1 + chargeAlpha * EGG_CHARGE_WING_SPAN_BOOST + releasePulse * 0.08,
       traceIntensity: 0,
       traceLength: 0,
       motion: "folded"

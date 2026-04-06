@@ -2,6 +2,7 @@ import type { SimulationConfig, Vector2, Vector3 } from "./types";
 
 const GROUNDED_EGG_LAUNCH_PITCH_SCALE = 0.68;
 const GROUNDED_EGG_LAUNCH_PITCH_MAX = (78 * Math.PI) / 180;
+const GROUNDED_EGG_CHARGE_LIFT_BOOST = (8 * Math.PI) / 180;
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 const lerp = (start: number, end: number, alpha: number) => start + (end - start) * alpha;
@@ -16,10 +17,13 @@ export const getGroundedEggThrowSpeed = (
 
 export const getGroundedEggLaunchPitch = (
   cameraPitch: number,
+  eggCharge: number,
   config: Pick<SimulationConfig, "eggThrowPitchLiftBias" | "eggThrowPitchLiftMin">
 ) =>
   clamp(
-    config.eggThrowPitchLiftBias + cameraPitch * GROUNDED_EGG_LAUNCH_PITCH_SCALE,
+    config.eggThrowPitchLiftBias +
+      cameraPitch * GROUNDED_EGG_LAUNCH_PITCH_SCALE +
+      clamp(eggCharge, 0, 1) * GROUNDED_EGG_CHARGE_LIFT_BOOST,
     config.eggThrowPitchLiftMin,
     GROUNDED_EGG_LAUNCH_PITCH_MAX
   );
@@ -41,7 +45,7 @@ export const getGroundedEggLaunchVelocity = ({
   >;
 }): Vector3 => {
   const speed = getGroundedEggThrowSpeed(config, eggCharge);
-  const launchPitch = getGroundedEggLaunchPitch(cameraPitch, config);
+  const launchPitch = getGroundedEggLaunchPitch(cameraPitch, eggCharge, config);
   const planarSpeed = Math.cos(launchPitch) * speed;
   return {
     x: playerVelocity.x + facing.x * planarSpeed,

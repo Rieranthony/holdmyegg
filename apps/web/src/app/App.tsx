@@ -15,7 +15,7 @@ import { preloadGameCanvas } from "../components/GameCanvasBoundary";
 import { Hud } from "../components/Hud";
 import {
   ShortcutLegend,
-  runtimeShortcutBindings,
+  getRuntimeShortcutBindings,
 } from "../components/ShortcutLegend";
 import { GameHost, type GameHostHandle } from "../engine/GameHost";
 import {
@@ -987,7 +987,7 @@ function RulesAndControlsScreen({ onBack }: { onBack: () => void }) {
             <h2>Controls</h2>
             <p>Shortcuts are the same in Explore and Brawl.</p>
           </div>
-          <ShortcutLegend bindings={runtimeShortcutBindings} />
+          <ShortcutLegend bindings={getRuntimeShortcutBindings()} />
         </section>
 
         <div className="rules-screen__detail-grid">
@@ -1150,7 +1150,7 @@ function RuntimePauseOverlay({
         <div className="runtime-pause-strip__commands-shell">
           <p className="runtime-pause-strip__label">Commands</p>
           <ShortcutLegend
-            bindings={runtimeShortcutBindings}
+            bindings={getRuntimeShortcutBindings()}
             className="runtime-pause-strip__commands"
             variant="pause"
           />

@@ -67,7 +67,7 @@ describe("voxelFx", () => {
     expect(getVoxelBurstParticleCount(harvestBurst)).toBeLessThan(getVoxelBurstParticleCount(eggBurst));
     expect(eggDistance).toBeGreaterThan(harvestDistance);
     expect(harvestParticle.scale).toBeLessThan(0.16);
-    expect(eggParticle.scale).toBeLessThan(0.26);
+    expect(eggParticle.scale).toBeLessThan(0.36);
     expect(harvestParticle.opacity).toBeGreaterThan(0);
     expect(harvestParticle.opacity).toBeLessThan(1);
     expect(eggParticle.opacity).toBeGreaterThan(0);
@@ -85,7 +85,7 @@ describe("voxelFx", () => {
     });
 
     expect(eggShockwave).not.toBeNull();
-    expect(eggShockwave?.scale).toBeGreaterThan(0.55);
+    expect(eggShockwave?.scale).toBeGreaterThan(0.7);
     expect(eggShockwave?.opacity).toBeGreaterThan(0);
     expect(
       getVoxelBurstShockwaveState({

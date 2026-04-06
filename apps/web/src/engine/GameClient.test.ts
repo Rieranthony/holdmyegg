@@ -123,6 +123,13 @@ const setPointerLockElement = (element: Element | null) => {
   });
 };
 
+const setNavigatorPlatform = (platform: string) => {
+  Object.defineProperty(window.navigator, "platform", {
+    configurable: true,
+    value: platform
+  });
+};
+
 describe("GameClient", () => {
   beforeEach(() => {
     MockWorker.instances.length = 0;
@@ -139,6 +146,7 @@ describe("GameClient", () => {
     );
     vi.stubGlobal("cancelAnimationFrame", vi.fn());
     setPointerLockElement(null);
+    setNavigatorPlatform("MacIntel");
   });
 
   it("boots the worker, sizes the renderer, and forwards worker callback messages", () => {
@@ -976,7 +984,8 @@ describe("GameClient", () => {
     expect(visual).toBeDefined();
     expect(visual.group.children).toHaveLength(3);
     expect(visual.material.map).toBe(propMaterials.egg.map);
-    expect(visual.group.scale.y).toBeGreaterThan(1);
+    expect(visual.group.scale.x).toBeGreaterThan(0.85);
+    expect(visual.group.scale.y).toBeGreaterThan(0.8);
 
     client.dispose();
   });
@@ -1140,6 +1149,74 @@ describe("GameClient", () => {
     expect(preview.landingRing.visible).toBe(false);
 
     client.dispose();
+  });
+
+  it("binds egg charging to the platform modifier key while keeping the grounded launch flow", () => {
+    setNavigatorPlatform("MacIntel");
+    const macClient = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 33
+    });
+
+    (macClient as any).pointerLocked = true;
+    (macClient as any).runtimePaused = false;
+    (macClient as any).getLocalRuntimePlayer = () => ({
+      alive: true,
+      grounded: true,
+      stunRemaining: 0,
+      spacePhase: "none"
+    });
+
+    const macPreventDefault = vi.fn();
+    (macClient as any).handleKeyDown({
+      code: "MetaLeft",
+      preventDefault: macPreventDefault,
+      target: window
+    });
+
+    expect(macPreventDefault).toHaveBeenCalled();
+    expect((macClient as any).keyboardState.egg).toBe(true);
+    expect((macClient as any).eggChargeState.active).toBe(true);
+
+    const macReleaseDefault = vi.fn();
+    (macClient as any).handleKeyUp({
+      code: "MetaLeft",
+      preventDefault: macReleaseDefault
+    });
+
+    expect(macReleaseDefault).toHaveBeenCalled();
+    expect((macClient as any).keyboardState.egg).toBe(false);
+    expect((macClient as any).eggChargeState.pendingThrow).toBe(true);
+
+    macClient.dispose();
+
+    setNavigatorPlatform("Win32");
+    const windowsClient = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 34
+    });
+
+    (windowsClient as any).pointerLocked = true;
+    (windowsClient as any).runtimePaused = false;
+    (windowsClient as any).getLocalRuntimePlayer = () => ({
+      alive: true,
+      grounded: true,
+      stunRemaining: 0,
+      spacePhase: "none"
+    });
+
+    (windowsClient as any).handleKeyDown({
+      code: "ControlLeft",
+      preventDefault: vi.fn(),
+      target: window
+    });
+    expect((windowsClient as any).eggChargeState.active).toBe(true);
+
+    windowsClient.dispose();
   });
 
   it("applies the egg launch telegraph only to the local chicken while charging", () => {

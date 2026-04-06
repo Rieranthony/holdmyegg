@@ -52,7 +52,7 @@ export interface VoxelBurstShockwaveState {
 }
 
 export const voxelBurstParticleCountByStyle = {
-  eggExplosion: 84,
+  eggExplosion: 132,
   harvest: 7
 } as const;
 
@@ -104,27 +104,27 @@ export const getVoxelBurstParticleState = (
 
   if (burst.style === "eggExplosion") {
     const burstBand = particleIndex % 4;
-    const bandDistanceStart = [0.06, 0.18, 0.34, 0.5][burstBand]!;
-    const bandDistanceEnd = [1.16, 1.56, 1.94, 2.34][burstBand]!;
-    const bandLift = [1.02, 1.28, 1.52, 0.82][burstBand]!;
-    const bandScaleStart = [0.36, 0.3, 0.22, 0.16][burstBand]!;
+    const bandDistanceStart = [0.08, 0.22, 0.42, 0.62][burstBand]!;
+    const bandDistanceEnd = [1.34, 1.86, 2.36, 2.92][burstBand]!;
+    const bandLift = [1.18, 1.54, 1.92, 1.08][burstBand]!;
+    const bandScaleStart = [0.42, 0.34, 0.26, 0.19][burstBand]!;
     const distance = lerp(bandDistanceStart, bandDistanceEnd, progress) * radialJitter;
     const lift =
       Math.sin(progress * Math.PI) * bandLift * liftJitter -
-      progress * progress * gravityJitter * 0.78 +
-      Math.sin(progress * Math.PI * (2.2 + burstBand * 0.18)) * 0.08;
-    const corePulse = 1 + Math.sin(progress * Math.PI) * 0.2;
+      progress * progress * gravityJitter * 0.84 +
+      Math.sin(progress * Math.PI * (2.5 + burstBand * 0.22)) * 0.12;
+    const corePulse = 1 + Math.sin(progress * Math.PI) * 0.28;
     return {
       position: {
         x: burst.position.x + Math.cos(yaw) * distance,
         y: burst.position.y + lift,
         z: burst.position.z + Math.sin(yaw) * distance
       },
-      rotationX: spinX * 1.18,
-      rotationY: spinY * 1.34,
-      rotationZ: spinZ * 1.22,
-      scale: lerp(bandScaleStart, 0.06, progress) * corePulse,
-      opacity: clamp(1.05 - Math.pow(progress, 1.8), 0, 1)
+      rotationX: spinX * 1.34,
+      rotationY: spinY * 1.48,
+      rotationZ: spinZ * 1.32,
+      scale: lerp(bandScaleStart, 0.08, progress) * corePulse,
+      opacity: clamp(1.12 - Math.pow(progress, 1.62), 0, 1)
     };
   }
 
@@ -155,10 +155,10 @@ export const getVoxelBurstShockwaveState = (
   return {
     position: {
       x: burst.position.x,
-      y: burst.position.y + 0.08,
+      y: burst.position.y + 0.1 + progress * 0.04,
       z: burst.position.z
     },
-    scale: lerp(0.55, 3.8, progress),
-    opacity: clamp(0.72 - Math.pow(progress, 1.2), 0, 1)
+    scale: lerp(0.78, 5.4, progress),
+    opacity: clamp(0.84 - Math.pow(progress, 1.04), 0, 1)
   };
 };

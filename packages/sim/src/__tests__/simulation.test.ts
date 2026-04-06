@@ -1171,41 +1171,48 @@ describe("OutOfBoundsSimulation", () => {
     expect(tapVelocity.y).toBeCloseTo(minChargeVelocity.y, 5);
     expect(Math.hypot(heldVelocity.x, heldVelocity.z)).toBeGreaterThan(Math.hypot(tapVelocity.x, tapVelocity.z));
     expect(heldVelocity.y).toBeGreaterThan(tapVelocity.y);
+    expect(heldVelocity.x).toBeGreaterThan(tapVelocity.x * 1.45);
+    expect(heldVelocity.y).toBeGreaterThan(tapVelocity.y * 1.7);
   });
 
   it("keeps airborne throws on the legacy immediate path instead of applying the grounded charge arc", () => {
-    const simulation = new OutOfBoundsSimulation({
-      skyDropIntervalMin: 999,
-      skyDropIntervalMax: 999
-    });
-    simulation.reset("explore", createArenaDocument(), {
-      localPlayerName: "You"
-    });
+    const createAirborneThrowVelocity = (eggCharge: number, eggPitch: number) => {
+      const simulation = new OutOfBoundsSimulation({
+        skyDropIntervalMin: 999,
+        skyDropIntervalMax: 999
+      });
+      simulation.reset("explore", createArenaDocument(), {
+        localPlayerName: "You"
+      });
 
-    const localPlayerId = simulation.getLocalPlayerId()!;
-    const localPlayer = getInternalPlayer(simulation, localPlayerId);
-    localPlayer.position = { x: 20.5, y: PLAYER_GROUND_Y + 1.2, z: 20.5 };
-    localPlayer.velocity = { x: 1.25, y: 0.8, z: -0.4 };
-    localPlayer.facing = { x: 1, z: 0 };
-    localPlayer.mass = 80;
-    localPlayer.grounded = false;
-    localPlayer.spacePhase = "none";
+      const localPlayerId = simulation.getLocalPlayerId()!;
+      const localPlayer = getInternalPlayer(simulation, localPlayerId);
+      localPlayer.position = { x: 20.5, y: PLAYER_GROUND_Y + 1.2, z: 20.5 };
+      localPlayer.velocity = { x: 1.25, y: 0.8, z: -0.4 };
+      localPlayer.facing = { x: 1, z: 0 };
+      localPlayer.mass = 80;
+      localPlayer.grounded = false;
+      localPlayer.spacePhase = "none";
 
-    simulation.step({
-      [localPlayerId]: layEgg({
-        eggCharge: 1,
-        eggPitch: 0.7
-      })
-    });
+      simulation.step({
+        [localPlayerId]: layEgg({
+          eggCharge,
+          eggPitch
+        })
+      });
 
-    const eggVelocity = ((simulation as unknown as { eggs: Map<string, { velocity: { x: number; y: number; z: number } }> }).eggs
-      .values()
-      .next()
-      .value as { velocity: { x: number; y: number; z: number } }).velocity;
+      return ((simulation as unknown as { eggs: Map<string, { velocity: { x: number; y: number; z: number } }> }).eggs
+        .values()
+        .next()
+        .value as { velocity: { x: number; y: number; z: number } }).velocity;
+    };
 
-    expect(eggVelocity.x).toBeCloseTo(localPlayer.velocity.x + simulation.config.eggThrowSpeed, 5);
-    expect(eggVelocity.y).toBeCloseTo(Math.max(localPlayer.velocity.y * 0.35, 0) + simulation.config.eggThrowSpeed * 0.38, 5);
-    expect(eggVelocity.z).toBeCloseTo(localPlayer.velocity.z, 5);
+    const defaultAirborneVelocity = createAirborneThrowVelocity(0, 0);
+    const chargedAirborneVelocity = createAirborneThrowVelocity(1, 0.7);
+
+    expect(chargedAirborneVelocity.x).toBeCloseTo(defaultAirborneVelocity.x, 5);
+    expect(chargedAirborneVelocity.y).toBeCloseTo(defaultAirborneVelocity.y, 5);
+    expect(chargedAirborneVelocity.z).toBeCloseTo(defaultAirborneVelocity.z, 5);
   });
 
   it("keeps grenade-like tangential carry on impact but settles quickly after the first bounce", () => {
