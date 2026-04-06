@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import type { HudState, OutOfBoundsSimulation } from "@out-of-bounds/sim";
 import type { ActiveMode } from "./GameCanvas";
-import { ShortcutLegend, runtimeShortcutBindings } from "./ShortcutLegend";
 
 const getModeLabel = (mode: ActiveMode) => (mode === "skirmish" ? "BRAWL" : mode.toUpperCase());
 
@@ -98,46 +97,50 @@ export function Hud({
         : localPlayer.grounded
           ? "Grounded"
           : "Airborne";
+  const hasRanking = hudState.ranking.length > 1;
 
   return (
     <div className="hud">
-      <div className="hud-card">
-        <div className="hud-title-row">
+      <section
+        aria-label="Player status"
+        className="hud-status"
+      >
+        <div className="hud-status__row hud-status__row--top">
           <span className="hud-kicker">{getModeLabel(mode)}</span>
-          <span className="hud-kicker">MATTER FLOW</span>
+          <span className="hud-status__text">{statusText}</span>
         </div>
-        <div className="hud-label">Feathers</div>
-        <div className="hud-label-row">
-          <span>{featherText}</span>
-          <span>{localPlayer.livesRemaining} / {localPlayer.maxLives}</span>
+        <div className="hud-status__row">
+          <span className="hud-inline-label">Feathers</span>
+          <span className="hud-inline-value">{featherText}</span>
+          <span className="hud-inline-meta">{localPlayer.livesRemaining} / {localPlayer.maxLives}</span>
         </div>
-        <div className="hud-label">Matter</div>
-        <div className="meter">
-          <div
-            className="meter-fill"
-            style={{ width: massWidth }}
-          />
+        <div className="hud-status__row hud-status__row--matter">
+          <span className="hud-inline-label">Matter</span>
+          <div className="meter hud-meter">
+            <div
+              className="meter-fill"
+              style={{ width: massWidth }}
+            />
+          </div>
+          <span className="hud-inline-meta">{Math.round(localPlayer.mass)} / {Math.round(localPlayer.maxMass)}</span>
         </div>
-        <div className="hud-label-row">
-          <span>{Math.round(localPlayer.mass)} / {Math.round(localPlayer.maxMass)}</span>
-          <span>{statusText}</span>
-        </div>
-      </div>
-      <div className="hud-card hud-card--compact">
-        <div className="hud-label">Controls</div>
-        <ShortcutLegend bindings={runtimeShortcutBindings} variant="compact" />
-      </div>
-      <div className="hud-card hud-card--compact">
-        <div className="hud-label">Ranking</div>
-        <ol className="ranking-list">
-          {hudState.ranking.map((player) => (
-            <li key={player.id}>
-              <span>{player.name}</span>
-              <span>{player.alive ? "IN" : "OUT"}</span>
-            </li>
-          ))}
-        </ol>
-      </div>
+      </section>
+      {hasRanking && (
+        <aside
+          aria-label="Ranking"
+          className="hud-ranking"
+        >
+          <ol className="ranking-list ranking-list--overlay">
+            {hudState.ranking.map((player, index) => (
+              <li key={player.id}>
+                <span className="ranking-list__position">{index + 1}</span>
+                <span className="ranking-list__name">{player.name}</span>
+                <span className="ranking-list__state">{player.alive ? "IN" : "OUT"}</span>
+              </li>
+            ))}
+          </ol>
+        </aside>
+      )}
     </div>
   );
 }

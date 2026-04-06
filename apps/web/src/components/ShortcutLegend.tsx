@@ -4,6 +4,8 @@ export interface ShortcutBinding {
   keys: string[];
 }
 
+export type ShortcutLegendVariant = "default" | "compact" | "pause";
+
 export const runtimeShortcutBindings: ShortcutBinding[] = [
   {
     action: "Look",
@@ -17,7 +19,7 @@ export const runtimeShortcutBindings: ShortcutBinding[] = [
   },
   {
     action: "Jump / Fly",
-    detail: "tap, then hold in air",
+    detail: "tap to jump, keep Space pressed in air to fly",
     keys: ["Space"],
   },
   {
@@ -61,7 +63,7 @@ export function ShortcutLegend({
 }: {
   bindings: ShortcutBinding[];
   className?: string;
-  variant?: "default" | "compact";
+  variant?: ShortcutLegendVariant;
 }) {
   return (
     <div className={joinClasses("shortcut-legend", `shortcut-legend--${variant}`, className)}>

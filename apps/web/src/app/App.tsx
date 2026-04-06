@@ -131,7 +131,7 @@ export function App({
   const [diagnostics, setDiagnostics] = useState<GameDiagnostics | null>(null);
   const [playerProfile, setPlayerProfile] = useState<PlayerProfile>({
     name: "",
-    paletteName: null,
+    paletteName: chickenPalettes[0]!.name,
   });
 
   const updateStatus = useCallback((message: string) => {
@@ -537,16 +537,15 @@ export function App({
                     Type your name to unlock the coop colors.
                   </span>
                 )}
-                {paletteUnlocked && playerProfile.paletteName === null && (
-                  <span className="menu-hint">
-                    Pick a color before you launch.
-                  </span>
-                )}
               </div>
 
-              <div aria-label="Modes" className="menu-action-grid" role="group">
+              <div
+                aria-label="Modes"
+                className="menu-primary-actions"
+                role="group"
+              >
                 <button
-                  className="menu-action"
+                  className="menu-action menu-action--full menu-action--hero"
                   disabled={!canStartMatch}
                   onClick={() => beginMode("explore")}
                   type="button"
@@ -554,29 +553,35 @@ export function App({
                   Explore
                 </button>
                 <button
-                  className="menu-action"
+                  className="menu-action menu-action--full menu-action--hero-secondary"
                   disabled={!canStartMatch}
                   onClick={() => beginMode("skirmish")}
                   type="button"
                 >
                   Brawl
                 </button>
-                <button
-                  className="menu-action menu-action--full"
-                  onClick={openRulesFromMenu}
-                  type="button"
-                >
-                  Rules and Controls
-                </button>
               </div>
-              <div className="menu-footer">
-                <button
-                  className="menu-action menu-action--secondary menu-action--full"
-                  onClick={onOpenSupportWidget}
-                  type="button"
+              <div className="menu-utility">
+                <div
+                  aria-label="Menu links"
+                  className="menu-secondary-actions"
+                  role="group"
                 >
-                  Feedback / bug
-                </button>
+                  <button
+                    className="menu-action menu-action--full menu-action--compact"
+                    onClick={openRulesFromMenu}
+                    type="button"
+                  >
+                    Rules and Controls
+                  </button>
+                  <button
+                    className="menu-action menu-action--secondary menu-action--full menu-action--compact"
+                    onClick={onOpenSupportWidget}
+                    type="button"
+                  >
+                    Feedback / bug
+                  </button>
+                </div>
                 <p className="menu-credit">
                   Made by Anthony Riera and{" "}
                   <a
@@ -1096,28 +1101,51 @@ function RuntimePauseOverlay({
         type="button"
       />
       <div
-        className="runtime-pause-card"
+        className="runtime-pause-strip"
         onClick={(event) => event.stopPropagation()}
       >
-        <p className="panel-kicker">
-          {hasStarted ? "Paused" : "Click To Start"}
-        </p>
-        <h2>{hasStarted ? "Mouse unlocked" : "Capture the mouse to play"}</h2>
-        <p>
-          {hasStarted
-            ? "The match is paused. Resume to lock the cursor again, or head back to the main menu."
-            : "Click once to lock the mouse, then drop in from the sky with full camera control."}
-        </p>
-        <div className="button-row">
-          <button onClick={onResume} type="button">
-            Resume
-          </button>
-          <button onClick={onShowRules} type="button">
-            Rules and Controls
-          </button>
-          <button onClick={onReturnToMenu} type="button">
-            Menu
-          </button>
+        <div className="runtime-pause-strip__top">
+          <div className="runtime-pause-strip__intro">
+            <p className="panel-kicker">
+              {hasStarted ? "Paused" : "Click To Start"}
+            </p>
+            <p className="runtime-pause-strip__message">
+              {hasStarted
+                ? "Mouse unlocked. Resume to jump back in."
+                : "Click once to capture the mouse and drop into the arena."}
+            </p>
+          </div>
+          <div className="runtime-pause-strip__actions">
+            <button
+              className="runtime-pause-strip__button"
+              onClick={onResume}
+              type="button"
+            >
+              Resume
+            </button>
+            <button
+              className="runtime-pause-strip__button"
+              onClick={onShowRules}
+              type="button"
+            >
+              Rules and Controls
+            </button>
+            <button
+              className="runtime-pause-strip__button"
+              onClick={onReturnToMenu}
+              type="button"
+            >
+              Menu
+            </button>
+          </div>
+        </div>
+        <div className="runtime-pause-strip__commands-shell">
+          <p className="runtime-pause-strip__label">Commands</p>
+          <ShortcutLegend
+            bindings={runtimeShortcutBindings}
+            className="runtime-pause-strip__commands"
+            variant="pause"
+          />
         </div>
       </div>
     </div>

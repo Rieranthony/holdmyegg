@@ -253,7 +253,6 @@ const unlockMenuPlayer = () => {
   fireEvent.change(screen.getByLabelText("Player Name"), {
     target: { value: "Anthony" }
   });
-  fireEvent.click(screen.getByRole("radio", { name: "cream chicken" }));
 };
 
 const createTinyArenaDocument = (name: string) => ({
@@ -315,6 +314,17 @@ describe("App", () => {
     expect(screen.getByTestId("game-host")).toHaveTextContent("editor");
     expect(screen.getByTestId("chicken-preview")).toHaveTextContent("cream");
     expect(screen.getByLabelText("Player Name")).toHaveValue("");
+    expect(screen.getByRole("radio", { name: "cream chicken" })).toHaveAttribute(
+      "aria-checked",
+      "true"
+    );
+
+    fireEvent.change(screen.getByLabelText("Player Name"), {
+      target: { value: "Anthony" }
+    });
+
+    expect(screen.getByRole("button", { name: /Explore/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /Brawl/i })).toBeEnabled();
   });
 
   it(
@@ -349,14 +359,21 @@ describe("App", () => {
     await advanceLaunchIntro();
 
     expect(screen.getByText("Matter")).toBeInTheDocument();
-    expect(screen.getByText("MATTER FLOW")).toBeInTheDocument();
     expect(screen.getByText("Feathers")).toBeInTheDocument();
     expect(screen.getByText("24 / 300")).toBeInTheDocument();
-    expect(screen.getByText("Jump / Fly")).toBeInTheDocument();
-    expect(screen.getByText("Drop Eggs")).toBeInTheDocument();
-    expect(screen.getByText("WASD")).toBeInTheDocument();
-    expect(screen.getByText("Anthony")).toBeInTheDocument();
+    expect(screen.queryByText("MATTER FLOW")).not.toBeInTheDocument();
+    expect(screen.queryByText("Jump / Fly")).not.toBeInTheDocument();
+    expect(screen.queryByText("Drop Eggs")).not.toBeInTheDocument();
+    expect(screen.queryByText("WASD")).not.toBeInTheDocument();
+    expect(screen.queryByText("Anthony")).not.toBeInTheDocument();
+    expect(screen.queryByText("NPC 1")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Pause runtime" }));
+    expect(screen.getByText("Jump / Fly")).toBeInTheDocument();
+    expect(screen.getByText("WASD")).toBeInTheDocument();
+    expect(screen.getByText("Esc")).toBeInTheDocument();
+    expect(screen.getByText("tap to jump, keep Space pressed in air to fly")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Resume" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Rules and Controls" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Menu" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Menu" }));
@@ -371,6 +388,7 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: /Brawl/i }));
     expect(screen.getByTestId("launch-overlay")).toBeInTheDocument();
     await advanceLaunchIntro();
+    expect(screen.getByText("Anthony")).toBeInTheDocument();
     expect(screen.getByText("NPC 1")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Pause runtime" }));
