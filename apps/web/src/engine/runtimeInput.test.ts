@@ -14,6 +14,8 @@ describe("packRuntimeInputCommand", () => {
       moveZ: -0.25,
       lookX: 0.75,
       lookZ: -1,
+      eggCharge: 0.65,
+      eggPitch: -0.22,
       jump: true,
       jumpPressed: true,
       jumpReleased: true,
@@ -28,8 +30,14 @@ describe("packRuntimeInputCommand", () => {
     const buffer = packRuntimeInputCommand(command);
     const unpacked = unpackRuntimeInputCommand(buffer);
 
-    expect(buffer.byteLength).toBe(34);
-    expect(unpacked).toEqual(command);
+    expect(buffer.byteLength).toBe(42);
+    expect(unpacked).toMatchObject({
+      ...command,
+      eggCharge: expect.any(Number),
+      eggPitch: expect.any(Number)
+    });
+    expect(unpacked.eggCharge).toBeCloseTo(command.eggCharge, 5);
+    expect(unpacked.eggPitch).toBeCloseTo(command.eggPitch, 5);
   });
 
   it("keeps optional target vectors null when their flags are not set", () => {
@@ -39,6 +47,8 @@ describe("packRuntimeInputCommand", () => {
       moveZ: 0,
       lookX: 1,
       lookZ: 0,
+      eggCharge: 0,
+      eggPitch: 0,
       jump: false,
       jumpPressed: false,
       jumpReleased: false,
@@ -68,6 +78,8 @@ describe("clearTransientRuntimeInputFlags", () => {
       moveZ: 0,
       lookX: 0,
       lookZ: 1,
+      eggCharge: 0.9,
+      eggPitch: 0.14,
       jump: true,
       jumpPressed: true,
       jumpReleased: true,
@@ -87,7 +99,9 @@ describe("clearTransientRuntimeInputFlags", () => {
       jumpReleased: false,
       destroy: false,
       place: false,
-      layEgg: false
+      layEgg: false,
+      eggCharge: 0,
+      eggPitch: 0
     });
     expect(cleared).not.toBe(command);
     expect(command.jumpPressed).toBe(true);

@@ -5,15 +5,19 @@ import {
   normalizeArenaBudgetMapDocument,
   type MapDocumentV1
 } from "@out-of-bounds/map";
-import type {
-  HudState,
-  RuntimeEggScatterDebrisState,
-  RuntimeEggState,
-  RuntimePlayerState,
-  RuntimeSkyDropState,
-  RuntimeVoxelBurstState,
-  FallingClusterViewState,
-  SimulationInitialSpawnStyle
+import {
+  defaultSimulationConfig,
+  getEggChargeAlpha,
+  getEggTrajectoryPosition,
+  getGroundedEggLaunchVelocity,
+  type HudState,
+  type RuntimeEggScatterDebrisState,
+  type RuntimeEggState,
+  type RuntimePlayerState,
+  type RuntimeSkyDropState,
+  type RuntimeVoxelBurstState,
+  type FallingClusterViewState,
+  type SimulationInitialSpawnStyle
 } from "@out-of-bounds/sim";
 import { propMaterials } from "../game/propMaterials";
 import {
@@ -62,7 +66,8 @@ import {
   getEggScatterDebrisVisualState,
   getVoxelBurstMaterialProfile,
   getVoxelBurstParticleCount,
-  getVoxelBurstParticleState
+  getVoxelBurstParticleState,
+  getVoxelBurstShockwaveState
 } from "../game/voxelFx";
 import {
   chickenModelRig,
@@ -161,6 +166,27 @@ interface DynamicOpacityMeshResource {
   opacityAttribute: THREE.InstancedBufferAttribute;
 }
 
+interface EggChargeState {
+  active: boolean;
+  startedAt: number;
+  chargeAlpha: number;
+  pendingThrow: boolean;
+  pendingThrowCharge: number;
+  pendingThrowPitch: number;
+  releaseRemaining: number;
+}
+
+interface EggTrajectoryPreviewResource {
+  geometry: THREE.BufferGeometry;
+  material: THREE.LineBasicMaterial;
+  line: THREE.Line;
+  positionAttribute: THREE.BufferAttribute;
+  landingGeometry: THREE.RingGeometry;
+  landingMaterial: THREE.MeshBasicMaterial;
+  landingRing: THREE.Mesh;
+  group: THREE.Group;
+}
+
 interface CloudVisual {
   group: THREE.Group;
   preset: VoxelCloudPreset;
@@ -196,9 +222,15 @@ const AVATAR_TURN_SPEED = 4.5;
 const AVATAR_BOB_BASE_Y = 0.74;
 const EGG_FUSE_DURATION = 1.6;
 const EGG_SCATTER_ARC_HEIGHT = 2.4;
+const EGG_CHARGE_DURATION = defaultSimulationConfig.eggChargeDuration;
+const MIN_GROUNDED_EGG_CHARGE = 0.18;
 const MAX_EGG_SCATTER_INSTANCES_PER_PROFILE = 64;
 const MAX_HARVEST_BURST_INSTANCES_PER_PROFILE = 128;
 const MAX_EGG_EXPLOSION_BURST_INSTANCES = 512;
+const MAX_EGG_EXPLOSION_SHOCKWAVE_INSTANCES = 32;
+const EGG_TRAJECTORY_MAX_POINTS = 40;
+const EGG_TRAJECTORY_TIME_STEP = 0.055;
+const EGG_TRAJECTORY_MAX_DURATION = 1.9;
 const PLAYER_DETAIL_DISTANCE = 18;
 const SPEED_TRACE_DEPTH = 2.4;
 const SPEED_TRACE_PUSH_BURST_DURATION = 0.2;
@@ -363,9 +395,9 @@ const patchInstancedOpacityMaterial = (material: THREE.Material) => {
 
 const createDynamicOpacityMeshResource = (
   capacity: number,
-  materials: THREE.Material | THREE.Material[]
+  materials: THREE.Material | THREE.Material[],
+  geometry: THREE.BufferGeometry = new THREE.BoxGeometry(1, 1, 1)
 ): DynamicOpacityMeshResource => {
-  const geometry = new THREE.BoxGeometry(1, 1, 1);
   const opacityAttribute = new THREE.InstancedBufferAttribute(new Float32Array(Math.max(1, capacity)), 1);
   opacityAttribute.setUsage(THREE.DynamicDrawUsage);
   geometry.setAttribute("instanceOpacity", opacityAttribute);
@@ -379,6 +411,53 @@ const createDynamicOpacityMeshResource = (
     materials: materialSet,
     mesh,
     opacityAttribute
+  };
+};
+
+const createEggTrajectoryPreview = (maxPoints: number): EggTrajectoryPreviewResource => {
+  const geometry = new THREE.BufferGeometry();
+  const positionAttribute = new THREE.BufferAttribute(new Float32Array(maxPoints * 3), 3);
+  positionAttribute.setUsage(THREE.DynamicDrawUsage);
+  geometry.setAttribute("position", positionAttribute);
+  geometry.setDrawRange(0, 0);
+  const material = new THREE.LineBasicMaterial({
+    color: "#fff6c4",
+    transparent: true,
+    opacity: 0.92,
+    toneMapped: false
+  });
+  const line = new THREE.Line(geometry, material);
+  line.frustumCulled = false;
+
+  const landingGeometry = new THREE.RingGeometry(0.3, 0.44, 24);
+  const landingMaterial = new THREE.MeshBasicMaterial({
+    color: "#ffd965",
+    transparent: true,
+    opacity: 0.82,
+    side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    toneMapped: false
+  });
+  const landingRing = new THREE.Mesh(landingGeometry, landingMaterial);
+  landingRing.rotation.x = -Math.PI / 2;
+  landingRing.renderOrder = 16;
+  landingRing.visible = false;
+  landingRing.frustumCulled = false;
+
+  const group = new THREE.Group();
+  group.visible = false;
+  group.add(line, landingRing);
+
+  return {
+    geometry,
+    material,
+    line,
+    positionAttribute,
+    landingGeometry,
+    landingMaterial,
+    landingRing,
+    group
   };
 };
 
@@ -542,6 +621,8 @@ export class GameClient {
   private readonly focusRaycaster = new THREE.Raycaster();
   private readonly clickRaycaster = new THREE.Raycaster();
   private readonly playerShadowRaycaster = new THREE.Raycaster();
+  private readonly eggTrajectoryRaycaster = new THREE.Raycaster();
+  private readonly eggTrajectoryPreview = createEggTrajectoryPreview(EGG_TRAJECTORY_MAX_POINTS);
   private readonly centerRay = new THREE.Vector2(0, 0);
   private readonly clock = new THREE.Clock();
   private readonly chunkMeshes = new Map<string, THREE.Mesh>();
@@ -593,6 +674,15 @@ export class GameClient {
   private readonly keyboardState: KeyboardInputState = {
     ...initialKeyboardInputState
   };
+  private readonly eggChargeState: EggChargeState = {
+    active: false,
+    startedAt: 0,
+    chargeAlpha: 0,
+    pendingThrow: false,
+    pendingThrowCharge: 0,
+    pendingThrowPitch: 0,
+    releaseRemaining: 0
+  };
 
   private animationFrameId: number | null = null;
   private mode: ActiveShellMode;
@@ -621,6 +711,7 @@ export class GameClient {
   private localPlayerName: string | undefined;
   private localPlayerPaletteName: ChickenPaletteName | null;
   private eggExplosionBurstMesh: DynamicOpacityMeshResource | null = null;
+  private eggExplosionShockwaveMesh: DynamicOpacityMeshResource | null = null;
   private focusedTarget: { normal: { x: number; y: number; z: number }; voxel: { x: number; y: number; z: number } } | null = null;
   private pendingReadyToDisplay = false;
   private baseFogNear = 36;
@@ -718,6 +809,7 @@ export class GameClient {
     this.lookYaw = null;
     this.hasInitializedRuntimeCamera = false;
     this.pendingResumeAfterPointerLock = false;
+    this.cancelEggCharge();
     this.setRuntimePaused(true);
     this.worker.postMessage({
       type: "set_mode",
@@ -828,6 +920,10 @@ export class GameClient {
     for (const geometry of this.voxelFxGeometries) {
       geometry.dispose();
     }
+    this.eggTrajectoryPreview.geometry.dispose();
+    this.eggTrajectoryPreview.material.dispose();
+    this.eggTrajectoryPreview.landingGeometry.dispose();
+    this.eggTrajectoryPreview.landingMaterial.dispose();
     this.focusOutline.geometry.dispose();
     (this.focusOutline.material as THREE.Material).dispose();
     this.focusGhost.geometry.dispose();
@@ -864,6 +960,7 @@ export class GameClient {
       this.spawnsGroup,
       this.playersGroup,
       this.eggsGroup,
+      this.eggTrajectoryPreview.group,
       this.voxelFxGroup,
       this.skyDropsGroup,
       this.clustersGroup,
@@ -904,6 +1001,23 @@ export class GameClient {
     this.voxelFxDisposables.push(...this.eggExplosionBurstMesh.materials);
     this.voxelFxGeometries.push(this.eggExplosionBurstMesh.geometry);
     this.voxelFxGroup.add(this.eggExplosionBurstMesh.mesh);
+
+    this.eggExplosionShockwaveMesh = createDynamicOpacityMeshResource(
+      MAX_EGG_EXPLOSION_SHOCKWAVE_INSTANCES,
+      new THREE.MeshBasicMaterial({
+        color: "#ffe49a",
+        opacity: 1,
+        transparent: true,
+        side: THREE.DoubleSide,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        toneMapped: false
+      }),
+      new THREE.RingGeometry(0.6, 0.86, 24)
+    );
+    this.voxelFxDisposables.push(...this.eggExplosionShockwaveMesh.materials);
+    this.voxelFxGeometries.push(this.eggExplosionShockwaveMesh.geometry);
+    this.voxelFxGroup.add(this.eggExplosionShockwaveMesh.mesh);
 
     this.speedTraceGroup.visible = false;
     this.speedTraceGroup.position.set(0, 0, -SPEED_TRACE_DEPTH);
@@ -1311,6 +1425,7 @@ export class GameClient {
     this.eggVisuals.clear();
     this.skyDropVisuals.clear();
     this.clusterVisuals.clear();
+    this.cancelEggCharge();
     for (const mesh of this.eggScatterMeshes.values()) {
       finalizeDynamicInstancedMesh(mesh, 0);
     }
@@ -1318,6 +1433,194 @@ export class GameClient {
       finalizeDynamicOpacityMesh(resource, 0);
     }
     finalizeDynamicOpacityMesh(this.eggExplosionBurstMesh, 0);
+    finalizeDynamicOpacityMesh(this.eggExplosionShockwaveMesh, 0);
+  }
+
+  private getLocalRuntimePlayer(frame: RuntimeRenderFrame | null = this.latestFrame) {
+    if (!frame?.localPlayerId) {
+      return null;
+    }
+
+    return frame.players.find((player) => player.id === frame.localPlayerId) ?? null;
+  }
+
+  private canStartGroundEggCharge(localPlayer: RuntimePlayerState | null) {
+    return (
+      localPlayer !== null &&
+      localPlayer.alive &&
+      !localPlayer.fallingOut &&
+      !localPlayer.respawning &&
+      localPlayer.grounded &&
+      localPlayer.stunRemaining <= 0 &&
+      localPlayer.spacePhase !== "float" &&
+      localPlayer.spacePhase !== "reentry"
+    );
+  }
+
+  private beginEggCharge() {
+    this.eggChargeState.active = true;
+    this.eggChargeState.startedAt = this.clock.elapsedTime;
+    this.eggChargeState.chargeAlpha = 0;
+    this.eggChargeState.pendingThrow = false;
+    this.eggChargeState.pendingThrowCharge = 0;
+    this.eggChargeState.pendingThrowPitch = 0;
+  }
+
+  private queueGroundEggThrow() {
+    this.eggChargeState.active = false;
+    this.eggChargeState.pendingThrow = true;
+    this.eggChargeState.pendingThrowCharge = Math.max(MIN_GROUNDED_EGG_CHARGE, this.eggChargeState.chargeAlpha);
+    this.eggChargeState.pendingThrowPitch = this.lookPitch;
+    this.eggChargeState.chargeAlpha = 0;
+    this.eggChargeState.releaseRemaining = chickenPoseVisualDefaults.eggLaunchReleaseDuration;
+    this.hideEggTrajectoryPreview();
+  }
+
+  private cancelEggCharge(clearRelease = true) {
+    this.eggChargeState.active = false;
+    this.eggChargeState.chargeAlpha = 0;
+    this.eggChargeState.pendingThrow = false;
+    this.eggChargeState.pendingThrowCharge = 0;
+    this.eggChargeState.pendingThrowPitch = 0;
+    if (clearRelease) {
+      this.eggChargeState.releaseRemaining = 0;
+    }
+    this.hideEggTrajectoryPreview();
+  }
+
+  private updateEggChargeState(localPlayer: RuntimePlayerState | null, delta: number, elapsedTime: number) {
+    this.eggChargeState.releaseRemaining = Math.max(0, this.eggChargeState.releaseRemaining - delta);
+
+    if (!this.eggChargeState.active) {
+      return;
+    }
+
+    if (
+      !this.keyboardState.egg ||
+      this.runtimePaused ||
+      !this.pointerLocked ||
+      !this.canStartGroundEggCharge(localPlayer)
+    ) {
+      this.cancelEggCharge(false);
+      return;
+    }
+
+    this.eggChargeState.chargeAlpha = getEggChargeAlpha(
+      elapsedTime - this.eggChargeState.startedAt,
+      EGG_CHARGE_DURATION
+    );
+  }
+
+  private hideEggTrajectoryPreview() {
+    this.eggTrajectoryPreview.group.visible = false;
+    this.eggTrajectoryPreview.geometry.setDrawRange(0, 0);
+    this.eggTrajectoryPreview.landingRing.visible = false;
+  }
+
+  private setEggTrajectoryPreviewPoint(index: number, point: THREE.Vector3) {
+    this.eggTrajectoryPreview.positionAttribute.setXYZ(index, point.x, point.y, point.z);
+  }
+
+  private updateEggLaunchPreview(localPlayer: RuntimePlayerState | null, elapsedTime: number) {
+    if (
+      !this.eggChargeState.active ||
+      this.runtimePaused ||
+      !this.pointerLocked ||
+      !this.canStartGroundEggCharge(localPlayer)
+    ) {
+      this.hideEggTrajectoryPreview();
+      return;
+    }
+
+    const eggRadius = defaultSimulationConfig.eggRadius;
+    const origin = {
+      x: THREE.MathUtils.clamp(
+        localPlayer.position.x + localPlayer.facing.x * defaultSimulationConfig.eggDropOffsetForward,
+        eggRadius + 0.001,
+        this.worldDocument.size.x - eggRadius - 0.001
+      ),
+      y: THREE.MathUtils.clamp(
+        localPlayer.position.y + defaultSimulationConfig.eggDropOffsetUp,
+        eggRadius + 0.001,
+        this.worldDocument.size.y - eggRadius - 0.001
+      ),
+      z: THREE.MathUtils.clamp(
+        localPlayer.position.z + localPlayer.facing.z * defaultSimulationConfig.eggDropOffsetForward,
+        eggRadius + 0.001,
+        this.worldDocument.size.z - eggRadius - 0.001
+      )
+    };
+    const velocity = getGroundedEggLaunchVelocity({
+      playerVelocity: localPlayer.velocity,
+      facing: localPlayer.facing,
+      eggCharge: Math.max(MIN_GROUNDED_EGG_CHARGE, this.eggChargeState.chargeAlpha),
+      cameraPitch: this.lookPitch,
+      config: defaultSimulationConfig
+    });
+
+    const previousPoint = new THREE.Vector3(origin.x, origin.y, origin.z);
+    let pointCount = 1;
+    let landingPoint: THREE.Vector3 | null = null;
+    this.setEggTrajectoryPreviewPoint(0, previousPoint);
+
+    for (
+      let elapsed = EGG_TRAJECTORY_TIME_STEP;
+      elapsed <= EGG_TRAJECTORY_MAX_DURATION && pointCount < EGG_TRAJECTORY_MAX_POINTS;
+      elapsed += EGG_TRAJECTORY_TIME_STEP
+    ) {
+      const nextPoint = getEggTrajectoryPosition({
+        origin,
+        velocity,
+        gravity: defaultSimulationConfig.eggGravity,
+        elapsed
+      });
+      const nextVector = new THREE.Vector3(nextPoint.x, nextPoint.y, nextPoint.z);
+      const segment = nextVector.clone().sub(previousPoint);
+      const segmentLength = segment.length();
+
+      if (segmentLength > 0) {
+        this.eggTrajectoryRaycaster.ray.origin.copy(previousPoint);
+        this.eggTrajectoryRaycaster.ray.direction.copy(segment.multiplyScalar(1 / segmentLength));
+        this.eggTrajectoryRaycaster.far = segmentLength;
+        const hit = this.eggTrajectoryRaycaster.intersectObjects(
+          [this.terrainGroup, this.propsGroup, this.clustersGroup],
+          true
+        )[0];
+        if (hit) {
+          landingPoint = hit.point.clone();
+          this.setEggTrajectoryPreviewPoint(pointCount, landingPoint);
+          pointCount += 1;
+          break;
+        }
+      }
+
+      this.setEggTrajectoryPreviewPoint(pointCount, nextVector);
+      pointCount += 1;
+      previousPoint.copy(nextVector);
+
+      if (nextVector.y <= this.worldDocument.boundary.fallY) {
+        landingPoint = nextVector;
+        break;
+      }
+    }
+
+    this.eggTrajectoryPreview.positionAttribute.needsUpdate = true;
+    this.eggTrajectoryPreview.geometry.setDrawRange(0, pointCount);
+    this.eggTrajectoryPreview.material.opacity = 0.62 + this.eggChargeState.chargeAlpha * 0.28;
+    this.eggTrajectoryPreview.group.visible = pointCount > 1;
+
+    if (!landingPoint) {
+      this.eggTrajectoryPreview.landingRing.visible = false;
+      return;
+    }
+
+    this.eggTrajectoryPreview.landingRing.visible = true;
+    this.eggTrajectoryPreview.landingRing.position.copy(landingPoint);
+    this.eggTrajectoryPreview.landingRing.position.y += 0.04;
+    this.eggTrajectoryPreview.landingMaterial.opacity = 0.48 + this.eggChargeState.chargeAlpha * 0.24;
+    this.eggTrajectoryPreview.landingRing.scale.setScalar(
+      (0.92 + this.eggChargeState.chargeAlpha * 0.72) * (1 + Math.sin(elapsedTime * 10.4) * 0.08)
+    );
   }
 
   private readonly handleResize = () => {
@@ -1370,7 +1673,18 @@ export class GameClient {
         this.keyboardState.push = true;
         break;
       case "KeyQ":
+        if (this.keyboardState.egg) {
+          break;
+        }
         this.keyboardState.egg = true;
+        if (
+          isRuntimeMode(this.mode) &&
+          this.pointerLocked &&
+          !this.runtimePaused &&
+          this.canStartGroundEggCharge(this.getLocalRuntimePlayer())
+        ) {
+          this.beginEggCharge();
+        }
         break;
     }
   };
@@ -1407,6 +1721,9 @@ export class GameClient {
         break;
       case "KeyQ":
         this.keyboardState.egg = false;
+        if (this.eggChargeState.active) {
+          this.queueGroundEggThrow();
+        }
         break;
     }
   };
@@ -1418,6 +1735,7 @@ export class GameClient {
     if (isRuntimeMode(this.mode)) {
       if (!locked) {
         this.pendingResumeAfterPointerLock = false;
+        this.cancelEggCharge();
         this.setRuntimePaused(true);
         return;
       }
@@ -1434,6 +1752,9 @@ export class GameClient {
 
   setRuntimePaused(paused: boolean) {
     this.runtimePaused = paused;
+    if (paused) {
+      this.cancelEggCharge();
+    }
     this.worker.postMessage({
       type: "set_runtime_paused",
       paused
@@ -1520,11 +1841,14 @@ export class GameClient {
     if (isRuntimeMode(this.mode)) {
       this.updateRuntimeCamera(delta);
       this.updateFocusedTarget();
-      this.sendRuntimeInput();
+      const localPlayer = this.getLocalRuntimePlayer();
+      this.updateEggChargeState(localPlayer, delta, elapsedTime);
+      this.sendRuntimeInput(localPlayer);
       this.applyRuntimeFrame(delta, elapsedTime);
     } else {
       this.updateSpeedTraces(null, delta, elapsedTime);
       this.updateSkyEnvironment(null, delta, elapsedTime);
+      this.hideEggTrajectoryPreview();
       this.focusOutline.visible = false;
       this.focusGhost.visible = false;
     }
@@ -1729,7 +2053,7 @@ export class GameClient {
     });
   }
 
-  private sendRuntimeInput() {
+  private sendRuntimeInput(localPlayer: RuntimePlayerState | null = this.getLocalRuntimePlayer()) {
     if (!isRuntimeMode(this.mode) || !this.pointerLocked) {
       return;
     }
@@ -1737,13 +2061,23 @@ export class GameClient {
     const nextCommand = buildPlayerCommand(this.keyboardState, this.cameraForward);
     nextCommand.destroy = this.destroyQueued;
     nextCommand.place = this.keyboardState.build && !this.previousBuildPressed;
-    nextCommand.layEgg = this.keyboardState.egg && !this.previousEggPressed;
+    const immediateEggPress =
+      this.keyboardState.egg &&
+      !this.previousEggPressed &&
+      !this.eggChargeState.active &&
+      !this.canStartGroundEggCharge(localPlayer);
+    nextCommand.layEgg = this.eggChargeState.pendingThrow || immediateEggPress;
+    nextCommand.eggCharge = this.eggChargeState.pendingThrow ? this.eggChargeState.pendingThrowCharge : 0;
+    nextCommand.eggPitch = this.eggChargeState.pendingThrow ? this.eggChargeState.pendingThrowPitch : 0;
     nextCommand.targetVoxel = this.focusedTarget?.voxel ?? null;
     nextCommand.targetNormal = this.focusedTarget?.normal ?? null;
 
     this.previousBuildPressed = this.keyboardState.build;
     this.previousEggPressed = this.keyboardState.egg;
     this.destroyQueued = false;
+    this.eggChargeState.pendingThrow = false;
+    this.eggChargeState.pendingThrowCharge = 0;
+    this.eggChargeState.pendingThrowPitch = 0;
 
     const buffer = packRuntimeInputCommand({
       seq: this.inputSequence,
@@ -1767,6 +2101,7 @@ export class GameClient {
     if (!frame) {
       this.updateSpeedTraces(null, delta, elapsedTime);
       this.updateSkyEnvironment(null, delta, elapsedTime);
+      this.updateEggLaunchPreview(null, elapsedTime);
       return;
     }
 
@@ -1776,6 +2111,7 @@ export class GameClient {
       : null;
     this.updateSpeedTraces(localPlayer, delta, elapsedTime);
     this.updateSkyEnvironment(localPlayer, delta, elapsedTime);
+    this.updateEggLaunchPreview(localPlayer, elapsedTime);
     this.syncEggs(frame.eggs, elapsedTime);
     this.syncEggScatterDebris(frame.eggScatterDebris ?? []);
     this.syncVoxelBursts(frame.voxelBursts ?? []);
@@ -1845,6 +2181,8 @@ export class GameClient {
       }
 
       const planarSpeed = Math.hypot(player.velocity.x, player.velocity.z);
+      const eggLaunchChargeAlpha = isLocal ? this.eggChargeState.chargeAlpha : 0;
+      const eggLaunchReleaseRemaining = isLocal ? this.eggChargeState.releaseRemaining : 0;
       const poseState = getChickenPoseVisualState({
         grounded: player.grounded,
         velocityY: player.velocity.y,
@@ -1855,7 +2193,9 @@ export class GameClient {
         landingRollRemaining: visual.landingRollRemaining,
         spacePhase: player.spacePhase,
         spacePhaseRemaining: player.spacePhaseRemaining,
-        stunned: player.stunRemaining > 0
+        stunned: player.stunRemaining > 0,
+        eggLaunchChargeAlpha,
+        eggLaunchReleaseRemaining
       });
       visual.shell.rotation.x = poseState.bodyPitch;
       visual.shell.rotation.z = poseState.bodyRoll;
@@ -1908,7 +2248,9 @@ export class GameClient {
         jetpackActive: player.jetpackActive,
         motionSeed: visual.motionSeed,
         stunned: player.stunRemaining > 0,
-        elapsedTime
+        elapsedTime,
+        eggLaunchChargeAlpha,
+        eggLaunchReleaseRemaining
       });
       const statusVisualState = getPlayerStatusVisualState(player.invulnerableRemaining, elapsedTime);
       const ringOpacity = !player.alive
@@ -2026,6 +2368,7 @@ export class GameClient {
       const eggVisualState = getEggVisualState(egg, elapsedTime, EGG_FUSE_DURATION);
       visual.group.visible = true;
       visual.group.position.set(egg.position.x, egg.position.y + eggVisualState.jiggleY, egg.position.z);
+      visual.group.rotation.set(eggVisualState.rotationX, eggVisualState.rotationY, eggVisualState.rotationZ);
       visual.group.scale.set(eggVisualState.scaleX, eggVisualState.scaleY, eggVisualState.scaleZ);
       visual.material.color.set("#fff0d9").lerp(new THREE.Color("#ff4f3d"), eggVisualState.heatAlpha);
       visual.material.emissive.set("#ff4f3d");
@@ -2078,6 +2421,7 @@ export class GameClient {
       darkness: 0
     };
     let eggExplosionCount = 0;
+    let eggShockwaveCount = 0;
 
     for (const burst of voxelBursts) {
       const particleCount = getVoxelBurstParticleCount(burst);
@@ -2129,12 +2473,26 @@ export class GameClient {
         this.eggExplosionBurstMesh.opacityAttribute.setX(eggExplosionCount, particle.opacity);
         eggExplosionCount += 1;
       }
+
+      if (this.eggExplosionShockwaveMesh && eggShockwaveCount < MAX_EGG_EXPLOSION_SHOCKWAVE_INSTANCES) {
+        const shockwave = getVoxelBurstShockwaveState(burst);
+        if (shockwave) {
+          voxelFxTempObject.position.set(shockwave.position.x, shockwave.position.y, shockwave.position.z);
+          voxelFxTempObject.rotation.set(-Math.PI / 2, 0, 0);
+          voxelFxTempObject.scale.setScalar(shockwave.scale);
+          voxelFxTempObject.updateMatrix();
+          this.eggExplosionShockwaveMesh.mesh.setMatrixAt(eggShockwaveCount, voxelFxTempObject.matrix);
+          this.eggExplosionShockwaveMesh.opacityAttribute.setX(eggShockwaveCount, shockwave.opacity);
+          eggShockwaveCount += 1;
+        }
+      }
     }
 
     for (const profile of voxelFxProfiles) {
       finalizeDynamicOpacityMesh(this.harvestBurstMeshes.get(profile) ?? null, harvestCounts[profile]);
     }
     finalizeDynamicOpacityMesh(this.eggExplosionBurstMesh, eggExplosionCount);
+    finalizeDynamicOpacityMesh(this.eggExplosionShockwaveMesh, eggShockwaveCount);
   }
 
   private syncSkyDrops(skyDrops: RuntimeSkyDropState[], elapsedTime: number) {

@@ -304,10 +304,12 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: /Explore/i })).toBeDisabled();
     expect(screen.getByRole("button", { name: /Brawl/i })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Rules and Controls" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Feedback / bug" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Feedback / bug" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Build/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Map Workshop" })).not.toBeInTheDocument();
-    expect(screen.getByText("Made by Anthony Riera and")).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "Anthony Riera" })
+    ).toHaveAttribute("href", "https://x.com/anthonyriera");
     expect(
       screen.getByRole("link", { name: "cossistant.com" })
     ).toHaveAttribute("href", "https://cossistant.com");
@@ -371,7 +373,9 @@ describe("App", () => {
     expect(screen.getByText("Jump / Fly")).toBeInTheDocument();
     expect(screen.getByText("WASD")).toBeInTheDocument();
     expect(screen.getByText("Esc")).toBeInTheDocument();
-    expect(screen.getByText("tap to jump, keep Space pressed in air to fly")).toBeInTheDocument();
+    expect(
+      screen.getByText("tap to jump, hold Space after takeoff to fly, tap Space during reentry to recover")
+    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Resume" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Rules and Controls" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Menu" })).toBeInTheDocument();
@@ -398,7 +402,7 @@ describe("App", () => {
     });
     expect(screen.getByTestId("boot-splash")).toBeInTheDocument();
     await signalMenuReady();
-    expect(screen.getByRole("button", { name: "Feedback / bug" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Feedback / bug" })).not.toBeInTheDocument();
     },
     APP_FLOW_TIMEOUT
   );
@@ -422,7 +426,7 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Back" }));
     expect(screen.getByTestId("boot-splash")).toBeInTheDocument();
     await signalMenuReady();
-    expect(screen.getByRole("button", { name: "Feedback / bug" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Feedback / bug" })).not.toBeInTheDocument();
 
     unlockMenuPlayer();
     fireEvent.click(screen.getByRole("button", { name: /Explore/i }));

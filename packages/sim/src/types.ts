@@ -19,6 +19,8 @@ export interface PlayerCommand {
   moveZ: number;
   lookX: number;
   lookZ: number;
+  eggCharge: number;
+  eggPitch: number;
   jump: boolean;
   jumpPressed: boolean;
   jumpReleased: boolean;
@@ -40,7 +42,9 @@ export interface SimulationConfig {
   interactRange: number;
   gravity: number;
   jumpSpeed: number;
+  jumpBufferDuration: number;
   jetpackLiftSpeed: number;
+  jetpackHoldActivationDelay: number;
   jetpackMassDrainPerSecond: number;
   moveSpeed: number;
   turnSpeed: number;
@@ -64,6 +68,10 @@ export interface SimulationConfig {
   eggFuseDuration: number;
   eggGravity: number;
   eggThrowSpeed: number;
+  eggChargeDuration: number;
+  eggChargedThrowSpeed: number;
+  eggThrowPitchLiftBias: number;
+  eggThrowPitchLiftMin: number;
   eggDropOffsetForward: number;
   eggDropOffsetUp: number;
   eggRadius: number;

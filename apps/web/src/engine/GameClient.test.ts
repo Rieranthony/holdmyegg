@@ -1053,11 +1053,14 @@ describe("GameClient", () => {
 
     const harvestMesh = (client as any).harvestBurstMeshes.get("earthSurface").mesh;
     const eggExplosionMesh = (client as any).eggExplosionBurstMesh.mesh;
+    const eggShockwaveMesh = (client as any).eggExplosionShockwaveMesh.mesh;
 
     expect(harvestMesh.visible).toBe(true);
     expect(harvestMesh.count).toBeGreaterThan(0);
     expect(eggExplosionMesh.visible).toBe(true);
     expect(eggExplosionMesh.count).toBeGreaterThan(0);
+    expect(eggShockwaveMesh.visible).toBe(true);
+    expect(eggShockwaveMesh.count).toBeGreaterThan(0);
 
     (client as any).syncVoxelBursts([]);
 
@@ -1065,6 +1068,148 @@ describe("GameClient", () => {
     expect(harvestMesh.count).toBe(0);
     expect(eggExplosionMesh.visible).toBe(false);
     expect(eggExplosionMesh.count).toBe(0);
+    expect(eggShockwaveMesh.visible).toBe(false);
+    expect(eggShockwaveMesh.count).toBe(0);
+
+    client.dispose();
+  });
+
+  it("shows a grounded egg trajectory preview with a landing marker and hides it once the player leaves the ground", () => {
+    const canvas = createCanvas();
+    const client = GameClient.mount({
+      canvas,
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 29
+    });
+
+    (client as any).pointerLocked = true;
+    (client as any).runtimePaused = false;
+    (client as any).lookPitch = (-22 * Math.PI) / 180;
+    (client as any).eggChargeState.active = true;
+    (client as any).eggChargeState.chargeAlpha = 0.65;
+
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(80, 80), new THREE.MeshBasicMaterial());
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.set(24, 2, 24);
+    (client as any).terrainGroup.add(floor);
+    floor.updateMatrixWorld(true);
+    (client as any).terrainGroup.updateMatrixWorld(true);
+
+    const groundedPlayer = {
+      id: "human-1",
+      name: "You",
+      kind: "human",
+      alive: true,
+      fallingOut: false,
+      grounded: true,
+      mass: 24,
+      livesRemaining: 3,
+      maxLives: 3,
+      respawning: false,
+      invulnerableRemaining: 0,
+      stunRemaining: 0,
+      pushVisualRemaining: 0,
+      spacePhase: "none",
+      spacePhaseRemaining: 0,
+      position: { x: 4, y: 2, z: 5 },
+      velocity: { x: 0, y: 0, z: 0 },
+      facing: { x: 1, z: 0 },
+      jetpackActive: false,
+      eliminatedAt: null
+    } as const;
+
+    (client as any).updateEggLaunchPreview(groundedPlayer, 1.2);
+
+    const preview = (client as any).eggTrajectoryPreview;
+    expect(preview.group.visible).toBe(true);
+    expect(preview.geometry.drawRange.count).toBeGreaterThan(2);
+    expect(preview.landingRing.visible).toBe(true);
+    expect(preview.landingRing.position.x).toBeGreaterThan(groundedPlayer.position.x);
+    expect(preview.landingRing.position.y).toBeCloseTo(2.04, 1);
+
+    (client as any).updateEggLaunchPreview(
+      {
+        ...groundedPlayer,
+        grounded: false
+      },
+      1.3
+    );
+
+    expect(preview.group.visible).toBe(false);
+    expect(preview.landingRing.visible).toBe(false);
+
+    client.dispose();
+  });
+
+  it("applies the egg launch telegraph only to the local chicken while charging", () => {
+    const canvas = createCanvas();
+    const client = GameClient.mount({
+      canvas,
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 41
+    });
+
+    (client as any).eggChargeState.chargeAlpha = 0.82;
+
+    (client as any).syncPlayers(
+      [
+        {
+          id: "human-1",
+          name: "You",
+          kind: "human",
+          alive: true,
+          fallingOut: false,
+          grounded: true,
+          mass: 24,
+          livesRemaining: 3,
+          maxLives: 3,
+          respawning: false,
+          invulnerableRemaining: 0,
+          stunRemaining: 0,
+          pushVisualRemaining: 0,
+          spacePhase: "none",
+          spacePhaseRemaining: 0,
+          position: { x: 4, y: 2, z: 5 },
+          velocity: { x: 0.1, y: 0, z: 0 },
+          facing: { x: 1, z: 0 },
+          jetpackActive: false,
+          eliminatedAt: null
+        },
+        {
+          id: "npc-1",
+          name: "NPC 1",
+          kind: "npc",
+          alive: true,
+          fallingOut: false,
+          grounded: true,
+          mass: 24,
+          livesRemaining: 3,
+          maxLives: 3,
+          respawning: false,
+          invulnerableRemaining: 0,
+          stunRemaining: 0,
+          pushVisualRemaining: 0,
+          spacePhase: "none",
+          spacePhaseRemaining: 0,
+          position: { x: 8, y: 2, z: 8 },
+          velocity: { x: 0.1, y: 0, z: 0 },
+          facing: { x: 1, z: 0 },
+          jetpackActive: false,
+          eliminatedAt: null
+        }
+      ],
+      "human-1",
+      1 / 60,
+      1.25
+    );
+
+    const localVisual = (client as any).playerVisuals.get("human-1");
+    const npcVisual = (client as any).playerVisuals.get("npc-1");
+
+    expect(Math.abs(localVisual.rightWing.rotation.z)).toBeGreaterThan(Math.abs(npcVisual.rightWing.rotation.z));
+    expect(localVisual.shell.rotation.z).toBeLessThan(npcVisual.shell.rotation.z);
 
     client.dispose();
   });

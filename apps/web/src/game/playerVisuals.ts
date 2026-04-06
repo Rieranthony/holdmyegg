@@ -78,6 +78,21 @@ const LANDING_FEATHER_SWING = 0.09;
 const PLAYER_STATUS_INVULNERABLE_PULSE_SPEED = 18;
 const PLAYER_STATUS_INVULNERABLE_OPACITY_MIN = 0.68;
 const PLAYER_STATUS_INVULNERABLE_OPACITY_MAX = 1.18;
+const EGG_CHARGE_BODY_PITCH = 0.16;
+const EGG_CHARGE_BODY_ROLL = 0.24;
+const EGG_CHARGE_BODY_YAW = 0.06;
+const EGG_CHARGE_HEAD_YAW = 0.14;
+const EGG_CHARGE_HEAD_PITCH = 0.04;
+const EGG_CHARGE_FORWARD_OFFSET = 0.07;
+const EGG_CHARGE_WING_OFFSET = 0.08;
+const EGG_CHARGE_RIGHT_WING_BOOST = 0.56;
+const EGG_CHARGE_LEFT_WING_BOOST = 0.12;
+const EGG_CHARGE_WING_SPAN_BOOST = 0.08;
+const EGG_RELEASE_FOLLOW_THROUGH_DURATION = 0.18;
+const EGG_RELEASE_BODY_PITCH = 0.14;
+const EGG_RELEASE_BODY_ROLL = 0.18;
+const EGG_RELEASE_FORWARD_OFFSET = 0.11;
+const EGG_RELEASE_HEAD_YAW = 0.08;
 
 export interface ChickenFeatherOffset {
   x: number;
@@ -268,6 +283,8 @@ export interface ChickenWingVisualInput {
   motionSeed: number;
   stunned: boolean;
   elapsedTime: number;
+  eggLaunchChargeAlpha?: number;
+  eggLaunchReleaseRemaining?: number;
 }
 
 export interface ChickenWingVisualState {
@@ -294,6 +311,8 @@ export interface ChickenPoseVisualInput {
   spacePhase?: SpacePhase;
   spacePhaseRemaining?: number;
   stunned?: boolean;
+  eggLaunchChargeAlpha?: number;
+  eggLaunchReleaseRemaining?: number;
 }
 
 export interface ChickenPoseVisualState {
@@ -314,7 +333,8 @@ export const chickenPoseVisualDefaults = {
   pushDuration: PUSH_VISUAL_DURATION,
   landingTumbleDuration: LANDING_TUMBLE_DURATION,
   landingTumbleHardSpeed: LANDING_TUMBLE_HARD_SPEED,
-  spaceFloatDuration: SPACE_FLOAT_DURATION
+  spaceFloatDuration: SPACE_FLOAT_DURATION,
+  eggLaunchReleaseDuration: EGG_RELEASE_FOLLOW_THROUGH_DURATION
 } as const;
 
 export const getChickenMotionSeed = (playerId: string) => ((hashString(playerId) % 4096) / 4096) * TAU;
@@ -396,7 +416,9 @@ export const getChickenWingVisualState = ({
   jetpackActive,
   motionSeed,
   stunned,
-  elapsedTime
+  elapsedTime,
+  eggLaunchChargeAlpha = 0,
+  eggLaunchReleaseRemaining = 0
 }: ChickenWingVisualInput): ChickenWingVisualState => {
   if (!alive || stunned) {
     return createWingVisualState({
@@ -407,6 +429,29 @@ export const getChickenWingVisualState = ({
       traceLength: 0,
       wingSpanScale: 1
     });
+  }
+
+  const chargeAlpha = clamp(eggLaunchChargeAlpha, 0, 1);
+  const releaseAlpha = clamp(eggLaunchReleaseRemaining / EGG_RELEASE_FOLLOW_THROUGH_DURATION, 0, 1);
+  const releasePulse = Math.sin((1 - releaseAlpha) * Math.PI) * releaseAlpha;
+
+  if (grounded && (chargeAlpha > 0 || releaseAlpha > 0)) {
+    return {
+      leftWingAngle: clampWingAngle(
+        FOLDED_WING_ANGLE +
+          chargeAlpha * EGG_CHARGE_LEFT_WING_BOOST +
+          releasePulse * 0.08
+      ),
+      rightWingAngle: clampWingAngle(
+        FOLDED_WING_ANGLE +
+          chargeAlpha * EGG_CHARGE_RIGHT_WING_BOOST +
+          releasePulse * 0.12
+      ),
+      wingSpanScale: 1 + chargeAlpha * EGG_CHARGE_WING_SPAN_BOOST + releasePulse * 0.04,
+      traceIntensity: 0,
+      traceLength: 0,
+      motion: "folded"
+    };
   }
 
   if (jetpackActive) {
@@ -515,10 +560,18 @@ export const getChickenPoseVisualState = ({
   landingRollRemaining,
   spacePhase = "none",
   spacePhaseRemaining = 0,
-  stunned = false
+  stunned = false,
+  eggLaunchChargeAlpha = 0,
+  eggLaunchReleaseRemaining = 0
 }: ChickenPoseVisualInput): ChickenPoseVisualState => {
   const pushProgress = 1 - clamp(pushVisualRemaining / PUSH_VISUAL_DURATION, 0, 1);
   const pushAlpha = Math.sin(pushProgress * Math.PI);
+  const eggChargeAlpha = grounded && !stunned ? clamp(eggLaunchChargeAlpha, 0, 1) : 0;
+  const eggReleaseAlpha =
+    grounded && !stunned
+      ? clamp(eggLaunchReleaseRemaining / EGG_RELEASE_FOLLOW_THROUGH_DURATION, 0, 1)
+      : 0;
+  const eggReleasePulse = Math.sin((1 - eggReleaseAlpha) * Math.PI) * eggReleaseAlpha;
   const floatProgress = 1 - clamp(spacePhaseRemaining / SPACE_FLOAT_DURATION, 0, 1);
   const floatEnvelope = spacePhase === "float" ? 0.58 + Math.sin(floatProgress * Math.PI) * 0.42 : 0;
   const floatPhase = elapsedTime * 1.24 + motionSeed * 0.7;
@@ -568,20 +621,35 @@ export const getChickenPoseVisualState = ({
   return {
     bodyPitch: stabilizeZero(
       pushAlpha * PUSH_BODY_PITCH +
+        eggChargeAlpha * EGG_CHARGE_BODY_PITCH +
+        eggReleasePulse * EGG_RELEASE_BODY_PITCH +
         diveAlpha * DIVE_PITCH_MAX +
         reentryPitch +
         floatBodyPitch +
         landingPitch +
         runBodyPitch
     ),
-    bodyRoll: stabilizeZero(pushAlpha * PUSH_BODY_ROLL + floatBodyRoll + reentryRoll + landingRoll + runBodyRoll),
-    bodyYaw: stabilizeZero(runBodyYaw + floatBodyYaw),
-    bodyForwardOffset: stabilizeZero(
-      pushAlpha * PUSH_BODY_LUNGE + Math.sin(landingProgress * Math.PI) * LANDING_TUMBLE_LUNGE * landingEnvelope
+    bodyRoll: stabilizeZero(
+      pushAlpha * PUSH_BODY_ROLL -
+        eggChargeAlpha * EGG_CHARGE_BODY_ROLL +
+        eggReleasePulse * EGG_RELEASE_BODY_ROLL +
+        floatBodyRoll +
+        reentryRoll +
+        landingRoll +
+        runBodyRoll
     ),
-    wingAngleOffset: stabilizeZero(pushAlpha * PUSH_WING_BOOST),
-    headPitch: stabilizeZero(runHeadPitch + floatHeadPitch + reentryHeadPitch),
-    headYaw: stabilizeZero(runHeadYaw + floatHeadYaw),
+    bodyYaw: stabilizeZero(runBodyYaw + floatBodyYaw - eggChargeAlpha * EGG_CHARGE_BODY_YAW),
+    bodyForwardOffset: stabilizeZero(
+      pushAlpha * PUSH_BODY_LUNGE +
+        eggChargeAlpha * EGG_CHARGE_FORWARD_OFFSET +
+        eggReleasePulse * EGG_RELEASE_FORWARD_OFFSET +
+        Math.sin(landingProgress * Math.PI) * LANDING_TUMBLE_LUNGE * landingEnvelope
+    ),
+    wingAngleOffset: stabilizeZero(pushAlpha * PUSH_WING_BOOST + eggChargeAlpha * EGG_CHARGE_WING_OFFSET),
+    headPitch: stabilizeZero(runHeadPitch + floatHeadPitch + reentryHeadPitch + eggChargeAlpha * EGG_CHARGE_HEAD_PITCH),
+    headYaw: stabilizeZero(
+      runHeadYaw + floatHeadYaw - eggChargeAlpha * EGG_CHARGE_HEAD_YAW + eggReleasePulse * EGG_RELEASE_HEAD_YAW
+    ),
     headYOffset: stabilizeZero(runHeadYOffset + floatHeadYOffset),
     leftLegPitch: stabilizeZero(runLegPitch + floatLegPitch + reentryLegPitch),
     rightLegPitch: stabilizeZero(-runLegPitch - floatLegPitch - reentryLegPitch),

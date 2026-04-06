@@ -19,7 +19,7 @@ export const runtimeShortcutBindings: ShortcutBinding[] = [
   },
   {
     action: "Jump / Fly",
-    detail: "tap to jump, keep Space pressed in air to fly",
+    detail: "tap to jump, hold Space after takeoff to fly, tap Space during reentry to recover",
     keys: ["Space"],
   },
   {

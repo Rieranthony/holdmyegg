@@ -574,16 +574,24 @@ export function App({
                   >
                     Rules and Controls
                   </button>
-                  <button
+                  {/* <button
                     className="menu-action menu-action--secondary menu-action--full menu-action--compact"
                     onClick={onOpenSupportWidget}
                     type="button"
                   >
                     Feedback / bug
-                  </button>
+                  </button> */}
                 </div>
                 <p className="menu-credit">
-                  Made by Anthony Riera and{" "}
+                  Made by{" "}
+                  <a
+                    href="https://x.com/anthonyriera"
+                    rel="noreferrer"
+                    target="_blank"
+                  >
+                    Anthony Riera
+                  </a>{" "}
+                  and{" "}
                   <a
                     href="https://cossistant.com"
                     rel="noreferrer"

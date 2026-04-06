@@ -5,6 +5,8 @@ const createCommand = (partial: Partial<PlayerCommand> = {}): PlayerCommand => (
   moveZ: 0,
   lookX: 0,
   lookZ: 0,
+  eggCharge: 0,
+  eggPitch: 0,
   jump: false,
   jumpPressed: false,
   jumpReleased: false,

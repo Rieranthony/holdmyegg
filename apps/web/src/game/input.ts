@@ -58,6 +58,8 @@ export const buildPlayerCommand = (
     moveZ: move.z,
     lookX: forward.x,
     lookZ: forward.z,
+    eggCharge: 0,
+    eggPitch: 0,
     jump: input.jump,
     jumpPressed: input.jumpPressed,
     jumpReleased: input.jumpReleased,

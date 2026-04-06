@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { getEggScatterDebrisVisualState, getVoxelBurstMaterialProfile, getVoxelBurstParticleCount, getVoxelBurstParticleState } from "./voxelFx";
+import {
+  getEggScatterDebrisVisualState,
+  getVoxelBurstMaterialProfile,
+  getVoxelBurstParticleCount,
+  getVoxelBurstParticleState,
+  getVoxelBurstShockwaveState
+} from "./voxelFx";
 
 describe("voxelFx", () => {
   it("resolves harvest burst material profiles from the removed cube kind and height", () => {
@@ -61,11 +67,36 @@ describe("voxelFx", () => {
     expect(getVoxelBurstParticleCount(harvestBurst)).toBeLessThan(getVoxelBurstParticleCount(eggBurst));
     expect(eggDistance).toBeGreaterThan(harvestDistance);
     expect(harvestParticle.scale).toBeLessThan(0.16);
-    expect(eggParticle.scale).toBeLessThan(0.24);
+    expect(eggParticle.scale).toBeLessThan(0.26);
     expect(harvestParticle.opacity).toBeGreaterThan(0);
     expect(harvestParticle.opacity).toBeLessThan(1);
     expect(eggParticle.opacity).toBeGreaterThan(0);
     expect(eggParticle.opacity).toBeLessThan(1);
+  });
+
+  it("adds a fast shockwave ring for egg explosions only", () => {
+    const eggShockwave = getVoxelBurstShockwaveState({
+      id: "egg-1",
+      style: "eggExplosion",
+      kind: null,
+      position: { x: 10, y: 6, z: 8 },
+      elapsed: 0.12,
+      duration: 0.42
+    });
+
+    expect(eggShockwave).not.toBeNull();
+    expect(eggShockwave?.scale).toBeGreaterThan(0.55);
+    expect(eggShockwave?.opacity).toBeGreaterThan(0);
+    expect(
+      getVoxelBurstShockwaveState({
+        id: "harvest-1",
+        style: "harvest",
+        kind: "ground",
+        position: { x: 10, y: 6, z: 8 },
+        elapsed: 0.12,
+        duration: 0.24
+      })
+    ).toBeNull();
   });
 
   it("adds spin and squash stretch to relocating egg debris without changing the sim path", () => {

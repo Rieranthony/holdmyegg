@@ -45,8 +45,14 @@ export interface VoxelBurstParticleState {
   opacity: number;
 }
 
+export interface VoxelBurstShockwaveState {
+  position: Vector3;
+  scale: number;
+  opacity: number;
+}
+
 export const voxelBurstParticleCountByStyle = {
-  eggExplosion: 36,
+  eggExplosion: 84,
   harvest: 7
 } as const;
 
@@ -97,17 +103,17 @@ export const getVoxelBurstParticleState = (
   const spinZ = progress * Math.PI * (1.1 + getNoise(seed, 7) * 2.4);
 
   if (burst.style === "eggExplosion") {
-    const burstBand = particleIndex % 3;
-    const bandDistanceStart = [0.08, 0.18, 0.3][burstBand]!;
-    const bandDistanceEnd = [1.05, 1.38, 1.72][burstBand]!;
-    const bandLift = [0.95, 1.2, 1.42][burstBand]!;
-    const bandScaleStart = [0.34, 0.28, 0.22][burstBand]!;
+    const burstBand = particleIndex % 4;
+    const bandDistanceStart = [0.06, 0.18, 0.34, 0.5][burstBand]!;
+    const bandDistanceEnd = [1.16, 1.56, 1.94, 2.34][burstBand]!;
+    const bandLift = [1.02, 1.28, 1.52, 0.82][burstBand]!;
+    const bandScaleStart = [0.36, 0.3, 0.22, 0.16][burstBand]!;
     const distance = lerp(bandDistanceStart, bandDistanceEnd, progress) * radialJitter;
     const lift =
       Math.sin(progress * Math.PI) * bandLift * liftJitter -
       progress * progress * gravityJitter * 0.78 +
-      Math.sin(progress * Math.PI * 2) * 0.06;
-    const corePulse = 1 + Math.sin(progress * Math.PI) * 0.16;
+      Math.sin(progress * Math.PI * (2.2 + burstBand * 0.18)) * 0.08;
+    const corePulse = 1 + Math.sin(progress * Math.PI) * 0.2;
     return {
       position: {
         x: burst.position.x + Math.cos(yaw) * distance,
@@ -135,5 +141,24 @@ export const getVoxelBurstParticleState = (
     rotationZ: spinZ * 0.9,
     scale: lerp(0.16, 0.035, progress),
     opacity: 1 - Math.pow(progress, 1.7)
+  };
+};
+
+export const getVoxelBurstShockwaveState = (
+  burst: RuntimeVoxelBurstState
+): VoxelBurstShockwaveState | null => {
+  if (burst.style !== "eggExplosion") {
+    return null;
+  }
+
+  const progress = getProgress(burst.elapsed, burst.duration);
+  return {
+    position: {
+      x: burst.position.x,
+      y: burst.position.y + 0.08,
+      z: burst.position.z
+    },
+    scale: lerp(0.55, 3.8, progress),
+    opacity: clamp(0.72 - Math.pow(progress, 1.2), 0, 1)
   };
 };

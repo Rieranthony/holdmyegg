@@ -57,6 +57,25 @@ describe("getChickenWingVisualState", () => {
     });
   });
 
+  it("pulls the right wing back while charging a grounded egg throw", () => {
+    const wingState = getChickenWingVisualState({
+      alive: true,
+      grounded: true,
+      velocityY: 0,
+      planarSpeed: 0,
+      jetpackActive: false,
+      motionSeed: 0.4,
+      stunned: false,
+      elapsedTime: 0.2,
+      eggLaunchChargeAlpha: 0.8
+    });
+
+    expect(wingState.motion).toBe("folded");
+    expect(wingState.rightWingAngle).toBeGreaterThan(wingState.leftWingAngle);
+    expect(wingState.rightWingAngle).toBeGreaterThan(0.5);
+    expect(wingState.traceIntensity).toBe(0);
+  });
+
   it("animates a wider asymmetric flap while rising from a jump", () => {
     const wingState = getChickenWingVisualState({
       alive: true,
@@ -206,6 +225,52 @@ describe("getChickenPoseVisualState", () => {
       rightLegPitch: 0,
       featherSwing: 0
     });
+  });
+
+  it("leans into the throw while charging and keeps a brief follow-through on release", () => {
+    const chargePose = getChickenPoseVisualState({
+      grounded: true,
+      velocityY: 0,
+      planarSpeed: 0.2,
+      elapsedTime: 0.4,
+      motionSeed: 0.3,
+      pushVisualRemaining: 0,
+      landingRollRemaining: 0,
+      eggLaunchChargeAlpha: 0.85,
+      eggLaunchReleaseRemaining: 0,
+      stunned: false
+    });
+    const releasePose = getChickenPoseVisualState({
+      grounded: true,
+      velocityY: 0,
+      planarSpeed: 0.2,
+      elapsedTime: 0.45,
+      motionSeed: 0.3,
+      pushVisualRemaining: 0,
+      landingRollRemaining: 0,
+      eggLaunchChargeAlpha: 0,
+      eggLaunchReleaseRemaining: chickenPoseVisualDefaults.eggLaunchReleaseDuration * 0.55,
+      stunned: false
+    });
+    const settledReleasePose = getChickenPoseVisualState({
+      grounded: true,
+      velocityY: 0,
+      planarSpeed: 0.2,
+      elapsedTime: 0.55,
+      motionSeed: 0.3,
+      pushVisualRemaining: 0,
+      landingRollRemaining: 0,
+      eggLaunchChargeAlpha: 0,
+      eggLaunchReleaseRemaining: chickenPoseVisualDefaults.eggLaunchReleaseDuration * 0.08,
+      stunned: false
+    });
+
+    expect(chargePose.bodyPitch).toBeGreaterThan(0.1);
+    expect(chargePose.bodyRoll).toBeLessThan(-0.1);
+    expect(Math.abs(chargePose.headYaw)).toBeGreaterThan(0.08);
+    expect(releasePose.bodyForwardOffset).toBeGreaterThan(0.05);
+    expect(releasePose.bodyRoll).toBeGreaterThan(0.04);
+    expect(Math.abs(settledReleasePose.bodyRoll)).toBeLessThan(Math.abs(releasePose.bodyRoll));
   });
 
   it("adds a goofy run cycle while grounded and moving", () => {

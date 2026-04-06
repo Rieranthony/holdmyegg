@@ -4,7 +4,7 @@ export interface RuntimeInputCommand extends PlayerCommand {
   seq: number;
 }
 
-const PACKED_INPUT_BYTES = 4 + 4 * 4 + 2 + 2 * 6;
+const PACKED_INPUT_BYTES = 4 + 4 * 6 + 2 + 2 * 6;
 const FLAG_JUMP = 1 << 0;
 const FLAG_JUMP_PRESSED = 1 << 1;
 const FLAG_JUMP_RELEASED = 1 << 2;
@@ -35,6 +35,8 @@ export const packRuntimeInputCommand = (command: RuntimeInputCommand) => {
   view.setFloat32(8, command.moveZ, true);
   view.setFloat32(12, command.lookX, true);
   view.setFloat32(16, command.lookZ, true);
+  view.setFloat32(20, command.eggCharge, true);
+  view.setFloat32(24, command.eggPitch, true);
 
   let flags = 0;
   if (command.jump) flags |= FLAG_JUMP;
@@ -46,21 +48,23 @@ export const packRuntimeInputCommand = (command: RuntimeInputCommand) => {
   if (command.layEgg) flags |= FLAG_LAY_EGG;
   if (command.targetVoxel) flags |= FLAG_TARGET_VOXEL;
   if (command.targetNormal) flags |= FLAG_TARGET_NORMAL;
-  view.setUint16(20, flags, true);
-  packVec3i(view, 22, command.targetVoxel);
-  packVec3i(view, 28, command.targetNormal);
+  view.setUint16(28, flags, true);
+  packVec3i(view, 30, command.targetVoxel);
+  packVec3i(view, 36, command.targetNormal);
   return buffer;
 };
 
 export const unpackRuntimeInputCommand = (buffer: ArrayBuffer): RuntimeInputCommand => {
   const view = new DataView(buffer);
-  const flags = view.getUint16(20, true);
+  const flags = view.getUint16(28, true);
   return {
     seq: view.getUint32(0, true),
     moveX: view.getFloat32(4, true),
     moveZ: view.getFloat32(8, true),
     lookX: view.getFloat32(12, true),
     lookZ: view.getFloat32(16, true),
+    eggCharge: view.getFloat32(20, true),
+    eggPitch: view.getFloat32(24, true),
     jump: (flags & FLAG_JUMP) !== 0,
     jumpPressed: (flags & FLAG_JUMP_PRESSED) !== 0,
     jumpReleased: (flags & FLAG_JUMP_RELEASED) !== 0,
@@ -68,8 +72,8 @@ export const unpackRuntimeInputCommand = (buffer: ArrayBuffer): RuntimeInputComm
     place: (flags & FLAG_PLACE) !== 0,
     push: (flags & FLAG_PUSH) !== 0,
     layEgg: (flags & FLAG_LAY_EGG) !== 0,
-    targetVoxel: (flags & FLAG_TARGET_VOXEL) !== 0 ? unpackVec3i(view, 22) : null,
-    targetNormal: (flags & FLAG_TARGET_NORMAL) !== 0 ? unpackVec3i(view, 28) : null
+    targetVoxel: (flags & FLAG_TARGET_VOXEL) !== 0 ? unpackVec3i(view, 30) : null,
+    targetNormal: (flags & FLAG_TARGET_NORMAL) !== 0 ? unpackVec3i(view, 36) : null
   };
 };
 
@@ -79,5 +83,7 @@ export const clearTransientRuntimeInputFlags = (command: RuntimeInputCommand): R
   jumpReleased: false,
   destroy: false,
   place: false,
-  layEgg: false
+  layEgg: false,
+  eggCharge: 0,
+  eggPitch: 0
 });

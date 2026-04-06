@@ -55,6 +55,8 @@ const createEmptyRuntimeInputCommand = (seq = 0): RuntimeInputCommand => ({
   moveZ: 0,
   lookX: 1,
   lookZ: 0,
+  eggCharge: 0,
+  eggPitch: 0,
   jump: false,
   jumpPressed: false,
   jumpReleased: false,

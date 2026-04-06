@@ -23,6 +23,8 @@ const getInternalPlayer = (simulation: OutOfBoundsSimulation, playerId: string) 
     position: { x: number; y: number; z: number };
     velocity: { x: number; y: number; z: number };
     facing: { x: number; z: number };
+    jumpBufferRemaining: number;
+    jetpackHoldActivationRemaining: number;
     pushCooldownRemaining: number;
     pushVisualRemaining: number;
     spacePhase: "none" | "float" | "reentry";
@@ -346,30 +348,34 @@ describe("OutOfBoundsSimulation", () => {
     expect(Math.abs(normalizeAngle(targetYaw - nextYaw))).toBeLessThan(Math.abs(normalizeAngle(targetYaw - currentYaw)));
   });
 
-  it("allows free grounded jumps and still requires a fresh airborne press to activate the jetpack", () => {
+  it("buffers a jump pressed just before landing so the player rebounds without a grounded dead zone", () => {
     const simulation = createTestSimulation();
     const localPlayerId = simulation.getLocalPlayerId()!;
-    advanceUntilGrounded(simulation, localPlayerId);
+    const internalPlayer = getInternalPlayer(simulation, localPlayerId);
 
-    const beforeJump = simulation.getPlayerViewState(localPlayerId)!;
+    internalPlayer.position = { x: 10.5, y: PLAYER_GROUND_Y + 0.04, z: 10.5 };
+    internalPlayer.velocity = { x: 0, y: -6, z: 0 };
+    internalPlayer.grounded = false;
+    internalPlayer.jetpackEligible = false;
+    internalPlayer.mass = 0;
+
     simulation.step({
       [localPlayerId]: jump()
     });
-    const afterFirstJump = simulation.getPlayerViewState(localPlayerId)!;
-    simulation.step({
-      [localPlayerId]: idle({
-        jump: true
-      })
-    });
-    const afterHeldSpace = simulation.getPlayerViewState(localPlayerId)!;
+    const afterBufferedLandingJump = simulation.getPlayerViewState(localPlayerId)!;
 
-    expect(afterFirstJump.mass).toBe(beforeJump.mass);
-    expect(afterFirstJump.jetpackActive).toBe(false);
-    expect(afterHeldSpace.mass).toBe(afterFirstJump.mass);
-    expect(afterHeldSpace.jetpackActive).toBe(false);
-    expect(afterHeldSpace.velocity.y).toBeLessThan(afterFirstJump.velocity.y);
+    expect(afterBufferedLandingJump.grounded).toBe(false);
+    expect(afterBufferedLandingJump.jetpackActive).toBe(false);
+    expect(afterBufferedLandingJump.mass).toBe(0);
+    expect(afterBufferedLandingJump.velocity.y).toBe(simulation.config.jumpSpeed);
+  });
 
+  it("keeps grounded jumps free even when the player has no matter", () => {
+    const simulation = createTestSimulation();
+    const localPlayerId = simulation.getLocalPlayerId()!;
+    advanceUntilGrounded(simulation, localPlayerId);
     const internalPlayer = getInternalPlayer(simulation, localPlayerId);
+
     internalPlayer.grounded = true;
     internalPlayer.jetpackEligible = false;
     internalPlayer.mass = 0;
@@ -384,7 +390,68 @@ describe("OutOfBoundsSimulation", () => {
     expect(freeJump.velocity.y).toBeGreaterThan(0);
   });
 
-  it("activates the jetpack on a second airborne press, sustains while held, and stops on release", () => {
+  it("activates the jetpack after holding Space through takeoff for the hold delay", () => {
+    const simulation = createTestSimulation();
+    const localPlayerId = simulation.getLocalPlayerId()!;
+    advanceUntilGrounded(simulation, localPlayerId);
+
+    const initialMass = simulation.getPlayerViewState(localPlayerId)!.mass;
+    const framesToHoldBeforeActivation = Math.ceil(
+      simulation.config.jetpackHoldActivationDelay * simulation.config.tickRate
+    );
+
+    simulation.step({
+      [localPlayerId]: jump()
+    });
+
+    for (let frame = 0; frame < Math.max(0, framesToHoldBeforeActivation - 2); frame += 1) {
+      simulation.step({
+        [localPlayerId]: idle({
+          jump: true
+        })
+      });
+    }
+
+    const beforeActivation = simulation.getPlayerViewState(localPlayerId)!;
+    expect(beforeActivation.jetpackActive).toBe(false);
+    expect(beforeActivation.mass).toBe(initialMass);
+
+    simulation.step({
+      [localPlayerId]: idle({
+        jump: true
+      })
+    });
+    const afterActivation = simulation.getPlayerViewState(localPlayerId)!;
+
+    expect(afterActivation.jetpackActive).toBe(true);
+    expect(afterActivation.mass).toBeLessThan(initialMass);
+    expect(afterActivation.velocity.y).toBeGreaterThan(beforeActivation.velocity.y);
+  });
+
+  it("keeps a tap jump free and does not ignite the jetpack after release", () => {
+    const simulation = createTestSimulation();
+    const localPlayerId = simulation.getLocalPlayerId()!;
+    advanceUntilGrounded(simulation, localPlayerId);
+
+    const initialMass = simulation.getPlayerViewState(localPlayerId)!.mass;
+    simulation.step({
+      [localPlayerId]: jump()
+    });
+    simulation.step({
+      [localPlayerId]: idle({
+        jumpReleased: true
+      })
+    });
+    advanceSimulation(simulation, 5, {
+      [localPlayerId]: idle()
+    });
+
+    const afterTapJump = simulation.getPlayerViewState(localPlayerId)!;
+    expect(afterTapJump.jetpackActive).toBe(false);
+    expect(afterTapJump.mass).toBe(initialMass);
+  });
+
+  it("activates the jetpack on a fresh airborne press after releasing the initial jump, sustains while held, and stops on release", () => {
     const simulation = createTestSimulation();
     const localPlayerId = simulation.getLocalPlayerId()!;
     advanceUntilGrounded(simulation, localPlayerId);
@@ -394,14 +461,14 @@ describe("OutOfBoundsSimulation", () => {
     });
     simulation.step({
       [localPlayerId]: idle({
-        jump: true
+        jumpReleased: true
       })
     });
-    const beforeSecondPress = simulation.getPlayerViewState(localPlayerId)!;
-
     simulation.step({
       [localPlayerId]: idle()
     });
+    const beforeSecondPress = simulation.getPlayerViewState(localPlayerId)!;
+
     simulation.step({
       [localPlayerId]: jump()
     });
@@ -1064,6 +1131,177 @@ describe("OutOfBoundsSimulation", () => {
     expect(simulation.getPlayerState(localPlayerId)!.mass).toBe(75);
   });
 
+  it("treats grounded tap throws as a minimum-charge lob and lets longer holds launch harder", () => {
+    const createGroundedThrowVelocity = (eggCharge: number) => {
+      const simulation = new OutOfBoundsSimulation({
+        eggGravity: 0,
+        skyDropIntervalMin: 999,
+        skyDropIntervalMax: 999
+      });
+      simulation.reset("explore", createArenaDocument(), {
+        localPlayerName: "You"
+      });
+
+      const localPlayerId = simulation.getLocalPlayerId()!;
+      const localPlayer = getInternalPlayer(simulation, localPlayerId);
+      localPlayer.position = { x: 20.5, y: PLAYER_GROUND_Y, z: 20.5 };
+      localPlayer.velocity = { x: 0, y: 0, z: 0 };
+      localPlayer.facing = { x: 1, z: 0 };
+      localPlayer.mass = 80;
+      localPlayer.grounded = true;
+
+      simulation.step({
+        [localPlayerId]: layEgg({
+          eggCharge,
+          eggPitch: (-22 * Math.PI) / 180
+        })
+      });
+
+      return ((simulation as unknown as { eggs: Map<string, { velocity: { x: number; y: number; z: number } }> }).eggs
+        .values()
+        .next()
+        .value as { velocity: { x: number; y: number; z: number } }).velocity;
+    };
+
+    const tapVelocity = createGroundedThrowVelocity(0);
+    const minChargeVelocity = createGroundedThrowVelocity(0.18);
+    const heldVelocity = createGroundedThrowVelocity(1);
+
+    expect(tapVelocity.x).toBeCloseTo(minChargeVelocity.x, 5);
+    expect(tapVelocity.y).toBeCloseTo(minChargeVelocity.y, 5);
+    expect(Math.hypot(heldVelocity.x, heldVelocity.z)).toBeGreaterThan(Math.hypot(tapVelocity.x, tapVelocity.z));
+    expect(heldVelocity.y).toBeGreaterThan(tapVelocity.y);
+  });
+
+  it("keeps airborne throws on the legacy immediate path instead of applying the grounded charge arc", () => {
+    const simulation = new OutOfBoundsSimulation({
+      skyDropIntervalMin: 999,
+      skyDropIntervalMax: 999
+    });
+    simulation.reset("explore", createArenaDocument(), {
+      localPlayerName: "You"
+    });
+
+    const localPlayerId = simulation.getLocalPlayerId()!;
+    const localPlayer = getInternalPlayer(simulation, localPlayerId);
+    localPlayer.position = { x: 20.5, y: PLAYER_GROUND_Y + 1.2, z: 20.5 };
+    localPlayer.velocity = { x: 1.25, y: 0.8, z: -0.4 };
+    localPlayer.facing = { x: 1, z: 0 };
+    localPlayer.mass = 80;
+    localPlayer.grounded = false;
+    localPlayer.spacePhase = "none";
+
+    simulation.step({
+      [localPlayerId]: layEgg({
+        eggCharge: 1,
+        eggPitch: 0.7
+      })
+    });
+
+    const eggVelocity = ((simulation as unknown as { eggs: Map<string, { velocity: { x: number; y: number; z: number } }> }).eggs
+      .values()
+      .next()
+      .value as { velocity: { x: number; y: number; z: number } }).velocity;
+
+    expect(eggVelocity.x).toBeCloseTo(localPlayer.velocity.x + simulation.config.eggThrowSpeed, 5);
+    expect(eggVelocity.y).toBeCloseTo(Math.max(localPlayer.velocity.y * 0.35, 0) + simulation.config.eggThrowSpeed * 0.38, 5);
+    expect(eggVelocity.z).toBeCloseTo(localPlayer.velocity.z, 5);
+  });
+
+  it("keeps grenade-like tangential carry on impact but settles quickly after the first bounce", () => {
+    const simulation = new OutOfBoundsSimulation({
+      eggFuseDuration: 999,
+      eggGravity: 24,
+      skyDropIntervalMin: 999,
+      skyDropIntervalMax: 999
+    });
+    simulation.reset("explore", createArenaDocument(), {
+      localPlayerName: "You"
+    });
+
+    const eggs = (simulation as unknown as { eggs: Map<string, any> }).eggs;
+    eggs.set("manual-bounce-egg", {
+      id: "manual-bounce-egg",
+      ownerId: simulation.getLocalPlayerId()!,
+      fuseRemaining: 999,
+      grounded: false,
+      orbital: false,
+      explodeOnGroundContact: false,
+      fuseArmedBelowY: null,
+      position: { x: 20.5, y: PLAYER_GROUND_Y + 0.42, z: 20.5 },
+      velocity: { x: 5, y: -6, z: 0.4 }
+    });
+
+    advanceSimulation(simulation, 4, {
+      [simulation.getLocalPlayerId()!]: idle()
+    });
+
+    const bouncedEgg = eggs.get("manual-bounce-egg")!;
+    expect(bouncedEgg.velocity.x).toBeGreaterThan(3.5);
+    expect(bouncedEgg.velocity.y).toBeGreaterThan(0);
+    expect(bouncedEgg.velocity.y).toBeLessThan(2.5);
+
+    advanceSimulation(simulation, 75, {
+      [simulation.getLocalPlayerId()!]: idle()
+    });
+
+    expect(Math.abs(bouncedEgg.velocity.y)).toBeLessThan(0.001);
+    expect(Math.hypot(bouncedEgg.velocity.x, bouncedEgg.velocity.z)).toBeLessThan(0.5);
+  });
+
+  it("extends the default blast enough to catch slightly farther players and voxels", () => {
+    const map = createArenaDocument((world) => {
+      world.setVoxel(20, DEFAULT_SURFACE_Y, 19, "ground");
+    });
+    const simulation = createTestSimulation("skirmish");
+    simulation.reset("skirmish", map, {
+      npcCount: 4,
+      localPlayerName: "You"
+    });
+    const simulationInternals = simulation as unknown as { generateNpcCommand: (player: unknown) => PlayerCommand };
+    simulationInternals.generateNpcCommand = () => idle();
+    const localPlayerId = simulation.getLocalPlayerId()!;
+    const npcId = getNpcId(simulation)!;
+    const localPlayer = getInternalPlayer(simulation, localPlayerId);
+    const npcPlayer = getInternalPlayer(simulation, npcId);
+    const otherNpcIds = simulation
+      .getSnapshot()
+      .players.filter((player) => player.kind === "npc" && player.id !== npcId)
+      .map((player) => player.id);
+
+    localPlayer.position = { x: 18.5, y: PLAYER_GROUND_Y, z: 18.5 };
+    localPlayer.grounded = true;
+    npcPlayer.position = { x: 21.3, y: PLAYER_GROUND_Y, z: 18.5 };
+    npcPlayer.velocity = { x: 0, y: 0, z: 0 };
+    npcPlayer.grounded = true;
+    otherNpcIds.forEach((otherNpcId, index) => {
+      const otherNpc = getInternalPlayer(simulation, otherNpcId);
+      otherNpc.position = { x: 32 + index * 3, y: PLAYER_GROUND_Y, z: 32 };
+      otherNpc.velocity = { x: 0, y: 0, z: 0 };
+      otherNpc.grounded = true;
+    });
+
+    const eggs = (simulation as unknown as { eggs: Map<string, any> }).eggs;
+    eggs.set("manual-radius-egg", {
+      id: "manual-radius-egg",
+      ownerId: localPlayerId,
+      fuseRemaining: 0,
+      grounded: true,
+      orbital: false,
+      explodeOnGroundContact: false,
+      fuseArmedBelowY: null,
+      position: { x: 18.5, y: PLAYER_GROUND_Y + 0.22, z: 18.5 },
+      velocity: { x: 0, y: 0, z: 0 }
+    });
+
+    simulation.step({
+      [localPlayerId]: idle()
+    });
+
+    expect(simulation.getPlayerState(npcId)!.livesRemaining).toBe(simulation.config.maxLives - 1);
+    expect(simulation.getWorld().getVoxelKind(20, DEFAULT_SURFACE_Y, 19)).toBeUndefined();
+  });
+
   it("keeps unrelated egg defaults intact when overriding one tuning field", () => {
     const simulation = new OutOfBoundsSimulation({
       eggCost: 11
@@ -1072,6 +1310,10 @@ describe("OutOfBoundsSimulation", () => {
     expect(simulation.config.eggCost).toBe(11);
     expect(simulation.config.eggFuseDuration).toBe(defaultSimulationConfig.eggFuseDuration);
     expect(simulation.config.maxActiveEggsPerPlayer).toBe(defaultSimulationConfig.maxActiveEggsPerPlayer);
+    expect(simulation.config.jumpBufferDuration).toBe(defaultSimulationConfig.jumpBufferDuration);
+    expect(simulation.config.jetpackHoldActivationDelay).toBe(
+      defaultSimulationConfig.jetpackHoldActivationDelay
+    );
     expect(simulation.config.startingLives).toBe(defaultSimulationConfig.startingLives);
   });
 
@@ -1451,6 +1693,57 @@ describe("OutOfBoundsSimulation", () => {
     expect(reentryPlayer.spacePhase).toBe("none");
     expect(reentryPlayer.position.y).toBeLessThanOrEqual(48.5);
     expect(reentryPlayer.spaceTriggerArmed).toBe(true);
+  });
+
+  it("lets a fresh Space press recover from reentry into jetpack before ground contact", () => {
+    const simulation = createTestSimulation("explore");
+    const localPlayerId = simulation.getLocalPlayerId()!;
+    const localPlayer = getInternalPlayer(simulation, localPlayerId);
+
+    localPlayer.position = { x: 10.5, y: 55, z: 10.5 };
+    localPlayer.velocity = { x: 0, y: -4, z: 0 };
+    localPlayer.grounded = false;
+    localPlayer.mass = simulation.config.maxMass;
+    localPlayer.spacePhase = "reentry";
+    localPlayer.spacePhaseRemaining = 0;
+    localPlayer.spaceTriggerArmed = false;
+    localPlayer.jetpackEligible = true;
+    localPlayer.jetpackActive = false;
+
+    simulation.step({
+      [localPlayerId]: jump()
+    });
+
+    const recoveredPlayer = simulation.getPlayerRuntimeState(localPlayerId)!;
+    expect(recoveredPlayer.spacePhase).toBe("none");
+    expect(recoveredPlayer.jetpackActive).toBe(true);
+    expect(recoveredPlayer.velocity.y).toBeGreaterThan(0);
+    expect(getInternalPlayer(simulation, localPlayerId).spaceTriggerArmed).toBe(false);
+  });
+
+  it("does not recover jetpack from reentry without matter", () => {
+    const simulation = createTestSimulation("explore");
+    const localPlayerId = simulation.getLocalPlayerId()!;
+    const localPlayer = getInternalPlayer(simulation, localPlayerId);
+
+    localPlayer.position = { x: 10.5, y: 55, z: 10.5 };
+    localPlayer.velocity = { x: 0, y: -4, z: 0 };
+    localPlayer.grounded = false;
+    localPlayer.mass = 0;
+    localPlayer.spacePhase = "reentry";
+    localPlayer.spacePhaseRemaining = 0;
+    localPlayer.spaceTriggerArmed = false;
+    localPlayer.jetpackEligible = true;
+    localPlayer.jetpackActive = false;
+
+    simulation.step({
+      [localPlayerId]: jump()
+    });
+
+    const unrecoveredPlayer = simulation.getPlayerRuntimeState(localPlayerId)!;
+    expect(unrecoveredPlayer.spacePhase).toBe("reentry");
+    expect(unrecoveredPlayer.jetpackActive).toBe(false);
+    expect(unrecoveredPlayer.velocity.y).toBeLessThan(-4);
   });
 
   it("separates overlapping players during reset when spawns collide", () => {
