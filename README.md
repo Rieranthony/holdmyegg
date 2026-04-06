@@ -1,12 +1,12 @@
-# Out of Bounds
+# HoldMyEgg
 
-Out of Bounds is a solo-first voxel arena prototype built with Bun, React, and Three.js.
+HoldMyEgg is the current player-facing name for the solo-first voxel arena prototype built with Bun, React, and Three.js.
 
 The current build is focused on the core loop:
 - shape a cubic arena
 - save, load, import, and export maps
-- run `Explore` to test movement, jump, Mass flow, harvesting, and live building
-- run `Skirmish` to fight lightweight NPCs and push them out of bounds
+- run `Explore` to test movement, jump, Matter flow, harvesting, and live building
+- run `Brawl` to fight lightweight NPCs and push them out of bounds
 
 Multiplayer is intentionally not built yet. The map and simulation packages are already structured so we can reuse the same contracts later on a server.
 
@@ -14,8 +14,10 @@ Multiplayer is intentionally not built yet. The map and simulation packages are 
 - Bun workspace is set up
 - shared map package is working
 - shared simulation package is working
-- web editor, HUD, explore mode, and skirmish mode are working
-- the app now opens on a game-first start menu, with `Explore` and `Skirmish` as primary actions
+- web editor, HUD, explore mode, and brawl mode are working
+- the app now opens on a minimalist HoldMyEgg start menu with a live overhead arena background, `Explore`, `Brawl`, `Build`, and `Map Workshop`
+- the UI now uses Geist Pixel Square globally, with hard-edged pixel controls and zero rounded corners
+- entering `Explore` or `Brawl` now starts with a sky-drop fall into the map
 - indexed dirty-chunk rebuilds are in place for terrain updates
 - greedy-meshed terrain chunks now replace one-cube-per-voxel terrain rendering
 - lightweight sim selectors keep HUD and runtime reads off the full snapshot path
@@ -59,11 +61,13 @@ Inside `apps/web`, the main controller logic now lives in:
 1. Run `bun run dev`.
 2. Open the Vite URL, usually `http://localhost:5173`.
 3. Start from the main menu.
-4. Choose `Explore` or `Skirmish` to enter full-view runtime play, or `Map Workshop` to open the editor.
-5. Click once in runtime play to capture the mouse with pointer lock.
-6. Press `Esc` any time during runtime play to unlock the mouse and open the pause overlay.
-7. Use `Resume` to re-lock the mouse or `Menu` to return to the main menu.
-8. Use `Map Workshop` whenever you want to shape the arena, save/load maps, or import/export JSON.
+4. Type a player name and choose a chicken color.
+5. Choose `Explore` or `Brawl` to sky-drop into runtime play, or use `Map Workshop` to open the editor.
+6. `Build` is visible on the menu as a future mode, but it is not implemented yet.
+7. Click once in runtime play to capture the mouse with pointer lock.
+8. Press `Esc` any time during runtime play to unlock the mouse and open the pause overlay.
+9. Use `Resume` to re-lock the mouse or `Menu` to return to the main menu.
+10. Use `Map Workshop` whenever you want to shape the arena, save/load maps, or import/export JSON.
 
 ## Editor Basics
 - `Add`: place a cube on the face you click
@@ -90,7 +94,7 @@ Editor note: disconnected floating terrain settles immediately. Bridges, caves, 
 - Camera: full-view over-the-shoulder aim camera with pointer-locked free-look during runtime play
 - Reticle: center-screen focus marker with a cube outline and placement ghost
 
-Gameplay note: `Mass` is the single shared resource. Jumping, pushing, crush damage, and building all use it. You start below build cost, so you need to harvest before you can place.
+Gameplay note: `Matter` is the single shared resource. Grounded jumps are free, while jetpack lift, pushing, crush damage, and building still use it. You start below build cost, so you need to harvest before you can place.
 
 Gameplay note: if you break the last support path for a structure, the detached mass flashes briefly and then falls as a crush hazard.
 
@@ -117,8 +121,8 @@ Gameplay note: random sky-drop cubes now telegraph a landing column, fall in fro
 - Clouds and underground block treatments: `apps/web/src/components/SkyClouds.tsx` and `apps/web/src/game/voxelMaterials.ts`
 
 ## Sim And Render Split
-- React owns the start menu, status text, HUD refresh, editor controls, and mode changes.
-- The fixed-step simulation owns movement, jump, Mass economy, harvesting, building, pushing, NPC behavior, player collision, collapse warnings, falling debris, sky-drop hazards, block-impact stun, and elimination.
+- React owns the start menu, player setup state, status text, HUD refresh, editor controls, and mode changes.
+- The fixed-step simulation owns movement, jump, Matter economy, harvesting, building, pushing, NPC behavior, player collision, collapse warnings, falling debris, sky-drop hazards, block-impact stun, and elimination.
 - The runtime UI reads `getMatchState`, `getHudState`, and `getPlayerState` instead of polling full snapshots.
 - Three.js only rebuilds dirty terrain chunks and now reads them from the world’s indexed surface chunks instead of rescanning the full voxel map per dirty key.
 - The world renderer turns exposed chunk faces into greedy-merged chunk meshes, so the GPU sees tiled terrain quads instead of one cube per surface voxel.
@@ -131,7 +135,7 @@ If a mechanic breaks, use this order:
 
 1. Run `bun run test:mechanics`.
 2. If the failure is about terrain or save/load, start in `packages/map`.
-3. If the failure is about Mass, jump, harvest/build, push, NPCs, or elimination, start in `packages/sim`.
+3. If the failure is about Matter, jump, harvest/build, push, NPCs, or elimination, start in `packages/sim`.
 4. If the mechanic works in tests but looks wrong in the browser, inspect `apps/web/src/components/GameCanvas.tsx`, `apps/web/src/components/Hud.tsx`, and `apps/web/src/hooks/useKeyboardInput.ts`.
 5. Re-run `bun run check` before considering the fix complete.
 
@@ -148,7 +152,7 @@ Useful signals:
 - sky-drop targeting, landing, or stun issues usually points to sky-drop updates in `packages/sim/src/simulation.ts`
 
 ## Test Commands And What They Protect
-- `bun run test:mechanics`: protects voxel edits, chunk dirtiness, structural support, Mass rules, movement, harvesting, building, pushing, falling debris, crush damage, eliminations, and NPC behavior
+- `bun run test:mechanics`: protects voxel edits, chunk dirtiness, structural support, Matter rules, movement, harvesting, building, pushing, falling debris, crush damage, eliminations, and NPC behavior
 - `bun run test:web`: protects app-level flows like menu/runtime transitions, map persistence, import/export, HUD, aim-camera wiring, keyboard mapping, and renderer-facing helpers
 - `bun run test:coverage`: enforces the current coverage thresholds across the workspace
 - `bun run check`: the fast local “safe to ship” command

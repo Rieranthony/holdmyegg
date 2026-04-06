@@ -9,29 +9,58 @@ export interface ChickenMaterialBundle {
   shade: THREE.MeshStandardMaterial;
   ring: THREE.MeshBasicMaterial;
   shadow: THREE.MeshBasicMaterial;
+  wingletTrace: THREE.MeshBasicMaterial;
 }
 
 export const playerShadowGeometry = new THREE.CircleGeometry(0.62, 18);
 export const playerRingGeometry = new THREE.RingGeometry(0.5, 0.66, 24);
 
+export const chickenModelRig = {
+  wingAnchorX: 0.43,
+  wingAnchorY: 0.04,
+  wingAnchorZ: -0.02,
+  lowWingAnchorX: 0.37,
+  lowWingAnchorY: 0.04,
+  lowWingAnchorZ: 0,
+  headPivotY: 0.16,
+  headPivotZ: 0.18,
+  lowHeadPivotY: 0.1,
+  lowHeadPivotZ: 0.14,
+  tailAnchorY: 0.08,
+  tailAnchorZ: -0.42,
+  lowTailAnchorY: 0.08,
+  lowTailAnchorZ: -0.34,
+  legAnchorX: 0.21,
+  legAnchorY: -0.34,
+  legAnchorZ: 0.06,
+  legMeshOffsetY: -0.14
+} as const;
+
 export const chickenPartGeometries = {
-  wing: new THREE.BoxGeometry(0.1, 0.28, 0.5),
+  wingRoot: new THREE.BoxGeometry(0.18, 0.28, 0.28),
+  wingMid: new THREE.BoxGeometry(0.16, 0.2, 0.24),
+  wingTip: new THREE.BoxGeometry(0.14, 0.16, 0.18),
+  wingletTrace: new THREE.PlaneGeometry(0.52, 0.18),
   body: new THREE.BoxGeometry(0.78, 0.78, 0.78),
-  crestFront: new THREE.BoxGeometry(0.11, 0.2, 0.06),
-  crestBack: new THREE.BoxGeometry(0.11, 0.22, 0.06),
-  beakBase: new THREE.BoxGeometry(0.2, 0.16, 0.18),
-  beakTip: new THREE.BoxGeometry(0.08, 0.18, 0.18),
-  beakSide: new THREE.BoxGeometry(0.08, 0.16, 0.18),
+  head: new THREE.BoxGeometry(0.44, 0.38, 0.4),
+  beakBase: new THREE.BoxGeometry(0.22, 0.16, 0.18),
+  beakMid: new THREE.BoxGeometry(0.18, 0.14, 0.16),
+  beakTip: new THREE.BoxGeometry(0.14, 0.12, 0.14),
+  beakCap: new THREE.BoxGeometry(0.1, 0.1, 0.1),
   eye: new THREE.BoxGeometry(0.18, 0.18, 0.06),
   pupil: new THREE.BoxGeometry(0.07, 0.07, 0.04),
   wattle: new THREE.BoxGeometry(0.22, 0.16, 0.16),
-  leg: new THREE.BoxGeometry(0.16, 0.16, 0.16),
+  leg: new THREE.BoxGeometry(0.18, 0.28, 0.18),
   featherPlume: new THREE.BoxGeometry(...chickenFeatherGeometry.plumeSize),
   featherQuill: new THREE.BoxGeometry(...chickenFeatherGeometry.quillSize),
-  lowBody: new THREE.BoxGeometry(0.72, 0.72, 0.72),
-  lowBeakBase: new THREE.BoxGeometry(0.18, 0.14, 0.16),
-  lowBeakFront: new THREE.BoxGeometry(0.2, 0.14, 0.14),
-  lowCrest: new THREE.BoxGeometry(0.16, 0.18, 0.08)
+  lowTail: new THREE.BoxGeometry(0.16, 0.18, 0.14),
+  lowBody: new THREE.BoxGeometry(0.72, 0.72, 0.7),
+  lowHead: new THREE.BoxGeometry(0.32, 0.28, 0.28),
+  lowWing: new THREE.BoxGeometry(0.14, 0.16, 0.24),
+  lowBeakBase: new THREE.BoxGeometry(0.16, 0.12, 0.16),
+  lowBeakFront: new THREE.BoxGeometry(0.12, 0.1, 0.12),
+  lowBeakTip: new THREE.BoxGeometry(0.08, 0.08, 0.08),
+  lowCrest: new THREE.BoxGeometry(0.14, 0.14, 0.08)
 } as const;
 
 export const chickenDetailMaterials = {
@@ -129,6 +158,14 @@ export const createChickenMaterialBundle = (palette: ChickenPalette): ChickenMat
     opacity: 0.2,
     depthWrite: false,
     toneMapped: false
+  }),
+  wingletTrace: new THREE.MeshBasicMaterial({
+    color: palette.ringAccent,
+    transparent: true,
+    opacity: 0,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    toneMapped: false
   })
 });
 
@@ -137,4 +174,5 @@ export const disposeChickenMaterialBundle = (bundle: ChickenMaterialBundle) => {
   bundle.shade.dispose();
   bundle.ring.dispose();
   bundle.shadow.dispose();
+  bundle.wingletTrace.dispose();
 };

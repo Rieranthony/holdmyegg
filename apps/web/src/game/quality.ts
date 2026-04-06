@@ -33,7 +33,7 @@ const highProfile = (gpu: TierResult | null): RendererQualityProfile => ({
   enableAtmosphereSky: true,
   maxImpactBursts: 18,
   maxEggDebrisInstances: 120,
-  avatarDetailDistance: 30,
+  avatarDetailDistance: 72,
   budgets: {
     targetFps: 120,
     maxCombatDrawCalls: 160
@@ -51,7 +51,7 @@ const mediumProfile = (gpu: TierResult | null): RendererQualityProfile => ({
   enableAtmosphereSky: true,
   maxImpactBursts: 12,
   maxEggDebrisInstances: 72,
-  avatarDetailDistance: 22,
+  avatarDetailDistance: 56,
   budgets: {
     targetFps: 90,
     maxCombatDrawCalls: 120
@@ -69,7 +69,7 @@ const lowProfile = (gpu: TierResult | null): RendererQualityProfile => ({
   enableAtmosphereSky: false,
   maxImpactBursts: 8,
   maxEggDebrisInstances: 36,
-  avatarDetailDistance: 14,
+  avatarDetailDistance: 36,
   budgets: {
     targetFps: 60,
     maxCombatDrawCalls: 90

@@ -24,7 +24,7 @@ Ship a solo-first playable foundation for **Out of Bounds**:
 7. Texture, collision, and chase-camera pass ✅
 8. Stable turning and smooth camera-follow pass ✅
 9. Speed camera and structural collapse pass ✅
-10. Focus, Mass economy, and runtime building pass ✅
+10. Focus, Matter economy, and runtime building pass ✅
 11. Runtime mouse orbit camera pass ✅
 12. Runtime free-look and strafe control pass ✅
 13. Over-the-shoulder aim camera and start menu pass ✅
@@ -36,7 +36,7 @@ Ship a solo-first playable foundation for **Out of Bounds**:
 - Later work: wire `bun run check` into CI so the local safety gate also protects merges
 
 ## Next Steps
-- Playtest feel tuning for jump, push, build, and Mass values
+- Playtest feel tuning for jump, push, build, and Matter values
 - Improve NPC pathing and edge behavior
 - Add richer editor tooling like spawn deletion and brush shapes
 - Add more focused regression tests whenever a mechanic bug is found
@@ -44,7 +44,7 @@ Ship a solo-first playable foundation for **Out of Bounds**:
 - Tune chase camera feel, obstruction handling, and framing around tall terrain
 - Continue playtesting `turnSpeed`, camera yaw follow speed, and damping values for the cleanest feel
 - Tune the speed-camera rush effect and collapse warning readability with real playtests
-- Decide whether crush damage should stay as Mass loss or evolve into direct elimination later
+- Decide whether crush damage should stay as Matter loss or evolve into direct elimination later
 - Tune runtime destroy/place cadence and highlight readability with real playtests
 - Tune free-look sensitivity, pitch limits, and chase-camera damping with real playtests
 - Tune the over-the-shoulder aim offset, upward pitch cap, and full-view HUD balance with real playtests

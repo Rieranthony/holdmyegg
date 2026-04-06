@@ -24,6 +24,10 @@ const getInternalPlayer = (simulation: OutOfBoundsSimulation, playerId: string) 
     velocity: { x: number; y: number; z: number };
     facing: { x: number; z: number };
     pushCooldownRemaining: number;
+    pushVisualRemaining: number;
+    spacePhase: "none" | "float" | "reentry";
+    spacePhaseRemaining: number;
+    spaceTriggerArmed: boolean;
   });
 
 const getNpcId = (simulation: OutOfBoundsSimulation) =>
@@ -89,6 +93,41 @@ describe("OutOfBoundsSimulation", () => {
     expect(snapshot.localPlayerId).toBe(localPlayerId);
     advanceSimulation(simulation, 30);
     expect(simulation.getPlayerState(localPlayerId!)?.alive).toBe(true);
+  });
+
+  it("supports sky-drop entry without changing the default grounded spawn flow", () => {
+    const map = createArenaDocument();
+    const groundedSimulation = new OutOfBoundsSimulation();
+    groundedSimulation.reset("explore", map, {
+      localPlayerName: "You"
+    });
+
+    const skySimulation = new OutOfBoundsSimulation();
+    skySimulation.reset("explore", map, {
+      localPlayerName: "You",
+      initialSpawnStyle: "sky"
+    });
+
+    const groundedPlayerId = groundedSimulation.getLocalPlayerId()!;
+    const skyPlayerId = skySimulation.getLocalPlayerId()!;
+    const groundedPlayer = groundedSimulation.getPlayerState(groundedPlayerId)!;
+    const skyPlayer = skySimulation.getPlayerState(skyPlayerId)!;
+
+    expect(groundedPlayer.position.y).toBeLessThan(skyPlayer.position.y);
+    expect(skyPlayer.position.y - groundedPlayer.position.y).toBeCloseTo(
+      skySimulation.config.skyDropSpawnHeight,
+      5
+    );
+    expect(groundedPlayer.velocity.y).toBe(0);
+    expect(skyPlayer.velocity.y).toBeLessThan(0);
+
+    advanceSimulation(skySimulation, 6);
+    expect(skySimulation.getPlayerState(skyPlayerId)!.position.y).toBeLessThan(skyPlayer.position.y);
+
+    const respawnedPlayer = getInternalPlayer(skySimulation, skyPlayerId);
+    (skySimulation as unknown as { respawnPlayer: (player: typeof respawnedPlayer) => void }).respawnPlayer(respawnedPlayer);
+    expect(respawnedPlayer.position.y).toBeCloseTo(groundedPlayer.position.y, 5);
+    expect(respawnedPlayer.velocity.y).toBe(0);
   });
 
   it("exposes lightweight match, hud, and player selectors", () => {
@@ -307,7 +346,7 @@ describe("OutOfBoundsSimulation", () => {
     expect(Math.abs(normalizeAngle(targetYaw - nextYaw))).toBeLessThan(Math.abs(normalizeAngle(targetYaw - currentYaw)));
   });
 
-  it("requires a fresh airborne press to activate the jetpack and still gates jumping on mass", () => {
+  it("allows free grounded jumps and still requires a fresh airborne press to activate the jetpack", () => {
     const simulation = createTestSimulation();
     const localPlayerId = simulation.getLocalPlayerId()!;
     advanceUntilGrounded(simulation, localPlayerId);
@@ -324,7 +363,7 @@ describe("OutOfBoundsSimulation", () => {
     });
     const afterHeldSpace = simulation.getPlayerViewState(localPlayerId)!;
 
-    expect(afterFirstJump.mass).toBe(beforeJump.mass - simulation.config.jumpCost);
+    expect(afterFirstJump.mass).toBe(beforeJump.mass);
     expect(afterFirstJump.jetpackActive).toBe(false);
     expect(afterHeldSpace.mass).toBe(afterFirstJump.mass);
     expect(afterHeldSpace.jetpackActive).toBe(false);
@@ -333,15 +372,16 @@ describe("OutOfBoundsSimulation", () => {
     const internalPlayer = getInternalPlayer(simulation, localPlayerId);
     internalPlayer.grounded = true;
     internalPlayer.jetpackEligible = false;
-    internalPlayer.mass = simulation.config.jumpCost - 1;
+    internalPlayer.mass = 0;
     internalPlayer.velocity.y = 0;
     simulation.step({
       [localPlayerId]: jump()
     });
 
-    const blockedJump = simulation.getPlayerViewState(localPlayerId)!;
-    expect(blockedJump.mass).toBe(simulation.config.jumpCost - 1);
-    expect(blockedJump.velocity.y).toBeLessThanOrEqual(0);
+    const freeJump = simulation.getPlayerViewState(localPlayerId)!;
+    expect(freeJump.mass).toBe(0);
+    expect(freeJump.grounded).toBe(false);
+    expect(freeJump.velocity.y).toBeGreaterThan(0);
   });
 
   it("activates the jetpack on a second airborne press, sustains while held, and stops on release", () => {
@@ -431,6 +471,42 @@ describe("OutOfBoundsSimulation", () => {
     const rebuiltChunks = world.buildVisibleChunksForKeys(dirtyChunkKeys);
 
     expect(normalizeChunks(rebuiltChunks)).toEqual(normalizeChunks(fullChunks));
+  });
+
+  it("emits and expires harvest voxel bursts when a cube is destroyed", () => {
+    const simulation = createTestSimulation("explore", (world) => {
+      world.setVoxel(7, DEFAULT_SURFACE_Y, 6, "boundary");
+    });
+    const localPlayerId = simulation.getLocalPlayerId()!;
+    advanceUntilGrounded(simulation, localPlayerId);
+
+    const internalPlayer = getInternalPlayer(simulation, localPlayerId);
+    internalPlayer.position = { x: 6.5, y: PLAYER_GROUND_Y, z: 6.5 };
+    internalPlayer.grounded = true;
+
+    simulation.step({
+      [localPlayerId]: destroy({
+        targetVoxel: { x: 7, y: DEFAULT_SURFACE_Y, z: 6 }
+      })
+    });
+
+    expect(simulation.getSnapshot().voxelBursts).toEqual([
+      expect.objectContaining({
+        style: "harvest",
+        kind: "boundary",
+        position: {
+          x: 7.5,
+          y: DEFAULT_SURFACE_Y + 0.5,
+          z: 6.5
+        }
+      })
+    ]);
+
+    advanceSimulation(simulation, 30, {
+      [localPlayerId]: idle()
+    });
+
+    expect(simulation.getSnapshot().voxelBursts).toEqual([]);
   });
 
   it("does not harvest hazards or out-of-range voxels", () => {
@@ -924,6 +1000,42 @@ describe("OutOfBoundsSimulation", () => {
     expect(simulation.getWorld().getTerrainRevision()).toBeGreaterThan(terrainBefore);
   });
 
+  it("emits an egg explosion burst while keeping scatter debris available to the renderer", () => {
+    const simulation = new OutOfBoundsSimulation({
+      eggCost: 20,
+      eggFuseDuration: 0.12,
+      eggThrowSpeed: 0,
+      eggGravity: 0,
+      eggBlastDestroyDepth: 999,
+      eggScatterBudget: 4,
+      eggScatterFlightDuration: 0.24,
+      skyDropIntervalMin: 999,
+      skyDropIntervalMax: 999
+    });
+    simulation.reset("explore", createArenaDocument(), {
+      localPlayerName: "You"
+    });
+
+    const localPlayerId = simulation.getLocalPlayerId()!;
+    const localPlayer = getInternalPlayer(simulation, localPlayerId);
+    localPlayer.position = { x: 20.5, y: PLAYER_GROUND_Y, z: 20.5 };
+    localPlayer.velocity = { x: 0, y: 0, z: 0 };
+    localPlayer.facing = { x: 1, z: 0 };
+    localPlayer.mass = 80;
+    localPlayer.grounded = true;
+
+    simulation.step({
+      [localPlayerId]: layEgg()
+    });
+    advanceSimulation(simulation, 8, {
+      [localPlayerId]: idle()
+    });
+
+    const snapshot = simulation.getSnapshot();
+    expect(snapshot.voxelBursts.some((burst) => burst.style === "eggExplosion")).toBe(true);
+    expect(snapshot.eggScatterDebris.length).toBeGreaterThan(0);
+  });
+
   it("does not spend extra mass when egg placement is blocked by the active-egg cap", () => {
     const simulation = new OutOfBoundsSimulation({
       eggCost: 15,
@@ -996,15 +1108,19 @@ describe("OutOfBoundsSimulation", () => {
     });
 
     const afterFirstPush = simulation.getPlayerViewState(localPlayerId)!;
+    const afterFirstPushVisualRemaining = simulation.getPlayerRuntimeState(localPlayerId)!.pushVisualRemaining;
     expect(simulation.getPlayerViewState(npcId)!.velocity.x).toBeGreaterThan(0);
     expect(afterFirstPush.mass).toBe(simulation.config.maxMass - simulation.config.pushCost);
+    expect(afterFirstPushVisualRemaining).toBeGreaterThan(0);
 
     simulation.step({
       [localPlayerId]: push()
     });
 
     const afterCooldownAttempt = simulation.getPlayerViewState(localPlayerId)!;
+    const afterCooldownRuntime = simulation.getPlayerRuntimeState(localPlayerId)!;
     expect(afterCooldownAttempt.mass).toBe(afterFirstPush.mass);
+    expect(afterCooldownRuntime.pushVisualRemaining).toBeLessThan(afterFirstPushVisualRemaining);
   });
 
   it("scales push impulse upward with current mass", () => {
@@ -1079,12 +1195,262 @@ describe("OutOfBoundsSimulation", () => {
       [localPlayerId]: push()
     });
     expect(simulation.getPlayerViewState(localPlayerId)!.mass).toBe(simulation.config.maxMass);
+    expect(simulation.getPlayerRuntimeState(localPlayerId)!.pushVisualRemaining).toBeGreaterThan(0);
 
     npcPlayer.position = { x: 9.7, y: PLAYER_GROUND_Y, z: 10.5 };
     simulation.step({
       [localPlayerId]: push()
     });
     expect(simulation.getPlayerViewState(localPlayerId)!.mass).toBe(simulation.config.maxMass);
+  });
+
+  it("does not start the push visual when the attempt is blocked by cooldown or insufficient mass", () => {
+    const simulation = createTestSimulation("skirmish");
+    const simulationInternals = simulation as unknown as { generateNpcCommand: (player: unknown) => PlayerCommand };
+    simulationInternals.generateNpcCommand = () => idle();
+    const localPlayerId = simulation.getLocalPlayerId()!;
+    const npcId = getNpcId(simulation)!;
+    const localPlayer = getInternalPlayer(simulation, localPlayerId);
+    const npcPlayer = getInternalPlayer(simulation, npcId);
+
+    localPlayer.position = { x: 10.5, y: PLAYER_GROUND_Y, z: 10.5 };
+    localPlayer.velocity = { x: 0, y: 0, z: 0 };
+    localPlayer.facing = { x: 1, z: 0 };
+    localPlayer.mass = simulation.config.maxMass;
+    localPlayer.grounded = true;
+    npcPlayer.position = { x: 11.2, y: PLAYER_GROUND_Y, z: 10.5 };
+    npcPlayer.velocity = { x: 0, y: 0, z: 0 };
+    npcPlayer.grounded = true;
+
+    simulation.step({
+      [localPlayerId]: push()
+    });
+    expect(simulation.getPlayerRuntimeState(localPlayerId)!.pushVisualRemaining).toBeGreaterThan(0);
+
+    localPlayer.pushCooldownRemaining = simulation.config.pushCooldown;
+    localPlayer.pushVisualRemaining = 0;
+    simulation.step({
+      [localPlayerId]: push()
+    });
+    expect(simulation.getPlayerRuntimeState(localPlayerId)!.pushVisualRemaining).toBe(0);
+
+    localPlayer.pushCooldownRemaining = 0;
+    localPlayer.mass = simulation.config.pushCost - 1;
+    simulation.step({
+      [localPlayerId]: push()
+    });
+    expect(simulation.getPlayerRuntimeState(localPlayerId)!.pushVisualRemaining).toBe(0);
+  });
+
+  it("enters a space float only after crossing the altitude threshold upward", () => {
+    const simulation = createTestSimulation("explore");
+    const localPlayerId = simulation.getLocalPlayerId()!;
+    const localPlayer = getInternalPlayer(simulation, localPlayerId);
+
+    localPlayer.position = { x: 10.5, y: 59.9, z: 10.5 };
+    localPlayer.velocity = { x: 0, y: 12, z: 0 };
+    localPlayer.grounded = false;
+    localPlayer.jetpackActive = true;
+    localPlayer.spacePhase = "none";
+    localPlayer.spacePhaseRemaining = 0;
+    localPlayer.spaceTriggerArmed = true;
+
+    simulation.step({
+      [localPlayerId]: idle()
+    }, 0.16);
+
+    const runtimePlayer = simulation.getPlayerRuntimeState(localPlayerId)!;
+    expect(runtimePlayer.spacePhase).toBe("float");
+    expect(runtimePlayer.spacePhaseRemaining).toBeGreaterThan(4.8);
+    expect(runtimePlayer.jetpackActive).toBe(false);
+    expect(runtimePlayer.position.y).toBeGreaterThan(60);
+  });
+
+  it("allows light drift and orbital egg drops during the float window while keeping push locked", () => {
+    const simulation = createTestSimulation("skirmish");
+    const simulationInternals = simulation as unknown as { generateNpcCommand: (player: unknown) => PlayerCommand };
+    simulationInternals.generateNpcCommand = () => idle();
+    const localPlayerId = simulation.getLocalPlayerId()!;
+    const npcId = getNpcId(simulation)!;
+    const localPlayer = getInternalPlayer(simulation, localPlayerId);
+    const npcPlayer = getInternalPlayer(simulation, npcId);
+    const otherNpcIds = simulation
+      .getSnapshot()
+      .players.filter((player) => player.kind === "npc" && player.id !== npcId)
+      .map((player) => player.id);
+
+    localPlayer.position = { x: 10.5, y: 76, z: 10.5 };
+    localPlayer.velocity = { x: 0, y: 1.4, z: 0 };
+    localPlayer.facing = { x: 1, z: 0 };
+    localPlayer.grounded = false;
+    localPlayer.mass = simulation.config.maxMass;
+    localPlayer.spacePhase = "float";
+    localPlayer.spacePhaseRemaining = 5;
+    localPlayer.spaceTriggerArmed = false;
+    localPlayer.pushVisualRemaining = 0;
+
+    npcPlayer.position = { x: 13.4, y: 76, z: 10.5 };
+    npcPlayer.velocity = { x: 0, y: 0, z: 0 };
+    npcPlayer.grounded = false;
+    otherNpcIds.forEach((otherNpcId, index) => {
+      const otherNpc = getInternalPlayer(simulation, otherNpcId);
+      otherNpc.position = { x: 30 + index * 3, y: PLAYER_GROUND_Y, z: 30 };
+      otherNpc.velocity = { x: 0, y: 0, z: 0 };
+      otherNpc.grounded = true;
+    });
+
+    simulation.step({
+      [localPlayerId]: {
+        ...move(1, 0),
+        push: true,
+        layEgg: true
+      }
+    });
+
+    expect(simulation.getEggs()).toHaveLength(1);
+    expect(simulation.getPlayerState(localPlayerId)!.mass).toBe(simulation.config.maxMass - simulation.config.eggCost);
+    expect(simulation.getPlayerRuntimeState(localPlayerId)!.pushVisualRemaining).toBe(0);
+    expect(simulation.getPlayerState(npcId)!.velocity.x).toBe(0);
+
+    advanceSimulation(simulation, 45, {
+      [localPlayerId]: move(1, 0)
+    });
+
+    const driftingPlayer = simulation.getPlayerRuntimeState(localPlayerId)!;
+    expect(driftingPlayer.spacePhase).toBe("float");
+    expect(driftingPlayer.velocity.x).toBeGreaterThan(0.8);
+    expect(driftingPlayer.velocity.x).toBeLessThanOrEqual(simulation.config.moveSpeed * 0.38 + 0.05);
+  });
+
+  it("spawns orbital eggs above the map and keeps them alive past the base fuse while still in space", () => {
+    const simulation = new OutOfBoundsSimulation({
+      eggFuseDuration: 1.6,
+      skyDropIntervalMin: 999,
+      skyDropIntervalMax: 999
+    });
+    simulation.reset("explore", createArenaDocument(), {
+      localPlayerName: "You"
+    });
+
+    const localPlayerId = simulation.getLocalPlayerId()!;
+    const localPlayer = getInternalPlayer(simulation, localPlayerId);
+    localPlayer.position = { x: 10.5, y: 200, z: 10.5 };
+    localPlayer.velocity = { x: 2.4, y: 1.4, z: 0 };
+    localPlayer.facing = { x: 1, z: 0 };
+    localPlayer.grounded = false;
+    localPlayer.mass = simulation.config.maxMass;
+    localPlayer.spacePhase = "float";
+    localPlayer.spacePhaseRemaining = 5;
+    localPlayer.spaceTriggerArmed = false;
+
+    simulation.step({
+      [localPlayerId]: layEgg()
+    });
+
+    const eggs = (simulation as unknown as { eggs: Map<string, any> }).eggs;
+    const orbitalEgg = eggs.values().next().value;
+    expect(orbitalEgg.orbital).toBe(true);
+    expect(orbitalEgg.position.y).toBeGreaterThan(simulation.getWorld().size.y);
+    expect(orbitalEgg.velocity.y).toBeLessThan(-10);
+    expect(orbitalEgg.fuseRemaining).toBeGreaterThan(simulation.config.eggFuseDuration);
+
+    advanceSimulation(simulation, 120, {
+      [localPlayerId]: idle()
+    });
+
+    expect(simulation.getEggs()).toHaveLength(1);
+    expect(simulation.getEggs()[0]!.position.y).toBeGreaterThan(simulation.getWorld().size.y);
+  });
+
+  it("gives orbital eggs a stronger blast without increasing life loss per hit", () => {
+    const createBlastOutcome = (orbital: boolean) => {
+      const simulation = createTestSimulation("skirmish");
+      const simulationInternals = simulation as unknown as { generateNpcCommand: (player: unknown) => PlayerCommand };
+      simulationInternals.generateNpcCommand = () => idle();
+      const localPlayerId = simulation.getLocalPlayerId()!;
+      const npcId = getNpcId(simulation)!;
+      const localPlayer = getInternalPlayer(simulation, localPlayerId);
+      const npcPlayer = getInternalPlayer(simulation, npcId);
+      const otherNpcIds = simulation
+        .getSnapshot()
+        .players.filter((player) => player.kind === "npc" && player.id !== npcId)
+        .map((player) => player.id);
+
+      localPlayer.position = { x: 18.5, y: PLAYER_GROUND_Y, z: 18.5 };
+      localPlayer.grounded = true;
+      npcPlayer.position = { x: 20.2, y: PLAYER_GROUND_Y, z: 18.5 };
+      npcPlayer.velocity = { x: 0, y: 0, z: 0 };
+      npcPlayer.grounded = true;
+      otherNpcIds.forEach((otherNpcId, index) => {
+        const otherNpc = getInternalPlayer(simulation, otherNpcId);
+        otherNpc.position = { x: 30 + index * 3, y: PLAYER_GROUND_Y, z: 30 };
+        otherNpc.velocity = { x: 0, y: 0, z: 0 };
+        otherNpc.grounded = true;
+      });
+
+      const eggs = (simulation as unknown as { eggs: Map<string, any> }).eggs;
+      eggs.set("manual-egg", {
+        id: "manual-egg",
+        ownerId: localPlayerId,
+        fuseRemaining: 0,
+        grounded: true,
+        orbital,
+        explodeOnGroundContact: orbital,
+        fuseArmedBelowY: null,
+        position: { x: 18.5, y: PLAYER_GROUND_Y + 0.22, z: 18.5 },
+        velocity: { x: 0, y: 0, z: 0 }
+      });
+
+      simulation.step({
+        [localPlayerId]: idle()
+      });
+
+      return simulation.getPlayerState(npcId)!;
+    };
+
+    const normalHit = createBlastOutcome(false);
+    const orbitalHit = createBlastOutcome(true);
+
+    expect(normalHit.livesRemaining).toBe(normalHit.maxLives - 1);
+    expect(orbitalHit.livesRemaining).toBe(orbitalHit.maxLives - 1);
+    expect(orbitalHit.velocity.y).toBeGreaterThan(normalHit.velocity.y);
+    expect(orbitalHit.stunRemaining).toBeGreaterThan(normalHit.stunRemaining);
+    expect(Math.abs(orbitalHit.velocity.x)).toBeGreaterThan(Math.abs(normalHit.velocity.x));
+  });
+
+  it("switches from float to reentry and rearms after descending", () => {
+    const simulation = createTestSimulation("explore");
+    const localPlayerId = simulation.getLocalPlayerId()!;
+    const localPlayer = getInternalPlayer(simulation, localPlayerId);
+
+    localPlayer.position = { x: 10.5, y: 60.6, z: 10.5 };
+    localPlayer.velocity = { x: 0, y: 1.4, z: 0 };
+    localPlayer.grounded = false;
+    localPlayer.mass = simulation.config.maxMass;
+    localPlayer.spacePhase = "float";
+    localPlayer.spacePhaseRemaining = 0.35;
+    localPlayer.spaceTriggerArmed = false;
+    localPlayer.pushVisualRemaining = 0;
+
+    simulation.step({
+      [localPlayerId]: idle()
+    }, 0.1);
+
+    simulation.step({
+      [localPlayerId]: idle()
+    }, 0.3);
+
+    const reentryPlayer = getInternalPlayer(simulation, localPlayerId);
+    expect(reentryPlayer.spacePhase).toBe("reentry");
+    expect(reentryPlayer.velocity.y).toBeLessThan(-5);
+
+    simulation.step({
+      [localPlayerId]: idle()
+    }, 0.45);
+
+    expect(reentryPlayer.spacePhase).toBe("none");
+    expect(reentryPlayer.position.y).toBeLessThanOrEqual(48.5);
+    expect(reentryPlayer.spaceTriggerArmed).toBe(true);
   });
 
   it("separates overlapping players during reset when spawns collide", () => {

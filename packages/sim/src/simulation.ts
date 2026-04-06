@@ -19,19 +19,44 @@ import type {
   RuntimeFallingClusterState,
   RuntimePlayerState,
   RuntimeSkyDropState,
+  RuntimeVoxelBurstState,
   SkyDropPhase,
   SkyDropViewState,
+  SpacePhase,
   SimulationPerformanceDiagnostics,
   SimulationConfig,
+  SimulationInitialSpawnStyle,
   SimulationResetOptions,
   SimulationSnapshot,
   Vector2,
-  Vector3
+  Vector3,
+  VoxelBurstStyle,
+  VoxelBurstViewState
 } from "./types";
 import { defaultSimulationConfig } from "./config";
 
 const EPSILON = 0.0001;
 const RING_OUT_FALL_CULL_DEPTH = 12;
+const PUSH_VISUAL_DURATION = 0.24;
+const HARVEST_VOXEL_BURST_DURATION = 0.24;
+const EGG_EXPLOSION_VOXEL_BURST_DURATION = 0.42;
+const INITIAL_SKY_ENTRY_SPEED = -2.4;
+const SPACE_FLOAT_DURATION = 5.0;
+const SPACE_FLOAT_GRAVITY_MULTIPLIER = 0.08;
+const SPACE_REENTRY_GRAVITY_MULTIPLIER = 1.9;
+const SPACE_FLOAT_DRIFT_SPEED = 1.4;
+const SPACE_FLOAT_MOVE_SPEED_MULTIPLIER = 0.38;
+const SPACE_FLOAT_ACCELERATION_MULTIPLIER = 0.55;
+const ORBITAL_EGG_DROP_OFFSET_Y = 0.22;
+const ORBITAL_EGG_DOWNWARD_SPEED = 15;
+const ORBITAL_EGG_HORIZONTAL_INHERIT_FACTOR = 0.35;
+const ORBITAL_EGG_HORIZONTAL_THROW_FACTOR = 0.18;
+const ORBITAL_EGG_FUSE_DURATION = 4.8;
+const ORBITAL_EGG_FUSE_ARM_MARGIN_Y = 1.5;
+const ORBITAL_EGG_HIT_RADIUS_MULTIPLIER = 1.25;
+const ORBITAL_EGG_KNOCKBACK_MULTIPLIER = 1.25;
+const ORBITAL_EGG_LIFT_MULTIPLIER = 1.2;
+const ORBITAL_EGG_STUN_MULTIPLIER = 1.25;
 const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
 
 interface SimPlayer {
@@ -55,6 +80,10 @@ interface SimPlayer {
   jetpackActive: boolean;
   jetpackOutsideBoundsGrace: boolean;
   pushCooldownRemaining: number;
+  pushVisualRemaining: number;
+  spacePhase: SpacePhase;
+  spacePhaseRemaining: number;
+  spaceTriggerArmed: boolean;
   eliminatedAt: number | null;
 }
 
@@ -79,6 +108,9 @@ interface SimEgg {
   ownerId: string;
   fuseRemaining: number;
   grounded: boolean;
+  orbital: boolean;
+  explodeOnGroundContact: boolean;
+  fuseArmedBelowY: number | null;
   position: Vector3;
   velocity: Vector3;
 }
@@ -88,6 +120,15 @@ interface SimEggScatterDebris {
   kind: BlockKind;
   origin: Vector3;
   destination: Vector3;
+  elapsed: number;
+  duration: number;
+}
+
+interface SimVoxelBurst {
+  id: string;
+  style: VoxelBurstStyle;
+  kind: BlockKind | null;
+  position: Vector3;
   elapsed: number;
   duration: number;
 }
@@ -170,6 +211,7 @@ export class OutOfBoundsSimulation {
   private readonly fallingClusters = new Map<string, SimFallingCluster>();
   private readonly eggs = new Map<string, SimEgg>();
   private readonly eggScatterDebris = new Map<string, SimEggScatterDebris>();
+  private readonly voxelBursts = new Map<string, SimVoxelBurst>();
   private readonly skyDrops = new Map<string, SimSkyDrop>();
   private playerCollectionVersion = 0;
   private fallingClusterCollectionVersion = 0;
@@ -190,6 +232,7 @@ export class OutOfBoundsSimulation {
   private nextFallingClusterId = 1;
   private nextEggId = 1;
   private nextEggScatterDebrisId = 1;
+  private nextVoxelBurstId = 1;
   private nextSkyDropId = 1;
   private skyDropCooldown = 0;
   private rngState = 1;
@@ -218,11 +261,13 @@ export class OutOfBoundsSimulation {
     this.fallingClusters.clear();
     this.eggs.clear();
     this.eggScatterDebris.clear();
+    this.voxelBursts.clear();
     this.skyDrops.clear();
     this.dirtyChunkKeys.clear();
     this.nextFallingClusterId = 1;
     this.nextEggId = 1;
     this.nextEggScatterDebrisId = 1;
+    this.nextVoxelBurstId = 1;
     this.nextSkyDropId = 1;
     this.rngState = hashString(`${mode}:${mapDocument.meta.name}:${mapDocument.meta.createdAt}:${mapDocument.meta.updatedAt}`) || 1;
     this.skyDropCooldown = this.nextSkyDropInterval();
@@ -240,13 +285,14 @@ export class OutOfBoundsSimulation {
     this.invalidateEggScatterDebrisCollection();
     this.invalidateSkyDropCollection();
 
-    const local = this.spawnPlayer("human", options.localPlayerName ?? "You", 0);
+    const initialSpawnStyle = options.initialSpawnStyle ?? "ground";
+    const local = this.spawnPlayer("human", options.localPlayerName ?? "You", 0, initialSpawnStyle);
     this.localPlayerId = local.id;
 
     if (mode === "skirmish") {
       const npcCount = clamp(options.npcCount ?? 4, 1, this.config.maxNpcCount);
       for (let index = 0; index < npcCount; index += 1) {
-        this.spawnPlayer("npc", `NPC ${index + 1}`, index + 1);
+        this.spawnPlayer("npc", `NPC ${index + 1}`, index + 1, initialSpawnStyle);
       }
     }
 
@@ -375,6 +421,17 @@ export class OutOfBoundsSimulation {
     return debris ? this.toEggScatterDebrisViewState(debris) : null;
   }
 
+  getVoxelBursts(): VoxelBurstViewState[] {
+    return [...this.voxelBursts.values()]
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .map((burst) => this.toVoxelBurstViewState(burst));
+  }
+
+  getVoxelBurstRuntimeState(burstId: string): RuntimeVoxelBurstState | null {
+    const burst = this.voxelBursts.get(burstId);
+    return burst ? (burst as RuntimeVoxelBurstState) : null;
+  }
+
   getSkyDrops(): SkyDropViewState[] {
     return [...this.skyDrops.values()]
       .sort((left, right) => left.id.localeCompare(right.id))
@@ -470,6 +527,7 @@ export class OutOfBoundsSimulation {
       fallingClusters: this.getFallingClusters(),
       eggs: this.getEggs(),
       eggScatterDebris: this.getEggScatterDebris(),
+      voxelBursts: this.getVoxelBursts(),
       skyDrops: this.getSkyDrops(),
       ranking: match.ranking
     };
@@ -521,6 +579,7 @@ export class OutOfBoundsSimulation {
     this.resolvePlayerCollisions();
     this.updateEggs(dt);
     this.updateEggScatterDebris(dt);
+    this.updateVoxelBursts(dt);
     this.updateFallingClusters(dt);
     this.updateSkyDrops(dt);
     this.resolvePlayerCollisions();
@@ -540,15 +599,15 @@ export class OutOfBoundsSimulation {
     this.resolvePlayerCollisions(4);
   }
 
-  private spawnPlayer(kind: PlayerKind, name: string, spawnIndex: number) {
+  private spawnPlayer(
+    kind: PlayerKind,
+    name: string,
+    spawnIndex: number,
+    initialSpawnStyle: SimulationInitialSpawnStyle = "ground"
+  ) {
     const id = `${kind}-${spawnIndex + 1}`;
-    const spawns = this.world.listSpawns();
-    const fallback = {
-      x: this.world.size.x / 2 + 0.5,
-      y: this.world.getTopSolidY(Math.floor(this.world.size.x / 2), Math.floor(this.world.size.z / 2)) + 1.05,
-      z: this.world.size.z / 2 + 0.5
-    };
-    const spawn = spawns[spawnIndex % Math.max(1, spawns.length)] ?? { id: "fallback", ...fallback };
+    const spawn = this.getSpawnPosition(spawnIndex);
+    const entryState = this.createInitialSpawnState(spawn, initialSpawnStyle);
 
     const player: SimPlayer = {
       id,
@@ -564,23 +623,56 @@ export class OutOfBoundsSimulation {
       respawnRemaining: 0,
       invulnerableRemaining: 0,
       stunRemaining: 0,
-      position: {
-        x: spawn.x,
-        y: spawn.y,
-        z: spawn.z
-      },
-      velocity: { x: 0, y: 0, z: 0 },
+      position: entryState.position,
+      velocity: entryState.velocity,
       facing: kind === "npc" ? { x: -1, z: 0 } : { x: 1, z: 0 },
       jetpackEligible: false,
       jetpackActive: false,
       jetpackOutsideBoundsGrace: false,
       pushCooldownRemaining: 0,
+      pushVisualRemaining: 0,
+      spacePhase: "none",
+      spacePhaseRemaining: 0,
+      spaceTriggerArmed: true,
       eliminatedAt: null
     };
 
     this.players.set(id, player);
     this.invalidatePlayerCollection();
     return player;
+  }
+
+  private createInitialSpawnState(spawn: Vector3, initialSpawnStyle: SimulationInitialSpawnStyle) {
+    if (initialSpawnStyle !== "sky") {
+      return {
+        position: { ...spawn },
+        velocity: { x: 0, y: 0, z: 0 }
+      };
+    }
+
+    return {
+      position: {
+        x: spawn.x,
+        y: spawn.y + this.config.skyDropSpawnHeight,
+        z: spawn.z
+      },
+      velocity: { x: 0, y: INITIAL_SKY_ENTRY_SPEED, z: 0 }
+    };
+  }
+
+  private getSpawnPosition(spawnIndex: number): Vector3 {
+    const spawns = this.world.listSpawns();
+    const fallback = {
+      x: this.world.size.x / 2 + 0.5,
+      y: this.world.getTopSolidY(Math.floor(this.world.size.x / 2), Math.floor(this.world.size.z / 2)) + 1.05,
+      z: this.world.size.z / 2 + 0.5
+    };
+    const spawn = spawns[spawnIndex % Math.max(1, spawns.length)] ?? { id: "fallback", ...fallback };
+    return {
+      x: spawn.x,
+      y: spawn.y,
+      z: spawn.z
+    };
   }
 
   private invalidatePlayerCollection() {
@@ -704,6 +796,17 @@ export class OutOfBoundsSimulation {
     };
   }
 
+  private toVoxelBurstViewState(burst: SimVoxelBurst): VoxelBurstViewState {
+    return {
+      id: burst.id,
+      style: burst.style,
+      kind: burst.kind,
+      position: { ...burst.position },
+      elapsed: burst.elapsed,
+      duration: burst.duration
+    };
+  }
+
   private toSkyDropViewState(skyDrop: SimSkyDrop): SkyDropViewState {
     return {
       id: skyDrop.id,
@@ -737,11 +840,22 @@ export class OutOfBoundsSimulation {
 
   private applyIntent(player: SimPlayer, command: PlayerCommand, dt: number) {
     player.pushCooldownRemaining = Math.max(0, player.pushCooldownRemaining - dt);
+    player.pushVisualRemaining = Math.max(0, player.pushVisualRemaining - dt);
     player.stunRemaining = Math.max(0, player.stunRemaining - dt);
     player.invulnerableRemaining = Math.max(0, player.invulnerableRemaining - dt);
+    if (player.spacePhase === "float") {
+      player.spacePhaseRemaining = Math.max(0, player.spacePhaseRemaining - dt);
+      if (player.spacePhaseRemaining <= EPSILON) {
+        player.spacePhase = "reentry";
+        player.spacePhaseRemaining = 0;
+      }
+    }
 
     const stunned = player.stunRemaining > EPSILON;
-    if (stunned) {
+    const floatingInSpace = player.spacePhase === "float";
+    const jumpLockedBySpace = player.spacePhase !== "none";
+    const suppressGameplayActions = floatingInSpace;
+    if (stunned || jumpLockedBySpace) {
       this.stopJetpack(player);
     }
 
@@ -753,11 +867,17 @@ export class OutOfBoundsSimulation {
       player.facing = this.rotateFacingToward(player.facing, moveInput, this.config.turnSpeed * dt);
     }
 
-    const moveSpeed = this.config.moveSpeed;
+    const moveSpeed =
+      floatingInSpace
+        ? this.config.moveSpeed * SPACE_FLOAT_MOVE_SPEED_MULTIPLIER
+        : this.config.moveSpeed;
     const desiredX = moveInput.x * moveSpeed;
     const desiredZ = moveInput.z * moveSpeed;
-    const acceleration = (player.grounded ? this.config.groundAcceleration : this.config.airAcceleration) * dt;
-    const airControl = player.grounded ? 1 : this.config.airControl;
+    const acceleration =
+      floatingInSpace
+        ? this.config.airAcceleration * SPACE_FLOAT_ACCELERATION_MULTIPLIER * dt
+        : (player.grounded ? this.config.groundAcceleration : this.config.airAcceleration) * dt;
+    const airControl = floatingInSpace ? 1 : player.grounded ? 1 : this.config.airControl;
 
     player.velocity.x = approach(player.velocity.x, desiredX, acceleration * airControl);
     player.velocity.z = approach(player.velocity.z, desiredZ, acceleration * airControl);
@@ -769,16 +889,23 @@ export class OutOfBoundsSimulation {
     }
 
     let jumpedThisFrame = false;
-    if (!stunned && command.jumpPressed && player.grounded && player.mass >= this.config.jumpCost) {
+    if (!stunned && !jumpLockedBySpace && command.jumpPressed && player.grounded) {
       player.velocity.y = this.config.jumpSpeed;
-      player.mass -= this.config.jumpCost;
       player.grounded = false;
       player.jetpackEligible = true;
       player.jetpackOutsideBoundsGrace = false;
       jumpedThisFrame = true;
     }
 
-    if (!stunned && !jumpedThisFrame && !player.grounded && player.jetpackEligible && command.jumpPressed && player.mass > EPSILON) {
+    if (
+      !stunned &&
+      !jumpLockedBySpace &&
+      !jumpedThisFrame &&
+      !player.grounded &&
+      player.jetpackEligible &&
+      command.jumpPressed &&
+      player.mass > EPSILON
+    ) {
       player.jetpackActive = true;
     }
 
@@ -798,19 +925,19 @@ export class OutOfBoundsSimulation {
       }
     }
 
-    if (!stunned && command.push) {
+    if (!stunned && !suppressGameplayActions && command.push) {
       this.tryPush(player);
     }
 
-    if (!stunned && command.destroy) {
+    if (!stunned && !suppressGameplayActions && command.destroy) {
       this.tryDestroy(player, command.targetVoxel);
     }
 
-    if (!stunned && command.place) {
+    if (!stunned && !suppressGameplayActions && command.place) {
       this.tryPlace(player, command.targetVoxel, command.targetNormal);
     }
 
-    if (!stunned && command.layEgg) {
+    if (!stunned && player.spacePhase !== "reentry" && command.layEgg) {
       this.tryLayEgg(player);
     }
 
@@ -856,6 +983,8 @@ export class OutOfBoundsSimulation {
     if (player.pushCooldownRemaining > 0 || player.mass < this.config.pushCost) {
       return;
     }
+
+    player.pushVisualRemaining = PUSH_VISUAL_DURATION;
 
     let candidate: SimPlayer | null = null;
     let bestDistance = Number.POSITIVE_INFINITY;
@@ -916,6 +1045,16 @@ export class OutOfBoundsSimulation {
     this.addDirtyChunkKeys(this.world.removeVoxels([removedVoxel]));
     this.invalidateFallingClusterLandingCacheForMutations([removedVoxel]);
     this.spawnDetachedComponentsNearMutations([removedVoxel]);
+    this.createVoxelBurst(
+      "harvest",
+      {
+        x: removedVoxel.x + 0.5,
+        y: removedVoxel.y + 0.5,
+        z: removedVoxel.z + 0.5
+      },
+      HARVEST_VOXEL_BURST_DURATION,
+      kind
+    );
     player.mass = clamp(player.mass + this.config.destroyGain, 0, this.config.maxMass);
   }
 
@@ -977,24 +1116,38 @@ export class OutOfBoundsSimulation {
 
     const eggId = `egg-${this.nextEggId}`;
     this.nextEggId += 1;
+    const orbital = player.spacePhase === "float";
 
     const spawnX = player.position.x + player.facing.x * this.config.eggDropOffsetForward;
-    const spawnY = player.position.y + this.config.eggDropOffsetUp;
+    const spawnY = orbital
+      ? player.position.y + ORBITAL_EGG_DROP_OFFSET_Y
+      : player.position.y + this.config.eggDropOffsetUp;
     const spawnZ = player.position.z + player.facing.z * this.config.eggDropOffsetForward;
     const egg: SimEgg = {
       id: eggId,
       ownerId: player.id,
-      fuseRemaining: this.config.eggFuseDuration,
+      fuseRemaining: orbital
+        ? Math.max(this.config.eggFuseDuration, ORBITAL_EGG_FUSE_DURATION)
+        : this.config.eggFuseDuration,
       grounded: false,
+      orbital,
+      explodeOnGroundContact: orbital,
+      fuseArmedBelowY: orbital ? this.world.size.y + ORBITAL_EGG_FUSE_ARM_MARGIN_Y : null,
       position: {
         x: clamp(spawnX, this.config.eggRadius + EPSILON, this.world.size.x - this.config.eggRadius - EPSILON),
-        y: clamp(spawnY, this.config.eggRadius + EPSILON, this.world.size.y - this.config.eggRadius - EPSILON),
+        y: orbital ? Math.max(this.config.eggRadius + EPSILON, spawnY) : clamp(spawnY, this.config.eggRadius + EPSILON, this.world.size.y - this.config.eggRadius - EPSILON),
         z: clamp(spawnZ, this.config.eggRadius + EPSILON, this.world.size.z - this.config.eggRadius - EPSILON)
       },
       velocity: {
-        x: player.velocity.x + player.facing.x * this.config.eggThrowSpeed,
-        y: Math.max(player.velocity.y * 0.35, 0) + this.config.eggThrowSpeed * 0.38,
-        z: player.velocity.z + player.facing.z * this.config.eggThrowSpeed
+        x: orbital
+          ? player.velocity.x * ORBITAL_EGG_HORIZONTAL_INHERIT_FACTOR + player.facing.x * this.config.eggThrowSpeed * ORBITAL_EGG_HORIZONTAL_THROW_FACTOR
+          : player.velocity.x + player.facing.x * this.config.eggThrowSpeed,
+        y: orbital
+          ? -ORBITAL_EGG_DOWNWARD_SPEED
+          : Math.max(player.velocity.y * 0.35, 0) + this.config.eggThrowSpeed * 0.38,
+        z: orbital
+          ? player.velocity.z * ORBITAL_EGG_HORIZONTAL_INHERIT_FACTOR + player.facing.z * this.config.eggThrowSpeed * ORBITAL_EGG_HORIZONTAL_THROW_FACTOR
+          : player.velocity.z + player.facing.z * this.config.eggThrowSpeed
       }
     };
 
@@ -1145,7 +1298,17 @@ export class OutOfBoundsSimulation {
   }
 
   private integratePlayer(player: SimPlayer, dt: number) {
-    player.velocity.y -= this.config.gravity * dt;
+    const previousY = player.position.y;
+    const gravityMultiplier =
+      player.spacePhase === "float"
+        ? SPACE_FLOAT_GRAVITY_MULTIPLIER
+        : player.spacePhase === "reentry"
+          ? SPACE_REENTRY_GRAVITY_MULTIPLIER
+          : 1;
+    player.velocity.y -= this.config.gravity * gravityMultiplier * dt;
+    if (player.spacePhase === "float") {
+      player.velocity.y = Math.max(player.velocity.y, SPACE_FLOAT_DRIFT_SPEED);
+    }
 
     this.resolveAxis(player, "x", player.velocity.x * dt);
     const groundedByY = this.resolveAxis(player, "y", player.velocity.y * dt);
@@ -1153,7 +1316,51 @@ export class OutOfBoundsSimulation {
     player.grounded = groundedByY;
     if (player.grounded) {
       this.clearJetpackState(player);
+      player.spacePhase = "none";
+      player.spacePhaseRemaining = 0;
+      player.spaceTriggerArmed = true;
+      return;
     }
+
+    const spaceEnterY = this.getSpaceEnterY();
+    const spaceResetY = this.getSpaceResetY();
+    if (
+      player.spacePhase === "none" &&
+      player.spaceTriggerArmed &&
+      previousY < spaceEnterY &&
+      player.position.y >= spaceEnterY &&
+      player.velocity.y > EPSILON
+    ) {
+      this.startSpaceFloat(player);
+      return;
+    }
+
+    if (player.spacePhase === "reentry" && player.position.y <= spaceResetY) {
+      player.spacePhase = "none";
+      player.spacePhaseRemaining = 0;
+    }
+
+    if (player.spacePhase === "none" && player.position.y <= spaceResetY) {
+      player.spaceTriggerArmed = true;
+    }
+  }
+
+  private getSpaceEnterY() {
+    return Math.max(this.world.size.y + 28, 60);
+  }
+
+  private getSpaceResetY() {
+    return this.getSpaceEnterY() - 12;
+  }
+
+  private startSpaceFloat(player: SimPlayer) {
+    this.stopJetpack(player);
+    player.jetpackEligible = false;
+    player.jetpackOutsideBoundsGrace = false;
+    player.spacePhase = "float";
+    player.spacePhaseRemaining = SPACE_FLOAT_DURATION;
+    player.spaceTriggerArmed = false;
+    player.velocity.y = SPACE_FLOAT_DRIFT_SPEED;
   }
 
   private integrateEliminatedPlayer(player: SimPlayer, dt: number) {
@@ -1183,9 +1390,14 @@ export class OutOfBoundsSimulation {
       }
 
       egg.fuseRemaining = Math.max(0, egg.fuseRemaining - dt);
-      this.integrateEgg(egg, dt);
+      const explodedOnImpact = this.integrateEgg(egg, dt);
+      if (explodedOnImpact) {
+        this.explodeEgg(egg);
+        continue;
+      }
 
-      if (egg.fuseRemaining <= EPSILON || egg.position.y < this.world.boundary.fallY) {
+      const fuseArmed = egg.fuseArmedBelowY == null || egg.position.y <= egg.fuseArmedBelowY;
+      if ((fuseArmed && egg.fuseRemaining <= EPSILON) || egg.position.y < this.world.boundary.fallY) {
         this.explodeEgg(egg);
       }
     }
@@ -1196,8 +1408,13 @@ export class OutOfBoundsSimulation {
 
     this.resolveEggAxis(egg, "x", egg.velocity.x * dt);
     const groundedByY = this.resolveEggAxis(egg, "y", egg.velocity.y * dt);
-    this.resolveEggAxis(egg, "z", egg.velocity.z * dt);
     egg.grounded = groundedByY;
+    if (groundedByY && egg.explodeOnGroundContact) {
+      egg.position.x = clamp(egg.position.x, this.config.eggRadius + EPSILON, this.world.size.x - this.config.eggRadius - EPSILON);
+      egg.position.z = clamp(egg.position.z, this.config.eggRadius + EPSILON, this.world.size.z - this.config.eggRadius - EPSILON);
+      return true;
+    }
+    this.resolveEggAxis(egg, "z", egg.velocity.z * dt);
 
     if (egg.grounded) {
       egg.velocity.x = approach(egg.velocity.x, 0, this.config.eggGroundFriction * dt);
@@ -1212,6 +1429,7 @@ export class OutOfBoundsSimulation {
 
     egg.position.x = clamp(egg.position.x, this.config.eggRadius + EPSILON, this.world.size.x - this.config.eggRadius - EPSILON);
     egg.position.z = clamp(egg.position.z, this.config.eggRadius + EPSILON, this.world.size.z - this.config.eggRadius - EPSILON);
+    return false;
   }
 
   private resolveEggAxis(egg: SimEgg, axis: "x" | "y" | "z", delta: number) {
@@ -1304,6 +1522,9 @@ export class OutOfBoundsSimulation {
 
     if (axis === "y") {
       if (grounded) {
+        if (egg.explodeOnGroundContact) {
+          return grounded;
+        }
         egg.velocity.y = Math.abs(egg.velocity.y) * this.config.eggBounceDamping;
         if (egg.velocity.y < this.config.eggGroundSpeedThreshold) {
           egg.velocity.y = 0;
@@ -1378,6 +1599,23 @@ export class OutOfBoundsSimulation {
         Math.sin(progress * Math.PI) * this.config.eggScatterArcHeight,
       z: lerp(debris.origin.z, debris.destination.z, progress)
     };
+  }
+
+  private updateVoxelBursts(dt: number) {
+    const expiredBurstIds: string[] = [];
+
+    for (const burst of this.voxelBursts.values()) {
+      burst.elapsed = Math.min(burst.duration, burst.elapsed + dt);
+      if (burst.elapsed + EPSILON < burst.duration) {
+        continue;
+      }
+
+      expiredBurstIds.push(burst.id);
+    }
+
+    for (const burstId of expiredBurstIds) {
+      this.voxelBursts.delete(burstId);
+    }
   }
 
   private resolveAxis(player: SimPlayer, axis: "x" | "y" | "z", delta: number) {
@@ -1504,13 +1742,32 @@ export class OutOfBoundsSimulation {
     return count;
   }
 
+  private getEggBlastImpact(egg: SimEgg) {
+    if (!egg.orbital) {
+      return {
+        hitRadius: this.config.eggBlastHitRadius,
+        knockback: this.config.eggBlastKnockback,
+        lift: this.config.eggBlastLift,
+        stunDuration: this.config.eggBlastStunDuration
+      };
+    }
+
+    return {
+      hitRadius: this.config.eggBlastHitRadius * ORBITAL_EGG_HIT_RADIUS_MULTIPLIER,
+      knockback: this.config.eggBlastKnockback * ORBITAL_EGG_KNOCKBACK_MULTIPLIER,
+      lift: this.config.eggBlastLift * ORBITAL_EGG_LIFT_MULTIPLIER,
+      stunDuration: this.config.eggBlastStunDuration * ORBITAL_EGG_STUN_MULTIPLIER
+    };
+  }
+
   private explodeEgg(egg: SimEgg) {
     if (!this.eggs.has(egg.id)) {
       return;
     }
 
     const explosionCenter = { ...egg.position };
-    const hitRadiusSquared = this.config.eggBlastHitRadius * this.config.eggBlastHitRadius;
+    const blastImpact = this.getEggBlastImpact(egg);
+    const hitRadiusSquared = blastImpact.hitRadius * blastImpact.hitRadius;
     for (const player of this.players.values()) {
       if (!player.alive || player.respawning) {
         continue;
@@ -1521,9 +1778,9 @@ export class OutOfBoundsSimulation {
       }
 
       this.applyPlayerHit(player, explosionCenter, {
-        knockback: this.config.eggBlastKnockback,
-        lift: this.config.eggBlastLift,
-        stunDuration: this.config.eggBlastStunDuration
+        knockback: blastImpact.knockback,
+        lift: blastImpact.lift,
+        stunDuration: blastImpact.stunDuration
       });
     }
 
@@ -1532,6 +1789,7 @@ export class OutOfBoundsSimulation {
       this.addDirtyChunkKeys(this.world.removeVoxels(explodedVoxels));
       this.invalidateFallingClusterLandingCacheForMutations(explodedVoxels);
     }
+    this.createVoxelBurst("eggExplosion", explosionCenter, EGG_EXPLOSION_VOXEL_BURST_DURATION, null);
 
     const reservedLandingKeys = new Set<string>();
     let scatterCount = 0;
@@ -1690,6 +1948,24 @@ export class OutOfBoundsSimulation {
     this.invalidateEggScatterDebrisCollection();
   }
 
+  private createVoxelBurst(
+    style: VoxelBurstStyle,
+    position: Vector3,
+    duration: number,
+    kind: BlockKind | null
+  ) {
+    const burstId = `voxel-burst-${this.nextVoxelBurstId}`;
+    this.nextVoxelBurstId += 1;
+    this.voxelBursts.set(burstId, {
+      id: burstId,
+      style,
+      kind,
+      position: { ...position },
+      elapsed: 0,
+      duration
+    });
+  }
+
   private handleRingOut(player: SimPlayer, fallingOut: boolean) {
     const livesRemaining = this.removeLife(player);
     if (livesRemaining <= 0) {
@@ -1714,6 +1990,10 @@ export class OutOfBoundsSimulation {
     player.jetpackEligible = false;
     player.jetpackOutsideBoundsGrace = false;
     player.stunRemaining = 0;
+    player.pushVisualRemaining = 0;
+    player.spacePhase = "none";
+    player.spacePhaseRemaining = 0;
+    player.spaceTriggerArmed = true;
 
     if (!fallingOut) {
       player.velocity = { x: 0, y: 0, z: 0 };
@@ -1749,6 +2029,10 @@ export class OutOfBoundsSimulation {
     player.jetpackActive = false;
     player.jetpackEligible = false;
     player.jetpackOutsideBoundsGrace = false;
+    player.pushVisualRemaining = 0;
+    player.spacePhase = "none";
+    player.spacePhaseRemaining = 0;
+    player.spaceTriggerArmed = true;
   }
 
   private selectRespawnPosition(playerId: string): Vector3 {
@@ -2469,6 +2753,10 @@ export class OutOfBoundsSimulation {
     player.invulnerableRemaining = 0;
     player.jetpackEligible = false;
     player.jetpackOutsideBoundsGrace = false;
+    player.pushVisualRemaining = 0;
+    player.spacePhase = "none";
+    player.spacePhaseRemaining = 0;
+    player.spaceTriggerArmed = true;
     player.eliminatedAt ??= this.tick;
 
     if (!fallingOut) {

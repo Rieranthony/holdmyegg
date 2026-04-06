@@ -21,6 +21,14 @@ const normalizeChunks = (entries: ReturnType<MutableVoxelWorld["buildVisibleChun
     }))
     .sort((left, right) => left.key.localeCompare(right.key));
 
+const normalizeDocumentTimestamps = <T extends { meta: { updatedAt: string } }>(document: T) => ({
+  ...document,
+  meta: {
+    ...document.meta,
+    updatedAt: "<normalized>"
+  }
+});
+
 const createTinyDocument = ({
   voxels,
   spawns = []
@@ -334,7 +342,9 @@ describe("MutableVoxelWorld", () => {
     const batchedRemoveDirty = batchedWorld.removeVoxels(removedVoxels);
     expect(batchedRemoveDirty).toEqual(repeatedRemoveDirty);
     expect(batchedWorld.getTerrainRevision()).toBe(2);
-    expect(batchedWorld.toDocument()).toEqual(repeatedWorld.toDocument());
+    expect(normalizeDocumentTimestamps(batchedWorld.toDocument())).toEqual(
+      normalizeDocumentTimestamps(repeatedWorld.toDocument())
+    );
     expect(batchedWorld.buildVisibleChunks()).toEqual(repeatedWorld.buildVisibleChunks());
 
     for (const { x, z } of [

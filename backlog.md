@@ -6,8 +6,8 @@
 - Map templates and biome palettes
 - Character animation polish
 - Collapse polish like dust, debris breakup, and better warning readability
-- Decide whether crush hazards should evolve into direct elimination or remain a Mass punishment
-- Fine-tune Mass gain/spend numbers for harvesting, building, and pushing
+- Decide whether crush hazards should evolve into direct elimination or remain a Matter punishment
+- Fine-tune Matter gain/spend numbers for harvesting, building, and pushing
 - Decide whether runtime building should stay single-cube only or grow into brush/rapid-place behaviors
 - Further rendering bundle splitting and lazy loading
 - CI job for `bun run check` and `bun run test:coverage`

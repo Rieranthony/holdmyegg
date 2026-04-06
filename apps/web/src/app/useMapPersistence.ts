@@ -89,7 +89,7 @@ export function useMapPersistence({ onStatus }: UseMapPersistenceOptions) {
       try {
         return normalizeArenaBudgetMapDocument(await importMapDocument(file));
       } catch {
-        onStatus("Import failed. Check that the JSON is a valid Out of Bounds map.");
+        onStatus("Import failed. Check that the JSON is a valid HoldMyEgg map.");
         return null;
       }
     },

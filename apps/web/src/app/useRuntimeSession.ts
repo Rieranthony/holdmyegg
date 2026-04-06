@@ -50,13 +50,14 @@ export function useRuntimeSession({ onStatus }: UseRuntimeSessionOptions) {
     (nextMode: GameMode, mapDocument: MapDocumentV1) => {
       runtimeRef.current.reset(nextMode, normalizeArenaBudgetMapDocument(mapDocument), {
         npcCount: nextMode === "skirmish" ? 4 : 0,
-        localPlayerName: "You"
+        localPlayerName: "You",
+        initialSpawnStyle: "sky"
       });
       syncFromMatchState();
       setRuntimeDirtyChunkKeys([]);
       setMode(nextMode);
       setSessionKey((value) => value + 1);
-      onStatus(nextMode === "explore" ? "Explore mode ready." : "Skirmish mode ready. Push the NPCs out.");
+      onStatus(nextMode === "explore" ? "Explore mode ready." : "Brawl mode ready. Push the NPCs out.");
     },
     [onStatus, syncFromMatchState]
   );

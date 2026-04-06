@@ -1,0 +1,2255 @@
+import * as THREE from "three";
+import {
+  createDefaultArenaMap,
+  getMapPropVoxels,
+  normalizeArenaBudgetMapDocument,
+  type MapDocumentV1
+} from "@out-of-bounds/map";
+import type {
+  HudState,
+  RuntimeEggScatterDebrisState,
+  RuntimeEggState,
+  RuntimePlayerState,
+  RuntimeSkyDropState,
+  RuntimeVoxelBurstState,
+  FallingClusterViewState,
+  SimulationInitialSpawnStyle
+} from "@out-of-bounds/sim";
+import { propMaterials } from "../game/propMaterials";
+import {
+  aimCameraConfig,
+  applyFreeLookDelta,
+  chaseCameraConfig,
+  dampScalar,
+  getAimRigState,
+  getForwardSpeedRatio,
+  getPlanarForwardBetweenPoints,
+  getSpeedCameraBlend,
+  getYawFromPlanarVector,
+  stepAngleToward
+} from "../game/camera";
+import { cloudPresets, getVoxelCloudPosition, type VoxelCloudPreset } from "../game/clouds";
+import { getPlayerBlobShadowState } from "../game/cheapShadows";
+import { createChickenAvatarRig, type ChickenAvatarRig } from "../game/chickenModel";
+import { getChickenPalette, type ChickenPaletteName } from "../game/colors";
+import { getEggVisualState } from "../game/eggs";
+import { getFallingClusterVisualState } from "../game/fallingClusters";
+import { buildPlayerCommand, initialKeyboardInputState, type KeyboardInputState } from "../game/input";
+import { configureDynamicInstancedMesh, finalizeDynamicInstancedMesh, finalizeStaticInstancedMesh } from "../game/instancedMeshes";
+import {
+  chickenPoseVisualDefaults,
+  getChickenHeadFeatherRotation,
+  getChickenLowDetailTraceOffsetX,
+  getChickenLowDetailWingMeshOffsetX,
+  getChickenLowDetailWingTraceHeightScale,
+  getChickenMotionSeed,
+  getChickenPoseVisualState,
+  getChickenTailMotion,
+  getChickenWingDepthScale,
+  getChickenWingFeatherletRotation,
+  getChickenWingHeightScale,
+  getChickenWingMeshOffsetX,
+  getChickenWingTraceHeightScale,
+  getChickenWingTraceOffsetX,
+  getChickenWingVisualState,
+  getPlayerAvatarVisualState,
+  getPlayerStatusVisualState,
+  headFeatherOffsets,
+  shouldTriggerChickenLandingTumble,
+  wingFeatherletOffsets
+} from "../game/playerVisuals";
+import {
+  getEggScatterDebrisVisualState,
+  getVoxelBurstMaterialProfile,
+  getVoxelBurstParticleCount,
+  getVoxelBurstParticleState
+} from "../game/voxelFx";
+import {
+  chickenModelRig,
+  createChickenMaterialBundle,
+  disposeChickenMaterialBundle,
+  playerRingGeometry,
+  playerShadowGeometry,
+  type ChickenMaterialBundle
+} from "../game/sceneAssets";
+import { getSkyDropVisualState } from "../game/skyDrops";
+import { resolveTerrainRaycastHit } from "../game/terrainRaycast";
+import {
+  type BlockRenderProfile,
+  getBlockRenderProfile,
+  getTerrainChunkMaterials,
+  getVoxelMaterials,
+  sharedVoxelGeometry
+} from "../game/voxelMaterials";
+import type {
+  WorkerRequestMessage,
+  WorkerResponseMessage
+} from "./protocol";
+import { packRuntimeInputCommand } from "./runtimeInput";
+import type {
+  ActiveShellMode,
+  EditorPanelState,
+  GameDiagnostics,
+  RuntimeRenderFrame,
+  RuntimePauseState,
+  ShellPresentation,
+  TerrainChunkPatchPayload
+} from "./types";
+
+interface GameClientCallbacks {
+  onDiagnostics?: (diagnostics: GameDiagnostics) => void;
+  onEditorStateChange?: (editorState: EditorPanelState) => void;
+  onHudStateChange?: (hudState: HudState | null) => void;
+  onPauseStateChange?: (state: RuntimePauseState) => void;
+  onReadyToDisplay?: () => void;
+  onStatus?: (message: string) => void;
+}
+
+interface GameClientMountOptions extends GameClientCallbacks {
+  canvas: HTMLCanvasElement;
+  initialDocument?: MapDocumentV1;
+  initialMode: ActiveShellMode;
+  initialSpawnStyle?: SimulationInitialSpawnStyle;
+  localPlayerName?: string;
+  localPlayerPaletteName?: ChickenPaletteName | null;
+  matchColorSeed: number;
+  presentation?: ShellPresentation;
+}
+
+type GameShellIntent =
+  | { type: "load_map"; document: MapDocumentV1 }
+  | { type: "set_editor_state"; next: Partial<EditorPanelState> };
+
+interface PlayerVisual extends ChickenAvatarRig {
+  paletteName: ChickenPaletteName;
+  group: THREE.Group;
+  ring: THREE.Mesh;
+  ringMaterial: THREE.MeshBasicMaterial;
+  shadow: THREE.Mesh;
+  shadowMaterial: THREE.MeshBasicMaterial;
+  wingletTraceMaterial: THREE.MeshBasicMaterial;
+  materialBundle: ChickenMaterialBundle;
+  targetPosition: THREE.Vector3;
+  motionSeed: number;
+  previousGrounded: boolean;
+  previousVelocityY: number;
+  landingRollRemaining: number;
+}
+
+interface EggVisual {
+  group: THREE.Group;
+  material: THREE.MeshStandardMaterial;
+}
+
+interface SkyDropVisual {
+  group: THREE.Group;
+  ring: THREE.Mesh;
+  ringMaterial: THREE.MeshBasicMaterial;
+  beam: THREE.Mesh;
+  beamMaterial: THREE.MeshBasicMaterial;
+  cube: THREE.Mesh;
+}
+
+interface ClusterVisual {
+  group: THREE.Group;
+}
+
+interface DynamicOpacityMeshResource {
+  geometry: THREE.BufferGeometry;
+  materials: THREE.Material[];
+  mesh: THREE.InstancedMesh;
+  opacityAttribute: THREE.InstancedBufferAttribute;
+}
+
+interface CloudVisual {
+  group: THREE.Group;
+  preset: VoxelCloudPreset;
+}
+
+interface SpacePlanetVisual {
+  group: THREE.Group;
+  materials: THREE.MeshBasicMaterial[];
+  spinSpeed: number;
+  wobblePhase: number;
+}
+
+const backgroundColor = "#8fc6e0";
+const runtimeGroundMaterial = new THREE.MeshStandardMaterial({ color: "#050505" });
+const menuGroundMaterial = new THREE.MeshBasicMaterial({ color: backgroundColor });
+const cloudGeometry = new THREE.BoxGeometry(1.6, 0.9, 1.6);
+const eggBaseGeometry = new THREE.BoxGeometry(0.34, 0.18, 0.34);
+const eggMiddleGeometry = new THREE.BoxGeometry(0.46, 0.2, 0.46);
+const eggCapGeometry = new THREE.BoxGeometry(0.26, 0.16, 0.26);
+const skyDropRingGeometry = new THREE.RingGeometry(0.48, 0.72, 24);
+const skyDropBeamGeometry = new THREE.CylinderGeometry(0.16, 0.16, 2, 12, 1, true);
+const speedTraceGeometry = new THREE.PlaneGeometry(0.16, 1.5).translate(0, 0.75, 0);
+const clusterTempObject = new THREE.Object3D();
+const cloudTempObject = new THREE.Object3D();
+const voxelFxTempObject = new THREE.Object3D();
+const treeTempMatrix = new THREE.Matrix4();
+const shadowRayDirection = new THREE.Vector3(0, -1, 0);
+const daySkyColor = new THREE.Color(backgroundColor);
+const spaceSkyColor = new THREE.Color("#04060d");
+const dayFogColor = new THREE.Color(backgroundColor);
+const spaceFogColor = new THREE.Color("#070a12");
+const AVATAR_TURN_SPEED = 4.5;
+const AVATAR_BOB_BASE_Y = 0.74;
+const EGG_FUSE_DURATION = 1.6;
+const EGG_SCATTER_ARC_HEIGHT = 2.4;
+const MAX_EGG_SCATTER_INSTANCES_PER_PROFILE = 64;
+const MAX_HARVEST_BURST_INSTANCES_PER_PROFILE = 128;
+const MAX_EGG_EXPLOSION_BURST_INSTANCES = 512;
+const PLAYER_DETAIL_DISTANCE = 18;
+const SPEED_TRACE_DEPTH = 2.4;
+const SPEED_TRACE_PUSH_BURST_DURATION = 0.2;
+const SPEED_TRACE_MIN_AIR_SPEED = 3.6;
+const SPACE_BLEND_DAMPING = 4.4;
+const SPACE_STAR_COUNT = 220;
+const voxelFxProfiles = ["earthSurface", "earthSubsoil", "darkness"] as const satisfies readonly BlockRenderProfile[];
+const speedTraceLayouts = [
+  { angleDeg: 164, screenRadius: 0.68, scaleY: 1.38, width: 0.96, opacity: 0.42, travel: 0.2, speed: 0.94, phase: 0.06 },
+  { angleDeg: 144, screenRadius: 0.7, scaleY: 1.55, width: 1.08, opacity: 0.76, travel: 0.28, speed: 1.1, phase: 0.14 },
+  { angleDeg: 122, screenRadius: 0.7, scaleY: 1.3, width: 0.92, opacity: 0.34, travel: 0.18, speed: 0.88, phase: 0.28 },
+  { angleDeg: 98, screenRadius: 0.72, scaleY: 1.18, width: 0.84, opacity: 0.64, travel: 0.16, speed: 1.18, phase: 0.42 },
+  { angleDeg: 68, screenRadius: 0.7, scaleY: 1.34, width: 0.9, opacity: 0.36, travel: 0.2, speed: 1.02, phase: 0.56 },
+  { angleDeg: 42, screenRadius: 0.68, scaleY: 1.6, width: 1.1, opacity: 0.78, travel: 0.3, speed: 1.22, phase: 0.68 },
+  { angleDeg: 18, screenRadius: 0.7, scaleY: 1.44, width: 0.98, opacity: 0.48, travel: 0.24, speed: 0.96, phase: 0.8 },
+  { angleDeg: -18, screenRadius: 0.7, scaleY: 1.44, width: 0.98, opacity: 0.48, travel: 0.24, speed: 1.04, phase: 0.12 },
+  { angleDeg: -42, screenRadius: 0.68, scaleY: 1.6, width: 1.1, opacity: 0.78, travel: 0.3, speed: 1.16, phase: 0.24 },
+  { angleDeg: -68, screenRadius: 0.7, scaleY: 1.34, width: 0.9, opacity: 0.36, travel: 0.2, speed: 0.92, phase: 0.36 },
+  { angleDeg: -98, screenRadius: 0.72, scaleY: 1.18, width: 0.84, opacity: 0.64, travel: 0.16, speed: 1.12, phase: 0.48 },
+  { angleDeg: -122, screenRadius: 0.7, scaleY: 1.3, width: 0.92, opacity: 0.34, travel: 0.18, speed: 0.86, phase: 0.6 },
+  { angleDeg: -144, screenRadius: 0.7, scaleY: 1.55, width: 1.08, opacity: 0.76, travel: 0.28, speed: 1.08, phase: 0.72 },
+  { angleDeg: -164, screenRadius: 0.68, scaleY: 1.38, width: 0.96, opacity: 0.42, travel: 0.2, speed: 0.98, phase: 0.84 }
+] as const;
+const eliminatedVisualState = {
+  scaleX: 1,
+  scaleY: 1,
+  scaleZ: 1,
+  blinkVisible: true
+} as const;
+
+const spacePlanetDescriptors = [
+  {
+    offset: [-168, 94, -280] as const,
+    radius: [5, 5, 5] as const,
+    scale: 3.2,
+    colors: ["#85b6ff", "#4b6fc0"] as const,
+    spinSpeed: 0.11,
+    wobblePhase: 0.2
+  },
+  {
+    offset: [212, -38, -316] as const,
+    radius: [6, 4, 6] as const,
+    scale: 2.7,
+    colors: ["#f3c27a", "#c07a3d"] as const,
+    spinSpeed: -0.08,
+    wobblePhase: 1.1
+  },
+  {
+    offset: [28, 136, -340] as const,
+    radius: [4, 6, 4] as const,
+    scale: 2.45,
+    colors: ["#97ecff", "#4d9bc7"] as const,
+    spinSpeed: 0.06,
+    wobblePhase: 2.1
+  }
+] as const;
+
+const isRuntimeMode = (mode: ActiveShellMode) => mode === "explore" || mode === "skirmish";
+
+const configureStaticInstancedMesh = (mesh: THREE.InstancedMesh, matrices: readonly THREE.Matrix4[]) => {
+  mesh.count = matrices.length;
+  for (let index = 0; index < matrices.length; index += 1) {
+    mesh.setMatrixAt(index, matrices[index]!);
+  }
+  finalizeStaticInstancedMesh(mesh, matrices.length);
+};
+
+const buildCloudMatrices = (preset: VoxelCloudPreset) => {
+  const mainMatrices: THREE.Matrix4[] = [];
+  const shadeMatrices: THREE.Matrix4[] = [];
+
+  for (const cube of preset.cubes) {
+    cloudTempObject.position.set(cube.x, cube.y, cube.z);
+    cloudTempObject.rotation.set(0, 0, 0);
+    cloudTempObject.scale.set(1, 1, 1);
+    cloudTempObject.updateMatrix();
+    (cube.tone === "shade" ? shadeMatrices : mainMatrices).push(cloudTempObject.matrix.clone());
+  }
+
+  return {
+    mainMatrices,
+    shadeMatrices
+  };
+};
+
+const createSpaceStarGeometry = () => {
+  const positions = new Float32Array(SPACE_STAR_COUNT * 3);
+
+  for (let index = 0; index < SPACE_STAR_COUNT; index += 1) {
+    const ratio = (index + 0.5) / SPACE_STAR_COUNT;
+    const polar = Math.acos(1 - 2 * ratio);
+    const azimuth = index * 2.399963229728653;
+    const radius = 220 + ((index * 73) % 120);
+    positions[index * 3] = Math.sin(polar) * Math.cos(azimuth) * radius;
+    positions[index * 3 + 1] = Math.cos(polar) * radius * 0.9;
+    positions[index * 3 + 2] = Math.sin(polar) * Math.sin(azimuth) * radius;
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geometry.computeBoundingSphere();
+  return geometry;
+};
+
+const buildVoxelPlanetMatrices = (radiusX: number, radiusY: number, radiusZ: number) => {
+  const mainMatrices: THREE.Matrix4[] = [];
+  const shadeMatrices: THREE.Matrix4[] = [];
+
+  for (let x = -radiusX; x <= radiusX; x += 1) {
+    for (let y = -radiusY; y <= radiusY; y += 1) {
+      for (let z = -radiusZ; z <= radiusZ; z += 1) {
+        const normalized =
+          (x * x) / Math.max(1, radiusX * radiusX) +
+          (y * y) / Math.max(1, radiusY * radiusY) +
+          (z * z) / Math.max(1, radiusZ * radiusZ);
+        if (normalized > 1) {
+          continue;
+        }
+
+        cloudTempObject.position.set(x, y, z);
+        cloudTempObject.rotation.set(0, 0, 0);
+        cloudTempObject.scale.set(1, 1, 1);
+        cloudTempObject.updateMatrix();
+        const shadingSignal = x * 0.62 + y * 0.28 - z * 0.44;
+        (shadingSignal < 0 ? shadeMatrices : mainMatrices).push(cloudTempObject.matrix.clone());
+      }
+    }
+  }
+
+  return {
+    mainMatrices,
+    shadeMatrices
+  };
+};
+
+const patchInstancedOpacityMaterial = (material: THREE.Material) => {
+  const patched = material.clone();
+  patched.transparent = true;
+  patched.depthWrite = false;
+  patched.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader.replace(
+      "#include <common>",
+      "#include <common>\nattribute float instanceOpacity;\nvarying float vInstanceOpacity;"
+    );
+    shader.vertexShader = shader.vertexShader.replace(
+      "#include <begin_vertex>",
+      "#include <begin_vertex>\nvInstanceOpacity = instanceOpacity;"
+    );
+    shader.fragmentShader = shader.fragmentShader.replace(
+      "#include <common>",
+      "#include <common>\nvarying float vInstanceOpacity;"
+    );
+    shader.fragmentShader = shader.fragmentShader.replace(
+      "gl_FragColor = vec4( outgoingLight, diffuseColor.a );",
+      "gl_FragColor = vec4( outgoingLight, diffuseColor.a * vInstanceOpacity );"
+    );
+  };
+  patched.customProgramCacheKey = () => `${material.type}-instanced-opacity`;
+  patched.needsUpdate = true;
+  return patched;
+};
+
+const createDynamicOpacityMeshResource = (
+  capacity: number,
+  materials: THREE.Material | THREE.Material[]
+): DynamicOpacityMeshResource => {
+  const geometry = new THREE.BoxGeometry(1, 1, 1);
+  const opacityAttribute = new THREE.InstancedBufferAttribute(new Float32Array(Math.max(1, capacity)), 1);
+  opacityAttribute.setUsage(THREE.DynamicDrawUsage);
+  geometry.setAttribute("instanceOpacity", opacityAttribute);
+  const materialSet = (Array.isArray(materials) ? materials : [materials]).map((material) => patchInstancedOpacityMaterial(material));
+  const mesh = new THREE.InstancedMesh(geometry, Array.isArray(materials) ? materialSet : materialSet[0]!, Math.max(1, capacity));
+  mesh.frustumCulled = false;
+  configureDynamicInstancedMesh(mesh);
+  finalizeDynamicInstancedMesh(mesh, 0);
+  return {
+    geometry,
+    materials: materialSet,
+    mesh,
+    opacityAttribute
+  };
+};
+
+const finalizeDynamicOpacityMesh = (resource: DynamicOpacityMeshResource | null, count: number) => {
+  if (!resource) {
+    return;
+  }
+
+  resource.opacityAttribute.needsUpdate = true;
+  finalizeDynamicInstancedMesh(resource.mesh, count);
+};
+
+const createTerrainGeometry = (patch: TerrainChunkPatchPayload) => {
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(patch.positions!, 3));
+  geometry.setAttribute("normal", new THREE.BufferAttribute(patch.normals!, 3));
+  geometry.setAttribute("uv", new THREE.BufferAttribute(patch.uvs!, 2));
+  geometry.setAttribute("color", new THREE.BufferAttribute(patch.colors!, 3));
+  geometry.setIndex(new THREE.BufferAttribute(patch.indices!, 1));
+  geometry.clearGroups();
+  for (const group of patch.materialGroups) {
+    geometry.addGroup(group.start, group.count, group.materialIndex);
+  }
+  geometry.computeBoundingBox();
+  geometry.computeBoundingSphere();
+  return geometry;
+};
+
+const getWorldNormalFromIntersection = (intersection: THREE.Intersection<THREE.Object3D>) => {
+  const faceNormal = intersection.face?.normal.clone();
+  if (!faceNormal) {
+    return null;
+  }
+
+  faceNormal.transformDirection(intersection.object.matrixWorld);
+  return faceNormal;
+};
+
+const isFormElement = (target: EventTarget | null) =>
+  target instanceof HTMLInputElement ||
+  target instanceof HTMLTextAreaElement ||
+  target instanceof HTMLSelectElement;
+
+const addPlayerPart = (
+  parent: THREE.Object3D,
+  geometry: THREE.BufferGeometry,
+  material: THREE.Material | THREE.Material[],
+  {
+    position,
+    rotation
+  }: {
+    position?: readonly [number, number, number];
+    rotation?: readonly [number, number, number];
+  } = {}
+) => {
+  const mesh = new THREE.Mesh(geometry, material);
+  if (position) {
+    mesh.position.set(...position);
+  }
+  if (rotation) {
+    mesh.rotation.set(...rotation);
+  }
+  parent.add(mesh);
+  return mesh;
+};
+
+const createPlayerVisual = (playerId: string, matchColorSeed: number, preferredPaletteName: ChickenPaletteName | null = null) => {
+  const palette = getChickenPalette(playerId, matchColorSeed, preferredPaletteName);
+  const materialBundle = createChickenMaterialBundle(palette);
+  const motionSeed = getChickenMotionSeed(playerId);
+  const group = new THREE.Group();
+  const rig = createChickenAvatarRig(materialBundle);
+
+  const shadow = new THREE.Mesh(playerShadowGeometry, materialBundle.shadow);
+  shadow.rotation.x = -Math.PI / 2;
+  group.add(shadow);
+
+  const ring = new THREE.Mesh(playerRingGeometry, materialBundle.ring);
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.03;
+  group.add(ring);
+  rig.avatar.position.y = AVATAR_BOB_BASE_Y;
+  group.add(rig.root);
+
+  return {
+    paletteName: palette.name,
+    group,
+    ...rig,
+    ring,
+    ringMaterial: materialBundle.ring,
+    shadow,
+    shadowMaterial: materialBundle.shadow,
+    wingletTraceMaterial: materialBundle.wingletTrace,
+    materialBundle,
+    targetPosition: new THREE.Vector3(),
+    motionSeed,
+    previousGrounded: false,
+    previousVelocityY: 0,
+    landingRollRemaining: 0
+  } satisfies PlayerVisual;
+};
+
+const disposePlayerVisual = (visual: PlayerVisual) => {
+  disposeChickenMaterialBundle(visual.materialBundle);
+};
+
+const createEggVisual = () => {
+  const material = new THREE.MeshStandardMaterial({
+    color: "#fff0d9",
+    map: propMaterials.egg.map ?? null,
+    emissive: "#ff4f3d",
+    emissiveIntensity: 0.08,
+    roughness: 1,
+    metalness: 0
+  });
+  const group = new THREE.Group();
+  addPlayerPart(group, eggBaseGeometry, material, {
+    position: [0, -0.12, 0]
+  });
+  addPlayerPart(group, eggMiddleGeometry, material, {
+    position: [0, 0.04, 0]
+  });
+  addPlayerPart(group, eggCapGeometry, material, {
+    position: [0, 0.22, 0]
+  });
+
+  return {
+    group,
+    material
+  } satisfies EggVisual;
+};
+
+export class GameClient {
+  static mount(options: GameClientMountOptions) {
+    return new GameClient(options);
+  }
+
+  private readonly canvas: HTMLCanvasElement;
+  private readonly callbacks: GameClientCallbacks;
+  private readonly worker: Worker;
+  private readonly renderer: THREE.WebGLRenderer;
+  private readonly scene = new THREE.Scene();
+  private readonly camera = new THREE.PerspectiveCamera(40, 1, 0.1, 1000);
+  private readonly sceneBackgroundColor = daySkyColor.clone();
+  private readonly ambientLight = new THREE.AmbientLight(0xffffff, 0.45);
+  private readonly directionalLight = new THREE.DirectionalLight(0xffffff, 1.36);
+  private readonly hemisphereLight = new THREE.HemisphereLight("#fef7df", "#4c6156", 0.22);
+  private readonly cloudsGroup = new THREE.Group();
+  private readonly spaceBackdropGroup = new THREE.Group();
+  private readonly terrainGroup = new THREE.Group();
+  private readonly propsGroup = new THREE.Group();
+  private readonly spawnsGroup = new THREE.Group();
+  private readonly playersGroup = new THREE.Group();
+  private readonly eggsGroup = new THREE.Group();
+  private readonly voxelFxGroup = new THREE.Group();
+  private readonly skyDropsGroup = new THREE.Group();
+  private readonly clustersGroup = new THREE.Group();
+  private readonly speedTraceGroup = new THREE.Group();
+  private readonly focusOutline: THREE.LineSegments;
+  private readonly focusGhost: THREE.Mesh;
+  private readonly focusRaycaster = new THREE.Raycaster();
+  private readonly clickRaycaster = new THREE.Raycaster();
+  private readonly playerShadowRaycaster = new THREE.Raycaster();
+  private readonly centerRay = new THREE.Vector2(0, 0);
+  private readonly clock = new THREE.Clock();
+  private readonly chunkMeshes = new Map<string, THREE.Mesh>();
+  private readonly playerVisuals = new Map<string, PlayerVisual>();
+  private readonly eggVisuals = new Map<string, EggVisual>();
+  private readonly eggScatterMeshes = new Map<BlockRenderProfile, THREE.InstancedMesh>();
+  private readonly harvestBurstMeshes = new Map<BlockRenderProfile, DynamicOpacityMeshResource>();
+  private readonly skyDropVisuals = new Map<string, SkyDropVisual>();
+  private readonly clusterVisuals = new Map<string, ClusterVisual>();
+  private readonly pendingDocumentResolvers = new Map<string, (document: MapDocumentV1) => void>();
+  private readonly currentLookTarget = new THREE.Vector3();
+  private readonly desiredLookTarget = new THREE.Vector3();
+  private readonly desiredCameraPosition = new THREE.Vector3();
+  private readonly cloudVisuals: CloudVisual[] = [];
+  private readonly spacePlanetVisuals: SpacePlanetVisual[] = [];
+  private readonly cloudMainMaterial = new THREE.MeshStandardMaterial({
+    color: "#ffffff",
+    roughness: 1,
+    metalness: 0,
+    transparent: true,
+    opacity: 1
+  });
+  private readonly cloudShadeMaterial = new THREE.MeshStandardMaterial({
+    color: "#dde7f2",
+    roughness: 1,
+    metalness: 0,
+    transparent: true,
+    opacity: 1
+  });
+  private readonly spaceStarGeometry = createSpaceStarGeometry();
+  private readonly spaceStarMaterial = new THREE.PointsMaterial({
+    color: "#edf2ff",
+    size: 3.1,
+    sizeAttenuation: true,
+    transparent: true,
+    opacity: 0,
+    depthWrite: false,
+    toneMapped: false
+  });
+  private readonly spaceStars = new THREE.Points(this.spaceStarGeometry, this.spaceStarMaterial);
+  private readonly speedTraceMaterials: THREE.MeshBasicMaterial[] = [];
+  private readonly voxelFxDisposables: THREE.Material[] = [];
+  private readonly voxelFxGeometries: THREE.BufferGeometry[] = [];
+  private readonly currentTerrainStats = {
+    chunkCount: 0,
+    drawCallCount: 0,
+    triangleCount: 0
+  };
+  private readonly keyboardState: KeyboardInputState = {
+    ...initialKeyboardInputState
+  };
+
+  private animationFrameId: number | null = null;
+  private mode: ActiveShellMode;
+  private worldDocument = normalizeArenaBudgetMapDocument(createDefaultArenaMap());
+  private latestFrame: RuntimeRenderFrame | null = null;
+  private matchColorSeed: number;
+  private cameraForward = { x: 1, z: 0 };
+  private previousBuildPressed = false;
+  private previousEggPressed = false;
+  private inputSequence = 0;
+  private destroyQueued = false;
+  private pointerLocked = false;
+  private runtimePaused = true;
+  private runtimeHasCapturedPointer = false;
+  private pendingResumeAfterPointerLock = false;
+  private pendingLookDeltaX = 0;
+  private pendingLookDeltaY = 0;
+  private lookYaw: number | null = null;
+  private lookPitch = aimCameraConfig.defaultPitch;
+  private speedBlend = 0;
+  private hasInitializedRuntimeCamera = false;
+  private localPushTraceBurstRemaining = 0;
+  private previousLocalPushVisualRemaining = 0;
+  private presentation: ShellPresentation;
+  private initialSpawnStyle: SimulationInitialSpawnStyle;
+  private localPlayerName: string | undefined;
+  private localPlayerPaletteName: ChickenPaletteName | null;
+  private eggExplosionBurstMesh: DynamicOpacityMeshResource | null = null;
+  private focusedTarget: { normal: { x: number; y: number; z: number }; voxel: { x: number; y: number; z: number } } | null = null;
+  private pendingReadyToDisplay = false;
+  private baseFogNear = 36;
+  private baseFogFar = 120;
+  private spaceBlend = 0;
+
+  private constructor({
+    canvas,
+    initialDocument,
+    initialMode,
+    initialSpawnStyle = "ground",
+    localPlayerName,
+    localPlayerPaletteName = null,
+    matchColorSeed,
+    presentation = "default",
+    ...callbacks
+  }: GameClientMountOptions) {
+    this.canvas = canvas;
+    this.callbacks = callbacks;
+    this.mode = initialMode;
+    this.initialSpawnStyle = initialSpawnStyle;
+    this.localPlayerName = localPlayerName;
+    this.localPlayerPaletteName = localPlayerPaletteName;
+    this.matchColorSeed = matchColorSeed;
+    this.presentation = presentation;
+    this.worldDocument = normalizeArenaBudgetMapDocument(initialDocument ?? createDefaultArenaMap());
+    this.worker = new Worker(new URL("./worker.ts", import.meta.url), {
+      type: "module"
+    });
+    this.renderer = new THREE.WebGLRenderer({
+      canvas,
+      antialias: true,
+      powerPreference: "high-performance"
+    });
+
+    this.focusOutline = new THREE.LineSegments(
+      new THREE.EdgesGeometry(new THREE.BoxGeometry(1.04, 1.04, 1.04)),
+      new THREE.LineBasicMaterial({ color: "#fff4c6" })
+    );
+    this.focusGhost = new THREE.Mesh(
+      new THREE.BoxGeometry(1.002, 1.002, 1.002),
+      new THREE.MeshStandardMaterial({
+        color: "#fff4c6",
+        opacity: 0.22,
+        transparent: true
+      })
+    );
+
+    this.initScene();
+    this.attachEvents();
+    this.attachWorker();
+    this.resize();
+    this.worker.postMessage({
+      type: "init",
+      document: this.worldDocument,
+      mode: this.mode,
+      ...(this.localPlayerName ? { localPlayerName: this.localPlayerName } : {}),
+      ...(isRuntimeMode(this.mode) ? { initialSpawnStyle: this.initialSpawnStyle } : {})
+    } satisfies WorkerRequestMessage);
+    this.animationFrameId = requestAnimationFrame(this.animate);
+  }
+
+  setShellState(nextState: {
+    mode: ActiveShellMode;
+    initialSpawnStyle?: SimulationInitialSpawnStyle;
+    localPlayerName?: string;
+    localPlayerPaletteName?: ChickenPaletteName | null;
+    presentation?: ShellPresentation;
+  }) {
+    const nextPresentation = nextState.presentation ?? this.presentation;
+    const nextInitialSpawnStyle = nextState.initialSpawnStyle ?? this.initialSpawnStyle;
+    const nextLocalPlayerName = "localPlayerName" in nextState ? nextState.localPlayerName : this.localPlayerName;
+    const nextLocalPlayerPaletteName =
+      "localPlayerPaletteName" in nextState ? nextState.localPlayerPaletteName ?? null : this.localPlayerPaletteName;
+    const modeChanged = this.mode !== nextState.mode;
+    const presentationChanged = this.presentation !== nextPresentation;
+    const localPaletteChanged = this.localPlayerPaletteName !== nextLocalPlayerPaletteName;
+
+    this.localPlayerName = nextLocalPlayerName;
+    this.localPlayerPaletteName = nextLocalPlayerPaletteName;
+    this.presentation = nextPresentation;
+    this.initialSpawnStyle = nextInitialSpawnStyle;
+
+    if (!modeChanged) {
+      if ((presentationChanged || localPaletteChanged) && this.mode === "editor") {
+        if (presentationChanged) {
+          this.updateGroundPlaneAppearance();
+        }
+        this.applyEditorCameraPosition();
+      }
+      return;
+    }
+
+    this.mode = nextState.mode;
+    this.lookYaw = null;
+    this.hasInitializedRuntimeCamera = false;
+    this.pendingResumeAfterPointerLock = false;
+    this.setRuntimePaused(true);
+    this.worker.postMessage({
+      type: "set_mode",
+      mode: nextState.mode,
+      ...(this.localPlayerName ? { localPlayerName: this.localPlayerName } : {}),
+      ...(isRuntimeMode(nextState.mode) ? { initialSpawnStyle: this.initialSpawnStyle } : {})
+    } satisfies WorkerRequestMessage);
+  }
+
+  dispatchShellIntent(intent: GameShellIntent) {
+    if (intent.type === "load_map") {
+      this.worldDocument = normalizeArenaBudgetMapDocument(intent.document);
+      this.worker.postMessage({
+        type: "load_map",
+        document: this.worldDocument
+      } satisfies WorkerRequestMessage);
+      return;
+    }
+
+    this.worker.postMessage({
+      type: "set_editor_state",
+      ...intent.next
+    } satisfies WorkerRequestMessage);
+  }
+
+  requestEditorDocument() {
+    const requestId = `editor-doc-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    return new Promise<MapDocumentV1>((resolve) => {
+      this.pendingDocumentResolvers.set(requestId, resolve);
+      this.worker.postMessage({
+        type: "request_editor_document",
+        requestId
+      } satisfies WorkerRequestMessage);
+    });
+  }
+
+  requestPointerLock() {
+    if (!isRuntimeMode(this.mode) || this.presentation === "menu") {
+      return false;
+    }
+
+    if (this.pointerLocked) {
+      return true;
+    }
+
+    if (typeof this.canvas.requestPointerLock !== "function") {
+      return false;
+    }
+
+    this.canvas.requestPointerLock();
+    return true;
+  }
+
+  resumeRuntime() {
+    if (!isRuntimeMode(this.mode)) {
+      return;
+    }
+
+    if (this.pointerLocked) {
+      this.pendingResumeAfterPointerLock = false;
+      this.setRuntimePaused(false);
+      return;
+    }
+
+    this.pendingResumeAfterPointerLock = true;
+    this.requestPointerLock();
+  }
+
+  dispose() {
+    if (this.animationFrameId !== null) {
+      cancelAnimationFrame(this.animationFrameId);
+      this.animationFrameId = null;
+    }
+
+    window.removeEventListener("resize", this.handleResize);
+    window.removeEventListener("keydown", this.handleKeyDown);
+    window.removeEventListener("keyup", this.handleKeyUp);
+    document.removeEventListener("pointerlockchange", this.handlePointerLockChange);
+    this.canvas.removeEventListener("pointerdown", this.handlePointerDown);
+    this.canvas.removeEventListener("pointermove", this.handlePointerMove);
+    this.canvas.removeEventListener("contextmenu", this.handleContextMenu);
+    this.worker.terminate();
+
+    for (const mesh of this.chunkMeshes.values()) {
+      mesh.geometry.dispose();
+    }
+    for (const player of this.playerVisuals.values()) {
+      disposePlayerVisual(player);
+    }
+    for (const egg of this.eggVisuals.values()) {
+      egg.material.dispose();
+    }
+    this.cloudMainMaterial.dispose();
+    this.cloudShadeMaterial.dispose();
+    this.spaceStarMaterial.dispose();
+    this.spaceStarGeometry.dispose();
+    for (const planetVisual of this.spacePlanetVisuals) {
+      for (const material of planetVisual.materials) {
+        material.dispose();
+      }
+    }
+    for (const material of this.speedTraceMaterials) {
+      material.dispose();
+    }
+    for (const material of this.voxelFxDisposables) {
+      material.dispose();
+    }
+    for (const geometry of this.voxelFxGeometries) {
+      geometry.dispose();
+    }
+    this.focusOutline.geometry.dispose();
+    (this.focusOutline.material as THREE.Material).dispose();
+    this.focusGhost.geometry.dispose();
+    (this.focusGhost.material as THREE.Material).dispose();
+    this.renderer.dispose();
+  }
+
+  private initScene() {
+    this.scene.background = this.sceneBackgroundColor;
+    this.scene.fog = new THREE.Fog(backgroundColor, this.baseFogNear, this.baseFogFar);
+    this.directionalLight.position.set(36, 56, 24);
+    this.spaceBackdropGroup.visible = false;
+    this.spaceStars.frustumCulled = false;
+    this.spaceBackdropGroup.add(this.spaceStars);
+    this.buildSpaceBackdrop();
+
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), runtimeGroundMaterial);
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.y = -0.01;
+    ground.name = "ground-plane";
+
+    this.scene.add(
+      this.camera,
+      this.ambientLight,
+      this.directionalLight,
+      this.hemisphereLight,
+      this.cloudsGroup,
+      this.spaceBackdropGroup,
+      ground
+    );
+    this.scene.add(
+      this.terrainGroup,
+      this.propsGroup,
+      this.spawnsGroup,
+      this.playersGroup,
+      this.eggsGroup,
+      this.voxelFxGroup,
+      this.skyDropsGroup,
+      this.clustersGroup,
+      this.focusOutline,
+      this.focusGhost
+    );
+
+    for (const profile of voxelFxProfiles) {
+      const scatterMesh = new THREE.InstancedMesh(
+        sharedVoxelGeometry,
+        getVoxelMaterials(profile),
+        MAX_EGG_SCATTER_INSTANCES_PER_PROFILE
+      );
+      scatterMesh.frustumCulled = false;
+      configureDynamicInstancedMesh(scatterMesh);
+      finalizeDynamicInstancedMesh(scatterMesh, 0);
+      this.eggScatterMeshes.set(profile, scatterMesh);
+      this.voxelFxGroup.add(scatterMesh);
+
+      const harvestMesh = createDynamicOpacityMeshResource(MAX_HARVEST_BURST_INSTANCES_PER_PROFILE, getVoxelMaterials(profile));
+      this.harvestBurstMeshes.set(profile, harvestMesh);
+      this.voxelFxDisposables.push(...harvestMesh.materials);
+      this.voxelFxGeometries.push(harvestMesh.geometry);
+      this.voxelFxGroup.add(harvestMesh.mesh);
+    }
+
+    this.eggExplosionBurstMesh = createDynamicOpacityMeshResource(
+      MAX_EGG_EXPLOSION_BURST_INSTANCES,
+      new THREE.MeshBasicMaterial({
+        color: "#fff1bf",
+        opacity: 1,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        toneMapped: false
+      })
+    );
+    this.voxelFxDisposables.push(...this.eggExplosionBurstMesh.materials);
+    this.voxelFxGeometries.push(this.eggExplosionBurstMesh.geometry);
+    this.voxelFxGroup.add(this.eggExplosionBurstMesh.mesh);
+
+    this.speedTraceGroup.visible = false;
+    this.speedTraceGroup.position.set(0, 0, -SPEED_TRACE_DEPTH);
+    for (const layout of speedTraceLayouts) {
+      const material = new THREE.MeshBasicMaterial({
+        color: "#fff8d8",
+        blending: THREE.AdditiveBlending,
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+        depthTest: false,
+        toneMapped: false,
+        side: THREE.DoubleSide
+      });
+      const streak = new THREE.Mesh(speedTraceGeometry, material);
+      streak.scale.set(0.18 * layout.width, layout.scaleY, 1);
+      streak.frustumCulled = false;
+      streak.renderOrder = 1000;
+      this.speedTraceMaterials.push(material);
+      this.speedTraceGroup.add(streak);
+    }
+    this.camera.add(this.speedTraceGroup);
+
+    this.focusOutline.visible = false;
+    this.focusGhost.visible = false;
+    this.applyWorldDocument(this.worldDocument);
+    if (this.mode === "editor") {
+      this.applyEditorCameraPosition();
+    }
+  }
+
+  private attachEvents() {
+    window.addEventListener("resize", this.handleResize);
+    window.addEventListener("keydown", this.handleKeyDown);
+    window.addEventListener("keyup", this.handleKeyUp);
+    document.addEventListener("pointerlockchange", this.handlePointerLockChange);
+    this.canvas.addEventListener("pointerdown", this.handlePointerDown);
+    this.canvas.addEventListener("pointermove", this.handlePointerMove);
+    this.canvas.addEventListener("contextmenu", this.handleContextMenu);
+  }
+
+  private attachWorker() {
+    this.worker.onmessage = (event: MessageEvent<WorkerResponseMessage>) => {
+      const message = event.data;
+      switch (message.type) {
+        case "ready":
+          this.callbacks.onEditorStateChange?.(message.editorState);
+          return;
+        case "world_sync":
+          this.mode = message.mode;
+          this.applyWorldSync(message.world.document, message.world.chunkPatches);
+          this.pendingReadyToDisplay = true;
+          return;
+        case "terrain_patches":
+          this.applyTerrainPatches(message.patches);
+          return;
+        case "frame":
+          this.latestFrame = message.frame;
+          return;
+        case "hud_state":
+          this.callbacks.onHudStateChange?.(message.hudState);
+          return;
+        case "editor_state":
+          this.callbacks.onEditorStateChange?.(message.editorState);
+          return;
+        case "status":
+          this.callbacks.onStatus?.(message.message);
+          return;
+        case "editor_document": {
+          const resolver = this.pendingDocumentResolvers.get(message.requestId);
+          if (resolver) {
+            this.pendingDocumentResolvers.delete(message.requestId);
+            resolver(message.document);
+          }
+          return;
+        }
+        case "diagnostics":
+          this.callbacks.onDiagnostics?.(message.diagnostics);
+          return;
+      }
+    };
+  }
+
+  private applyWorldSync(document: MapDocumentV1, chunkPatches: TerrainChunkPatchPayload[]) {
+    this.worldDocument = normalizeArenaBudgetMapDocument(document);
+    this.spaceBlend = 0;
+    this.clearTerrain();
+    this.clearRuntimeEntities();
+    this.applyWorldDocument(this.worldDocument);
+    this.applyTerrainPatches(chunkPatches);
+    if (this.mode === "editor") {
+      this.applyEditorCameraPosition();
+    }
+  }
+
+  private applyWorldDocument(document: MapDocumentV1) {
+    const arenaSpan = Math.max(document.size.x, document.size.z);
+    this.baseFogNear =
+      this.presentation === "menu"
+        ? Math.max(120, arenaSpan * 1.1)
+        : Math.max(36, arenaSpan * 0.45);
+    this.baseFogFar =
+      this.presentation === "menu"
+        ? Math.max(this.baseFogNear + 240, arenaSpan * 3.4)
+        : Math.max(this.baseFogNear + 40, arenaSpan + 44);
+    if (this.scene.fog instanceof THREE.Fog) {
+      this.scene.fog.near = this.baseFogNear;
+      this.scene.fog.far = this.baseFogFar;
+    }
+
+    const ground = this.scene.getObjectByName("ground-plane") as THREE.Mesh | null;
+    if (ground) {
+      ground.position.set(document.size.x / 2, -0.01, document.size.z / 2);
+      ground.scale.set(document.size.x + 32, document.size.z + 32, 1);
+    }
+
+    this.updateGroundPlaneAppearance();
+
+    this.directionalLight.position.set(
+      document.size.x * 0.72,
+      Math.max(document.size.y + 24, 56),
+      document.size.z * 0.5
+    );
+    this.rebuildClouds(document);
+    this.rebuildProps(document);
+    this.rebuildSpawns(document);
+  }
+
+  private updateGroundPlaneAppearance() {
+    const ground = this.scene.getObjectByName("ground-plane") as THREE.Mesh | null;
+    if (!ground) {
+      return;
+    }
+
+    ground.material = this.presentation === "menu" ? menuGroundMaterial : runtimeGroundMaterial;
+  }
+
+  private rebuildClouds(document: MapDocumentV1) {
+    this.cloudVisuals.length = 0;
+    this.cloudsGroup.clear();
+
+    for (const preset of cloudPresets) {
+      const group = new THREE.Group();
+      const { mainMatrices, shadeMatrices } = buildCloudMatrices(preset);
+      const initialPosition = getVoxelCloudPosition(preset, 0, document.size);
+
+      if (mainMatrices.length > 0) {
+        const mainMesh = new THREE.InstancedMesh(cloudGeometry, this.cloudMainMaterial, mainMatrices.length);
+        mainMesh.frustumCulled = false;
+        configureStaticInstancedMesh(mainMesh, mainMatrices);
+        group.add(mainMesh);
+      }
+
+      if (shadeMatrices.length > 0) {
+        const shadeMesh = new THREE.InstancedMesh(cloudGeometry, this.cloudShadeMaterial, shadeMatrices.length);
+        shadeMesh.frustumCulled = false;
+        configureStaticInstancedMesh(shadeMesh, shadeMatrices);
+        group.add(shadeMesh);
+      }
+
+      group.position.set(initialPosition.x, initialPosition.y, initialPosition.z);
+      this.cloudsGroup.add(group);
+      this.cloudVisuals.push({
+        group,
+        preset
+      });
+    }
+  }
+
+  private buildSpaceBackdrop() {
+    this.spacePlanetVisuals.length = 0;
+    this.spaceBackdropGroup.clear();
+    this.spaceBackdropGroup.add(this.spaceStars);
+
+    for (const descriptor of spacePlanetDescriptors) {
+      const group = new THREE.Group();
+      const [offsetX, offsetY, offsetZ] = descriptor.offset;
+      const { mainMatrices, shadeMatrices } = buildVoxelPlanetMatrices(...descriptor.radius);
+      const mainMaterial = new THREE.MeshBasicMaterial({
+        color: descriptor.colors[0],
+        transparent: true,
+        opacity: 0,
+        toneMapped: false
+      });
+      const shadeMaterial = new THREE.MeshBasicMaterial({
+        color: descriptor.colors[1],
+        transparent: true,
+        opacity: 0,
+        toneMapped: false
+      });
+      if (mainMatrices.length > 0) {
+        const mainMesh = new THREE.InstancedMesh(sharedVoxelGeometry, mainMaterial, mainMatrices.length);
+        mainMesh.frustumCulled = false;
+        configureStaticInstancedMesh(mainMesh, mainMatrices);
+        group.add(mainMesh);
+      }
+      if (shadeMatrices.length > 0) {
+        const shadeMesh = new THREE.InstancedMesh(sharedVoxelGeometry, shadeMaterial, shadeMatrices.length);
+        shadeMesh.frustumCulled = false;
+        configureStaticInstancedMesh(shadeMesh, shadeMatrices);
+        group.add(shadeMesh);
+      }
+      group.position.set(offsetX, offsetY, offsetZ);
+      group.scale.setScalar(descriptor.scale);
+      this.spaceBackdropGroup.add(group);
+      this.spacePlanetVisuals.push({
+        group,
+        materials: [mainMaterial, shadeMaterial],
+        spinSpeed: descriptor.spinSpeed,
+        wobblePhase: descriptor.wobblePhase
+      });
+    }
+  }
+
+  private updateSkyEnvironment(localPlayer: RuntimePlayerState | null, delta: number, elapsedTime: number) {
+    for (const cloudVisual of this.cloudVisuals) {
+      const position = getVoxelCloudPosition(cloudVisual.preset, elapsedTime, this.worldDocument.size);
+      cloudVisual.group.position.set(position.x, position.y, position.z);
+    }
+
+    const targetSpaceBlend = localPlayer && localPlayer.spacePhase !== "none" ? 1 : 0;
+    this.spaceBlend = dampScalar(this.spaceBlend, targetSpaceBlend, SPACE_BLEND_DAMPING, delta);
+
+    const cloudOpacity = Math.max(0, 1 - this.spaceBlend);
+    this.cloudMainMaterial.opacity = cloudOpacity;
+    this.cloudShadeMaterial.opacity = cloudOpacity * 0.96;
+    this.cloudsGroup.visible = cloudOpacity > 0.02;
+
+    this.sceneBackgroundColor.copy(daySkyColor).lerp(spaceSkyColor, this.spaceBlend);
+    if (this.scene.fog instanceof THREE.Fog) {
+      this.scene.fog.color.copy(dayFogColor).lerp(spaceFogColor, this.spaceBlend);
+      this.scene.fog.near = THREE.MathUtils.lerp(this.baseFogNear, this.baseFogNear + 92, this.spaceBlend);
+      this.scene.fog.far = THREE.MathUtils.lerp(this.baseFogFar, this.baseFogFar + 260, this.spaceBlend);
+    }
+
+    this.ambientLight.intensity = THREE.MathUtils.lerp(0.45, 0.28, this.spaceBlend);
+    this.directionalLight.intensity = THREE.MathUtils.lerp(1.36, 0.56, this.spaceBlend);
+    this.hemisphereLight.intensity = THREE.MathUtils.lerp(0.22, 0.04, this.spaceBlend);
+
+    this.spaceBackdropGroup.visible = this.spaceBlend > 0.01;
+    this.spaceBackdropGroup.position.copy(this.camera.position);
+    this.spaceStarMaterial.opacity = this.spaceBlend * 0.92;
+
+    for (const planetVisual of this.spacePlanetVisuals) {
+      planetVisual.group.rotation.y += delta * planetVisual.spinSpeed;
+      planetVisual.group.rotation.x = Math.sin(elapsedTime * 0.18 + planetVisual.wobblePhase) * 0.12;
+      for (const material of planetVisual.materials) {
+        material.opacity = this.spaceBlend * 0.96;
+      }
+    }
+  }
+
+  private applyTerrainPatches(patches: TerrainChunkPatchPayload[]) {
+    for (const patch of patches) {
+      const existing = this.chunkMeshes.get(patch.key);
+      if (patch.remove) {
+        if (existing) {
+          existing.geometry.dispose();
+          this.terrainGroup.remove(existing);
+          this.chunkMeshes.delete(patch.key);
+        }
+        continue;
+      }
+
+      const geometry = createTerrainGeometry(patch);
+      if (existing) {
+        existing.geometry.dispose();
+      }
+      const mesh =
+        existing ??
+        new THREE.Mesh(geometry, getTerrainChunkMaterials());
+      mesh.frustumCulled = true;
+      mesh.geometry = geometry;
+      mesh.position.set(...patch.position);
+      if (!existing) {
+        this.terrainGroup.add(mesh);
+        this.chunkMeshes.set(patch.key, mesh);
+      }
+    }
+
+    this.currentTerrainStats.chunkCount = this.chunkMeshes.size;
+    this.currentTerrainStats.drawCallCount = patches.reduce((sum, patch) => sum + patch.drawCallCount, 0);
+    this.currentTerrainStats.triangleCount = patches.reduce((sum, patch) => sum + patch.triangleCount, 0);
+  }
+
+  private rebuildProps(document: MapDocumentV1) {
+    this.propsGroup.clear();
+    const barkMatrices: THREE.Matrix4[] = [];
+    const leafMatrices: THREE.Matrix4[] = [];
+
+    for (const prop of document.props) {
+      for (const voxel of getMapPropVoxels(prop)) {
+        treeTempMatrix.compose(
+          new THREE.Vector3(voxel.x + 0.5, voxel.y + 0.5, voxel.z + 0.5),
+          new THREE.Quaternion(),
+          new THREE.Vector3(1, 1, 1)
+        );
+        if (voxel.kind === "wood") {
+          barkMatrices.push(treeTempMatrix.clone());
+        } else {
+          leafMatrices.push(treeTempMatrix.clone());
+        }
+      }
+    }
+
+    if (barkMatrices.length > 0) {
+      const barkMesh = new THREE.InstancedMesh(sharedVoxelGeometry, propMaterials.bark, barkMatrices.length);
+      configureStaticInstancedMesh(barkMesh, barkMatrices);
+      this.propsGroup.add(barkMesh);
+    }
+    if (leafMatrices.length > 0) {
+      const leafMesh = new THREE.InstancedMesh(sharedVoxelGeometry, propMaterials.leaves, leafMatrices.length);
+      configureStaticInstancedMesh(leafMesh, leafMatrices);
+      this.propsGroup.add(leafMesh);
+    }
+  }
+
+  private rebuildSpawns(document: MapDocumentV1) {
+    this.spawnsGroup.clear();
+    const markerGeometry = new THREE.CylinderGeometry(0.18, 0.18, 0.7, 8);
+    const markerMaterial = new THREE.MeshStandardMaterial({ color: "#f2eed1" });
+    const capGeometry = new THREE.BoxGeometry(0.5, 0.16, 0.5);
+    const capMaterial = new THREE.MeshStandardMaterial({ color: "#2d3f4f" });
+
+    for (const spawn of document.spawns) {
+      const group = new THREE.Group();
+      group.position.set(spawn.x, spawn.y, spawn.z);
+      const marker = new THREE.Mesh(markerGeometry, markerMaterial);
+      marker.position.set(0, 0.35, 0);
+      const cap = new THREE.Mesh(capGeometry, capMaterial);
+      cap.position.set(0, 0.8, 0);
+      group.add(marker, cap);
+      this.spawnsGroup.add(group);
+    }
+  }
+
+  private applyEditorCameraPosition() {
+    if (this.presentation === "menu") {
+      this.positionMenuCamera();
+      return;
+    }
+
+    this.positionEditorCamera();
+  }
+
+  private positionEditorCamera() {
+    const span = Math.max(this.worldDocument.size.x, this.worldDocument.size.z);
+    this.setCameraFov(40);
+    this.camera.up.set(0, 1, 0);
+    this.camera.position.set(
+      this.worldDocument.size.x / 2 + span * 0.46,
+      span * 0.34,
+      this.worldDocument.size.z / 2 + span * 0.4
+    );
+    this.camera.lookAt(this.worldDocument.size.x / 2, 10, this.worldDocument.size.z / 2);
+  }
+
+  private positionMenuCamera() {
+    const span = Math.max(this.worldDocument.size.x, this.worldDocument.size.z);
+    const centerX = this.worldDocument.size.x / 2;
+    const centerZ = this.worldDocument.size.z / 2;
+    this.setCameraFov(44);
+    this.camera.up.set(0, 1, 0);
+    this.camera.position.set(
+      centerX + span * 0.18,
+      Math.max(span * 0.62, this.worldDocument.size.y * 2.2),
+      centerZ + span * 0.24
+    );
+    this.camera.lookAt(centerX, Math.max(4, this.worldDocument.size.y * 0.14), centerZ);
+  }
+
+  private setCameraFov(nextFov: number) {
+    if (Math.abs(this.camera.fov - nextFov) <= 0.01) {
+      return;
+    }
+
+    this.camera.fov = nextFov;
+    this.camera.updateProjectionMatrix();
+  }
+
+  private clearTerrain() {
+    for (const mesh of this.chunkMeshes.values()) {
+      mesh.geometry.dispose();
+      this.terrainGroup.remove(mesh);
+    }
+    this.chunkMeshes.clear();
+  }
+
+  private clearRuntimeEntities() {
+    for (const player of this.playerVisuals.values()) {
+      this.playersGroup.remove(player.group);
+      disposePlayerVisual(player);
+    }
+    for (const egg of this.eggVisuals.values()) {
+      this.eggsGroup.remove(egg.group);
+      egg.material.dispose();
+    }
+    for (const skyDrop of this.skyDropVisuals.values()) {
+      this.skyDropsGroup.remove(skyDrop.group);
+    }
+    for (const cluster of this.clusterVisuals.values()) {
+      this.clustersGroup.remove(cluster.group);
+    }
+    this.playerVisuals.clear();
+    this.eggVisuals.clear();
+    this.skyDropVisuals.clear();
+    this.clusterVisuals.clear();
+    for (const mesh of this.eggScatterMeshes.values()) {
+      finalizeDynamicInstancedMesh(mesh, 0);
+    }
+    for (const resource of this.harvestBurstMeshes.values()) {
+      finalizeDynamicOpacityMesh(resource, 0);
+    }
+    finalizeDynamicOpacityMesh(this.eggExplosionBurstMesh, 0);
+  }
+
+  private readonly handleResize = () => {
+    this.resize();
+  };
+
+  private resize() {
+    const rect = this.canvas.getBoundingClientRect();
+    const width = Math.max(1, Math.round(rect.width || this.canvas.clientWidth || window.innerWidth));
+    const height = Math.max(1, Math.round(rect.height || this.canvas.clientHeight || window.innerHeight));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+    this.renderer.setSize(width, height, false);
+    this.camera.aspect = width / height;
+    this.camera.updateProjectionMatrix();
+  }
+
+  private readonly handleKeyDown = (event: KeyboardEvent) => {
+    if (isFormElement(event.target)) {
+      return;
+    }
+
+    switch (event.code) {
+      case "KeyW":
+      case "ArrowUp":
+        this.keyboardState.forward = true;
+        break;
+      case "KeyS":
+      case "ArrowDown":
+        this.keyboardState.backward = true;
+        break;
+      case "KeyA":
+      case "ArrowLeft":
+        this.keyboardState.left = true;
+        break;
+      case "KeyD":
+      case "ArrowRight":
+        this.keyboardState.right = true;
+        break;
+      case "Space":
+        event.preventDefault();
+        if (!this.keyboardState.jump) {
+          this.keyboardState.jumpPressed = true;
+        }
+        this.keyboardState.jump = true;
+        break;
+      case "KeyE":
+        this.keyboardState.build = true;
+        break;
+      case "KeyF":
+        this.keyboardState.push = true;
+        break;
+      case "KeyQ":
+        this.keyboardState.egg = true;
+        break;
+    }
+  };
+
+  private readonly handleKeyUp = (event: KeyboardEvent) => {
+    switch (event.code) {
+      case "KeyW":
+      case "ArrowUp":
+        this.keyboardState.forward = false;
+        break;
+      case "KeyS":
+      case "ArrowDown":
+        this.keyboardState.backward = false;
+        break;
+      case "KeyA":
+      case "ArrowLeft":
+        this.keyboardState.left = false;
+        break;
+      case "KeyD":
+      case "ArrowRight":
+        this.keyboardState.right = false;
+        break;
+      case "Space":
+        if (this.keyboardState.jump) {
+          this.keyboardState.jumpReleased = true;
+        }
+        this.keyboardState.jump = false;
+        break;
+      case "KeyE":
+        this.keyboardState.build = false;
+        break;
+      case "KeyF":
+        this.keyboardState.push = false;
+        break;
+      case "KeyQ":
+        this.keyboardState.egg = false;
+        break;
+    }
+  };
+
+  private readonly handlePointerLockChange = () => {
+    const locked = document.pointerLockElement === this.canvas;
+    this.pointerLocked = locked;
+    this.runtimeHasCapturedPointer = this.runtimeHasCapturedPointer || locked;
+    if (isRuntimeMode(this.mode)) {
+      if (!locked) {
+        this.pendingResumeAfterPointerLock = false;
+        this.setRuntimePaused(true);
+        return;
+      }
+
+      if (this.pendingResumeAfterPointerLock) {
+        this.pendingResumeAfterPointerLock = false;
+        this.setRuntimePaused(false);
+        return;
+      }
+
+      this.emitPauseState();
+    }
+  };
+
+  setRuntimePaused(paused: boolean) {
+    this.runtimePaused = paused;
+    this.worker.postMessage({
+      type: "set_runtime_paused",
+      paused
+    } satisfies WorkerRequestMessage);
+    if (!paused) {
+      this.pendingResumeAfterPointerLock = false;
+    }
+    this.emitPauseState();
+  }
+
+  private emitPauseState() {
+    this.callbacks.onPauseStateChange?.({
+      paused: this.runtimePaused,
+      hasStarted: this.runtimeHasCapturedPointer,
+      pointerLocked: this.pointerLocked
+    });
+  }
+
+  private readonly handlePointerDown = (event: PointerEvent) => {
+    if (this.presentation === "menu") {
+      return;
+    }
+
+    if (isRuntimeMode(this.mode)) {
+      if (!this.pointerLocked) {
+        this.canvas.requestPointerLock?.();
+        return;
+      }
+
+      if (event.button === 0) {
+        this.destroyQueued = true;
+      }
+      return;
+    }
+
+    if (this.mode === "editor" && event.button === 0) {
+      this.performEditorActionFromPointer(event);
+    }
+  };
+
+  private readonly handlePointerMove = (event: PointerEvent) => {
+    if (!this.pointerLocked || !isRuntimeMode(this.mode)) {
+      return;
+    }
+
+    this.pendingLookDeltaX += event.movementX;
+    this.pendingLookDeltaY += event.movementY;
+  };
+
+  private readonly handleContextMenu = (event: MouseEvent) => {
+    event.preventDefault();
+  };
+
+  private performEditorActionFromPointer(event: PointerEvent) {
+    const rect = this.canvas.getBoundingClientRect();
+    const pointer = new THREE.Vector2(
+      ((event.clientX - rect.left) / rect.width) * 2 - 1,
+      -((event.clientY - rect.top) / rect.height) * 2 + 1
+    );
+    this.clickRaycaster.setFromCamera(pointer, this.camera);
+    const intersections = this.clickRaycaster.intersectObjects([this.terrainGroup, this.propsGroup], true);
+    const firstHit = intersections[0];
+    if (!firstHit) {
+      return;
+    }
+
+    const worldNormal = getWorldNormalFromIntersection(firstHit);
+    const terrainHit = resolveTerrainRaycastHit(firstHit.point, worldNormal);
+    if (!terrainHit) {
+      return;
+    }
+
+    this.worker.postMessage({
+      type: "perform_editor_action",
+      voxel: terrainHit.voxel,
+      normal: terrainHit.normal
+    } satisfies WorkerRequestMessage);
+  }
+
+  private readonly animate = () => {
+    const delta = Math.min(this.clock.getDelta(), 0.1);
+    const elapsedTime = this.clock.elapsedTime;
+
+    if (isRuntimeMode(this.mode)) {
+      this.updateRuntimeCamera(delta);
+      this.updateFocusedTarget();
+      this.sendRuntimeInput();
+      this.applyRuntimeFrame(delta, elapsedTime);
+    } else {
+      this.updateSpeedTraces(null, delta, elapsedTime);
+      this.updateSkyEnvironment(null, delta, elapsedTime);
+      this.focusOutline.visible = false;
+      this.focusGhost.visible = false;
+    }
+
+    this.renderer.render(this.scene, this.camera);
+    if (this.pendingReadyToDisplay) {
+      this.pendingReadyToDisplay = false;
+      this.callbacks.onReadyToDisplay?.();
+    }
+    this.animationFrameId = requestAnimationFrame(this.animate);
+  };
+
+  private updateRuntimeCamera(delta: number) {
+    const frame = this.latestFrame;
+    if (!frame || !frame.localPlayerId) {
+      return;
+    }
+
+    const player = frame.players.find((entry) => entry.id === frame.localPlayerId);
+    if (!player || (!player.fallingOut && (!player.alive || player.respawning))) {
+      return;
+    }
+
+    if (this.lookYaw === null) {
+      this.lookYaw = getYawFromPlanarVector(player.facing);
+      this.lookPitch = aimCameraConfig.defaultPitch;
+      this.speedBlend = 0;
+      this.hasInitializedRuntimeCamera = false;
+    }
+
+    if (this.pendingLookDeltaX !== 0 || this.pendingLookDeltaY !== 0) {
+      const nextLook = applyFreeLookDelta(
+        {
+          yaw: this.lookYaw ?? 0,
+          pitch: this.lookPitch
+        },
+        {
+          deltaX: this.pendingLookDeltaX,
+          deltaY: this.pendingLookDeltaY
+        }
+      );
+      this.lookYaw = nextLook.yaw;
+      this.lookPitch = nextLook.pitch;
+      this.pendingLookDeltaX = 0;
+      this.pendingLookDeltaY = 0;
+    }
+
+    const initialAimState = getAimRigState(
+      player.position,
+      this.lookYaw ?? getYawFromPlanarVector(player.facing),
+      this.lookPitch,
+      this.speedBlend
+    );
+    const forwardSpeedRatio = getForwardSpeedRatio(player.velocity, initialAimState.planarForward, 6);
+    const targetSpeedBlend = getSpeedCameraBlend(forwardSpeedRatio);
+    this.speedBlend = dampScalar(this.speedBlend, targetSpeedBlend, 7, delta);
+
+    const aimState = getAimRigState(
+      player.position,
+      this.lookYaw ?? getYawFromPlanarVector(player.facing),
+      this.lookPitch,
+      this.speedBlend
+    );
+    this.desiredLookTarget.set(aimState.aimTarget.x, aimState.aimTarget.y, aimState.aimTarget.z);
+    this.desiredCameraPosition.set(aimState.cameraPosition.x, aimState.cameraPosition.y, aimState.cameraPosition.z);
+
+    if (!this.hasInitializedRuntimeCamera) {
+      this.hasInitializedRuntimeCamera = true;
+      this.currentLookTarget.copy(this.desiredLookTarget);
+      this.camera.position.copy(this.desiredCameraPosition);
+      this.camera.lookAt(this.currentLookTarget);
+      this.cameraForward = getPlanarForwardBetweenPoints(this.camera.position, this.currentLookTarget);
+      return;
+    }
+
+    const positionDamping = 1 - Math.exp(-delta * (chaseCameraConfig.positionDamping + 3));
+    const lookTargetDamping = 1 - Math.exp(-delta * (chaseCameraConfig.lookTargetDamping + 3));
+    const rising = player.velocity.y > 0 && this.desiredCameraPosition.y > this.camera.position.y;
+    const verticalPositionDamping = rising ? 1 - Math.exp(-delta * 24) : positionDamping;
+    const verticalLookTargetDamping = rising ? 1 - Math.exp(-delta * 26) : lookTargetDamping;
+    this.camera.position.x = THREE.MathUtils.lerp(this.camera.position.x, this.desiredCameraPosition.x, positionDamping);
+    this.camera.position.y = THREE.MathUtils.lerp(this.camera.position.y, this.desiredCameraPosition.y, verticalPositionDamping);
+    this.camera.position.z = THREE.MathUtils.lerp(this.camera.position.z, this.desiredCameraPosition.z, positionDamping);
+    this.currentLookTarget.x = THREE.MathUtils.lerp(this.currentLookTarget.x, this.desiredLookTarget.x, lookTargetDamping);
+    this.currentLookTarget.y = THREE.MathUtils.lerp(this.currentLookTarget.y, this.desiredLookTarget.y, verticalLookTargetDamping);
+    this.currentLookTarget.z = THREE.MathUtils.lerp(this.currentLookTarget.z, this.desiredLookTarget.z, lookTargetDamping);
+    this.camera.lookAt(this.currentLookTarget);
+    this.cameraForward = getPlanarForwardBetweenPoints(this.camera.position, this.currentLookTarget);
+  }
+
+  private updateFocusedTarget() {
+    this.focusRaycaster.setFromCamera(this.centerRay, this.camera);
+    const intersections = this.focusRaycaster.intersectObjects([this.terrainGroup, this.propsGroup], true);
+    const firstHit = intersections[0];
+    if (!firstHit) {
+      this.focusedTarget = null;
+      this.focusOutline.visible = false;
+      this.focusGhost.visible = false;
+      return;
+    }
+
+    const worldNormal = getWorldNormalFromIntersection(firstHit);
+    const terrainHit = resolveTerrainRaycastHit(firstHit.point, worldNormal);
+    if (!terrainHit) {
+      this.focusedTarget = null;
+      this.focusOutline.visible = false;
+      this.focusGhost.visible = false;
+      return;
+    }
+
+    this.focusedTarget = terrainHit;
+    this.focusOutline.visible = true;
+    this.focusOutline.position.set(
+      terrainHit.voxel.x + 0.5,
+      terrainHit.voxel.y + 0.5,
+      terrainHit.voxel.z + 0.5
+    );
+    this.focusGhost.visible = true;
+    this.focusGhost.position.set(
+      terrainHit.voxel.x + terrainHit.normal.x + 0.5,
+      terrainHit.voxel.y + terrainHit.normal.y + 0.5,
+      terrainHit.voxel.z + terrainHit.normal.z + 0.5
+    );
+  }
+
+  private resolvePlayerShadowSurfaceY(position: { x: number; y: number; z: number }) {
+    this.playerShadowRaycaster.ray.origin.set(position.x, position.y + 0.5, position.z);
+    this.playerShadowRaycaster.ray.direction.copy(shadowRayDirection);
+    this.playerShadowRaycaster.far = Math.max(this.worldDocument.size.y + 32, position.y + 32);
+
+    const intersections = this.playerShadowRaycaster.intersectObjects(
+      [this.terrainGroup, this.propsGroup, this.clustersGroup],
+      true
+    );
+    const firstHit = intersections.find((intersection) => intersection.point.y <= position.y + 0.5);
+    if (firstHit) {
+      return firstHit.point.y + 0.02;
+    }
+
+    return Math.floor(position.y);
+  }
+
+  private updateSpeedTraces(localPlayer: RuntimePlayerState | null, delta: number, elapsedTime: number) {
+    if (!localPlayer) {
+      this.speedTraceGroup.visible = false;
+      this.localPushTraceBurstRemaining = Math.max(0, this.localPushTraceBurstRemaining - delta);
+      this.previousLocalPushVisualRemaining = 0;
+      return;
+    }
+
+    if (localPlayer.pushVisualRemaining > 0 && this.previousLocalPushVisualRemaining <= 0) {
+      this.localPushTraceBurstRemaining = SPEED_TRACE_PUSH_BURST_DURATION;
+    } else {
+      this.localPushTraceBurstRemaining = Math.max(0, this.localPushTraceBurstRemaining - delta);
+    }
+    this.previousLocalPushVisualRemaining = localPlayer.pushVisualRemaining;
+
+    const airSpeed = Math.hypot(localPlayer.velocity.x, localPlayer.velocity.z);
+    const flightIntensity =
+      !localPlayer.grounded && (localPlayer.jetpackActive || airSpeed > SPEED_TRACE_MIN_AIR_SPEED)
+        ? Math.min(
+            1,
+            Math.max(
+              localPlayer.jetpackActive ? 0.42 : 0,
+              (airSpeed - SPEED_TRACE_MIN_AIR_SPEED) / 4.2
+            )
+          )
+        : 0;
+    const pushBurstIntensity = Math.min(1, this.localPushTraceBurstRemaining / SPEED_TRACE_PUSH_BURST_DURATION);
+    const intensity = Math.max(flightIntensity, pushBurstIntensity);
+    this.speedTraceGroup.visible = intensity > 0.03;
+    const depth = Math.abs(this.speedTraceGroup.position.z) || SPEED_TRACE_DEPTH;
+    const halfHeight = Math.tan(THREE.MathUtils.degToRad(this.camera.fov * 0.5)) * depth;
+    const halfWidth = halfHeight * this.camera.aspect;
+
+    this.speedTraceGroup.children.forEach((child, index) => {
+      const streak = child as THREE.Mesh;
+      const material = this.speedTraceMaterials[index];
+      const layout = speedTraceLayouts[index];
+      if (!material) {
+        return;
+      }
+      if (!layout) {
+        return;
+      }
+
+      const angle = THREE.MathUtils.degToRad(layout.angleDeg);
+      const baseX = Math.cos(angle) * halfWidth * layout.screenRadius;
+      const baseY = Math.sin(angle) * halfHeight * layout.screenRadius;
+      const directionLength = Math.hypot(baseX, baseY) || 1;
+      const directionX = baseX / directionLength;
+      const directionY = baseY / directionLength;
+      const slide = (elapsedTime * (0.9 + intensity * 2.4) * layout.speed + layout.phase) % 1;
+      const travelDistance = halfHeight * layout.travel * (0.32 + intensity * 0.9);
+      const flicker = 0.72 + Math.sin(elapsedTime * 18 + index * 0.7) * 0.18;
+      const burstStretch = 1 + pushBurstIntensity * 0.55;
+      streak.position.set(baseX + directionX * slide * travelDistance, baseY + directionY * slide * travelDistance, 0);
+      streak.rotation.z = Math.atan2(-directionX, directionY);
+      streak.scale.x = (0.11 + intensity * 0.08) * layout.width;
+      streak.scale.y = layout.scaleY * (0.72 + intensity * 0.95) * burstStretch;
+      material.opacity = this.speedTraceGroup.visible ? Math.min(0.72, intensity * flicker * layout.opacity) : 0;
+    });
+  }
+
+  private sendRuntimeInput() {
+    if (!isRuntimeMode(this.mode) || !this.pointerLocked) {
+      return;
+    }
+
+    const nextCommand = buildPlayerCommand(this.keyboardState, this.cameraForward);
+    nextCommand.destroy = this.destroyQueued;
+    nextCommand.place = this.keyboardState.build && !this.previousBuildPressed;
+    nextCommand.layEgg = this.keyboardState.egg && !this.previousEggPressed;
+    nextCommand.targetVoxel = this.focusedTarget?.voxel ?? null;
+    nextCommand.targetNormal = this.focusedTarget?.normal ?? null;
+
+    this.previousBuildPressed = this.keyboardState.build;
+    this.previousEggPressed = this.keyboardState.egg;
+    this.destroyQueued = false;
+
+    const buffer = packRuntimeInputCommand({
+      seq: this.inputSequence,
+      ...nextCommand
+    });
+    this.inputSequence += 1;
+    this.worker.postMessage(
+      {
+        type: "set_runtime_input",
+        buffer
+      } satisfies WorkerRequestMessage,
+      [buffer]
+    );
+
+    this.keyboardState.jumpPressed = false;
+    this.keyboardState.jumpReleased = false;
+  }
+
+  private applyRuntimeFrame(delta: number, elapsedTime: number) {
+    const frame = this.latestFrame;
+    if (!frame) {
+      this.updateSpeedTraces(null, delta, elapsedTime);
+      this.updateSkyEnvironment(null, delta, elapsedTime);
+      return;
+    }
+
+    this.syncPlayers(frame.players, frame.localPlayerId, delta, elapsedTime);
+    const localPlayer = frame.localPlayerId
+      ? frame.players.find((player) => player.id === frame.localPlayerId) ?? null
+      : null;
+    this.updateSpeedTraces(localPlayer, delta, elapsedTime);
+    this.updateSkyEnvironment(localPlayer, delta, elapsedTime);
+    this.syncEggs(frame.eggs, elapsedTime);
+    this.syncEggScatterDebris(frame.eggScatterDebris ?? []);
+    this.syncVoxelBursts(frame.voxelBursts ?? []);
+    this.syncSkyDrops(frame.skyDrops, elapsedTime);
+    this.syncClusters(frame.fallingClusters, elapsedTime);
+  }
+
+  private syncPlayers(players: RuntimePlayerState[], localPlayerId: string | null, delta: number, elapsedTime: number) {
+    const seen = new Set<string>();
+    const horizontalDamping = 1 - Math.exp(-delta * 10);
+
+    for (const player of players) {
+      const isLocal = player.id === localPlayerId;
+      const preferredPaletteName = isLocal ? this.localPlayerPaletteName : null;
+      const resolvedPaletteName = getChickenPalette(player.id, this.matchColorSeed, preferredPaletteName).name;
+      let visual = this.playerVisuals.get(player.id);
+      if (!visual || visual.paletteName !== resolvedPaletteName) {
+        if (visual) {
+          this.playersGroup.remove(visual.group);
+          disposePlayerVisual(visual);
+        }
+
+        visual = createPlayerVisual(player.id, this.matchColorSeed, preferredPaletteName);
+        visual.group.position.set(player.position.x, player.position.y, player.position.z);
+        this.playersGroup.add(visual.group);
+        this.playerVisuals.set(player.id, visual);
+      }
+
+      seen.add(player.id);
+      const playerVisible = player.fallingOut || (player.alive && !player.respawning);
+      visual.group.visible = playerVisible;
+      if (!playerVisible) {
+        visual.previousGrounded = player.grounded;
+        visual.previousVelocityY = player.velocity.y;
+        visual.landingRollRemaining = 0;
+        continue;
+      }
+
+      visual.targetPosition.set(player.position.x, player.position.y, player.position.z);
+      const rising = player.velocity.y > 0 && visual.targetPosition.y > visual.group.position.y;
+      const verticalDamping = rising ? 1 - Math.exp(-delta * 26) : horizontalDamping;
+      visual.group.position.x = THREE.MathUtils.lerp(visual.group.position.x, visual.targetPosition.x, horizontalDamping);
+      visual.group.position.y = THREE.MathUtils.lerp(visual.group.position.y, visual.targetPosition.y, verticalDamping);
+      visual.group.position.z = THREE.MathUtils.lerp(visual.group.position.z, visual.targetPosition.z, horizontalDamping);
+      const useLowDetail =
+        !isLocal && this.camera.position.distanceToSquared(visual.group.position) > PLAYER_DETAIL_DISTANCE * PLAYER_DETAIL_DISTANCE;
+      visual.highDetail.visible = !useLowDetail;
+      visual.lowDetail.visible = useLowDetail;
+
+      const targetYaw = Math.atan2(player.facing.x, player.facing.z);
+      visual.group.rotation.y = stepAngleToward(visual.group.rotation.y, targetYaw, delta * AVATAR_TURN_SPEED);
+
+      const visualState = player.alive
+        ? getPlayerAvatarVisualState(player.stunRemaining, elapsedTime)
+        : eliminatedVisualState;
+      visual.shell.scale.set(visualState.scaleX, visualState.scaleY, visualState.scaleZ);
+      visual.shell.visible = visualState.blinkVisible;
+
+      if (shouldTriggerChickenLandingTumble({
+        wasGrounded: visual.previousGrounded,
+        grounded: player.grounded,
+        previousVelocityY: visual.previousVelocityY
+      })) {
+        visual.landingRollRemaining = chickenPoseVisualDefaults.landingTumbleDuration;
+      } else {
+        visual.landingRollRemaining = Math.max(0, visual.landingRollRemaining - delta);
+      }
+
+      const planarSpeed = Math.hypot(player.velocity.x, player.velocity.z);
+      const poseState = getChickenPoseVisualState({
+        grounded: player.grounded,
+        velocityY: player.velocity.y,
+        planarSpeed,
+        elapsedTime,
+        motionSeed: visual.motionSeed,
+        pushVisualRemaining: player.pushVisualRemaining,
+        landingRollRemaining: visual.landingRollRemaining,
+        spacePhase: player.spacePhase,
+        spacePhaseRemaining: player.spacePhaseRemaining,
+        stunned: player.stunRemaining > 0
+      });
+      visual.shell.rotation.x = poseState.bodyPitch;
+      visual.shell.rotation.z = poseState.bodyRoll;
+
+      const shadowSurfaceY = this.resolvePlayerShadowSurfaceY(player.position);
+      const shadowState = player.alive
+        ? getPlayerBlobShadowState({
+            playerY: player.position.y,
+            surfaceY: shadowSurfaceY,
+            isLocal,
+            stunned: player.stunRemaining > 0
+          })
+        : {
+            yOffset: -10,
+            scale: 1,
+            opacity: 0
+          };
+
+      visual.shadow.position.set(0, shadowState.yOffset, 0);
+      visual.shadow.scale.setScalar(shadowState.scale);
+      visual.shadowMaterial.opacity = shadowState.opacity;
+
+      const stride =
+        !player.alive || player.stunRemaining > 0 ? 0 : Math.min(1, Math.hypot(player.velocity.x, player.velocity.z) / 5);
+      const struggleSignal =
+        stride > 0.08 ? Math.max(0, Math.sin(elapsedTime * 0.82 + visual.motionSeed * 0.35 + 0.6)) : 0;
+      const struggleHop =
+        struggleSignal > 0.95 ? Math.pow((struggleSignal - 0.95) / 0.05, 1.8) * stride : 0;
+      const runWingLift = struggleHop * 0.42;
+      visual.avatar.position.y =
+        AVATAR_BOB_BASE_Y + Math.sin(elapsedTime * 10 + (isLocal ? 0 : 1.2)) * 0.05 * stride + struggleHop * 0.52;
+      visual.avatar.position.z = poseState.bodyForwardOffset;
+      visual.avatar.rotation.x = struggleHop * 0.22;
+
+      visual.body.rotation.y = poseState.bodyYaw;
+      visual.headPivot.rotation.x = poseState.headPitch;
+      visual.headPivot.rotation.y = poseState.headYaw;
+      visual.headPivot.position.y = chickenModelRig.headPivotY + poseState.headYOffset;
+      visual.lowDetailHead.rotation.x = poseState.headPitch * 0.76;
+      visual.lowDetailHead.rotation.y = poseState.headYaw * 0.72;
+      visual.lowDetailHead.position.y = chickenModelRig.lowHeadPivotY + poseState.headYOffset * 0.5;
+      visual.leftLeg.rotation.x = poseState.leftLegPitch;
+      visual.rightLeg.rotation.x = poseState.rightLegPitch;
+
+      const wingState = getChickenWingVisualState({
+        alive: player.alive,
+        grounded: player.grounded,
+        velocityY: player.velocity.y,
+        planarSpeed,
+        jetpackActive: player.jetpackActive,
+        motionSeed: visual.motionSeed,
+        stunned: player.stunRemaining > 0,
+        elapsedTime
+      });
+      const statusVisualState = getPlayerStatusVisualState(player.invulnerableRemaining, elapsedTime);
+      const ringOpacity = !player.alive
+        ? 0.35
+        : player.stunRemaining > 0
+          ? 0.5
+          : isLocal
+            ? 0.95
+            : 0.7;
+      visual.ringMaterial.opacity = Math.min(1, ringOpacity * statusVisualState.ringOpacityMultiplier);
+      const leftWingAngle = Math.min(1.34, wingState.leftWingAngle + poseState.wingAngleOffset + runWingLift);
+      const rightWingAngle = Math.min(1.34, wingState.rightWingAngle + poseState.wingAngleOffset + runWingLift);
+      const wingHeightScale = getChickenWingHeightScale(wingState.wingSpanScale);
+      const wingDepthScale = getChickenWingDepthScale(wingState.wingSpanScale);
+      const wingMeshOffsetX = getChickenWingMeshOffsetX(wingState.wingSpanScale);
+      const lowDetailWingOffsetX = getChickenLowDetailWingMeshOffsetX(wingState.wingSpanScale);
+      const traceVisible = wingState.traceIntensity > 0.03;
+      const traceOffsetX = getChickenWingTraceOffsetX(wingState.wingSpanScale);
+      const traceHeightScale = getChickenWingTraceHeightScale(wingState.traceIntensity);
+      const lowDetailTraceOffsetX = getChickenLowDetailTraceOffsetX(wingState.wingSpanScale);
+      const lowDetailTraceHeightScale = getChickenLowDetailWingTraceHeightScale(wingState.traceIntensity);
+
+      visual.leftWing.rotation.z = leftWingAngle;
+      visual.rightWing.rotation.z = -rightWingAngle;
+      visual.lowDetailLeftWing.rotation.z = leftWingAngle * 0.94;
+      visual.lowDetailRightWing.rotation.z = -rightWingAngle * 0.94;
+      visual.leftWingMesh.position.x = wingMeshOffsetX;
+      visual.rightWingMesh.position.x = -wingMeshOffsetX;
+      visual.lowDetailLeftWingMesh.position.x = lowDetailWingOffsetX;
+      visual.lowDetailRightWingMesh.position.x = -lowDetailWingOffsetX;
+      visual.leftWingMesh.scale.set(wingState.wingSpanScale, wingHeightScale, wingDepthScale);
+      visual.rightWingMesh.scale.set(wingState.wingSpanScale, wingHeightScale, wingDepthScale);
+      visual.lowDetailLeftWingMesh.scale.set(wingState.wingSpanScale * 0.92, 1 + (wingHeightScale - 1) * 0.65, 1);
+      visual.lowDetailRightWingMesh.scale.set(wingState.wingSpanScale * 0.92, 1 + (wingHeightScale - 1) * 0.65, 1);
+      visual.wingletTraceMaterial.opacity = traceVisible ? Math.min(0.72, wingState.traceIntensity * 0.52) : 0;
+
+      visual.leftWingTrace.position.x = traceOffsetX;
+      visual.rightWingTrace.position.x = -traceOffsetX;
+      visual.leftWingTrace.scale.set(wingState.traceLength, traceHeightScale, 1);
+      visual.rightWingTrace.scale.set(wingState.traceLength, traceHeightScale, 1);
+      visual.leftWingTrace.visible = !useLowDetail && traceVisible;
+      visual.rightWingTrace.visible = !useLowDetail && traceVisible;
+
+      visual.lowDetailLeftTrace.position.x = lowDetailTraceOffsetX;
+      visual.lowDetailRightTrace.position.x = -lowDetailTraceOffsetX;
+      visual.lowDetailLeftTrace.scale.set(wingState.traceLength * 0.88, lowDetailTraceHeightScale, 1);
+      visual.lowDetailRightTrace.scale.set(wingState.traceLength * 0.88, lowDetailTraceHeightScale, 1);
+      visual.lowDetailLeftTrace.visible = useLowDetail && traceVisible;
+      visual.lowDetailRightTrace.visible = useLowDetail && traceVisible;
+
+      const tailMotion = getChickenTailMotion(poseState.featherSwing);
+      visual.tail.rotation.x = tailMotion.x;
+      visual.tail.rotation.z = tailMotion.z;
+      visual.lowDetailTail.rotation.x = tailMotion.x * 0.82;
+      visual.lowDetailTail.rotation.z = tailMotion.z * 0.82;
+
+      visual.headFeathers.forEach((feather, index) => {
+        const featherRotation = getChickenHeadFeatherRotation(headFeatherOffsets[index]!, poseState.featherSwing);
+        feather.rotation.set(featherRotation.x, featherRotation.y, featherRotation.z);
+        feather.visible = index < player.livesRemaining;
+      });
+
+      visual.lowDetailHeadFeathers.forEach((feather, index) => {
+        const featherRotation = getChickenHeadFeatherRotation(headFeatherOffsets[index]!, poseState.featherSwing, 0.82);
+        feather.rotation.set(featherRotation.x * 0.9, featherRotation.y, featherRotation.z * 0.86);
+        feather.visible = index < player.livesRemaining;
+      });
+
+      visual.leftWingFeatherlets.forEach((feather, index) => {
+        const leftRotation = getChickenWingFeatherletRotation(
+          wingFeatherletOffsets[index]!,
+          poseState.featherSwing,
+          1
+        );
+        feather.rotation.set(leftRotation.x, leftRotation.y, leftRotation.z);
+        feather.visible = true;
+        const rightFeather = visual.rightWingFeatherlets[index];
+        if (rightFeather) {
+          const rightRotation = getChickenWingFeatherletRotation(
+            wingFeatherletOffsets[index]!,
+            poseState.featherSwing,
+            -1
+          );
+          rightFeather.rotation.set(rightRotation.x, rightRotation.y, rightRotation.z);
+          rightFeather.visible = true;
+        }
+      });
+
+      visual.previousGrounded = player.grounded;
+      visual.previousVelocityY = player.velocity.y;
+    }
+
+    for (const [playerId, visual] of this.playerVisuals) {
+      if (seen.has(playerId)) {
+        continue;
+      }
+      this.playersGroup.remove(visual.group);
+      disposePlayerVisual(visual);
+      this.playerVisuals.delete(playerId);
+    }
+  }
+
+  private syncEggs(eggs: RuntimeEggState[], elapsedTime: number) {
+    const seen = new Set<string>();
+
+    for (const egg of eggs) {
+      let visual = this.eggVisuals.get(egg.id);
+      if (!visual) {
+        visual = createEggVisual();
+        this.eggsGroup.add(visual.group);
+        this.eggVisuals.set(egg.id, visual);
+      }
+
+      seen.add(egg.id);
+      const eggVisualState = getEggVisualState(egg, elapsedTime, EGG_FUSE_DURATION);
+      visual.group.visible = true;
+      visual.group.position.set(egg.position.x, egg.position.y + eggVisualState.jiggleY, egg.position.z);
+      visual.group.scale.set(eggVisualState.scaleX, eggVisualState.scaleY, eggVisualState.scaleZ);
+      visual.material.color.set("#fff0d9").lerp(new THREE.Color("#ff4f3d"), eggVisualState.heatAlpha);
+      visual.material.emissive.set("#ff4f3d");
+      visual.material.emissiveIntensity = eggVisualState.emissiveIntensity;
+    }
+
+    for (const [eggId, visual] of this.eggVisuals) {
+      if (seen.has(eggId)) {
+        continue;
+      }
+      this.eggsGroup.remove(visual.group);
+      visual.material.dispose();
+      this.eggVisuals.delete(eggId);
+    }
+  }
+
+  private syncEggScatterDebris(eggScatterDebris: RuntimeEggScatterDebrisState[]) {
+    const counts: Record<BlockRenderProfile, number> = {
+      earthSurface: 0,
+      earthSubsoil: 0,
+      darkness: 0
+    };
+
+    for (const debris of eggScatterDebris) {
+      const profile = getBlockRenderProfile(debris.kind, Math.floor(debris.origin.y));
+      const mesh = this.eggScatterMeshes.get(profile);
+      const instanceIndex = counts[profile];
+      if (!mesh || instanceIndex >= MAX_EGG_SCATTER_INSTANCES_PER_PROFILE) {
+        continue;
+      }
+
+      const visualState = getEggScatterDebrisVisualState(debris, EGG_SCATTER_ARC_HEIGHT);
+      voxelFxTempObject.position.set(visualState.position.x, visualState.position.y, visualState.position.z);
+      voxelFxTempObject.rotation.set(visualState.rotationX, visualState.rotationY, visualState.rotationZ);
+      voxelFxTempObject.scale.set(visualState.scaleX, visualState.scaleY, visualState.scaleZ);
+      voxelFxTempObject.updateMatrix();
+      mesh.setMatrixAt(instanceIndex, voxelFxTempObject.matrix);
+      counts[profile] += 1;
+    }
+
+    for (const profile of voxelFxProfiles) {
+      finalizeDynamicInstancedMesh(this.eggScatterMeshes.get(profile) ?? null, counts[profile]);
+    }
+  }
+
+  private syncVoxelBursts(voxelBursts: RuntimeVoxelBurstState[]) {
+    const harvestCounts: Record<BlockRenderProfile, number> = {
+      earthSurface: 0,
+      earthSubsoil: 0,
+      darkness: 0
+    };
+    let eggExplosionCount = 0;
+
+    for (const burst of voxelBursts) {
+      const particleCount = getVoxelBurstParticleCount(burst);
+
+      if (burst.style === "harvest") {
+        const profile = getVoxelBurstMaterialProfile(burst);
+        if (!profile) {
+          continue;
+        }
+
+        const resource = this.harvestBurstMeshes.get(profile);
+        if (!resource) {
+          continue;
+        }
+
+        for (let particleIndex = 0; particleIndex < particleCount; particleIndex += 1) {
+          const instanceIndex = harvestCounts[profile];
+          if (instanceIndex >= MAX_HARVEST_BURST_INSTANCES_PER_PROFILE) {
+            break;
+          }
+
+          const particle = getVoxelBurstParticleState(burst, particleIndex);
+          voxelFxTempObject.position.set(particle.position.x, particle.position.y, particle.position.z);
+          voxelFxTempObject.rotation.set(particle.rotationX, particle.rotationY, particle.rotationZ);
+          voxelFxTempObject.scale.setScalar(particle.scale);
+          voxelFxTempObject.updateMatrix();
+          resource.mesh.setMatrixAt(instanceIndex, voxelFxTempObject.matrix);
+          resource.opacityAttribute.setX(instanceIndex, particle.opacity);
+          harvestCounts[profile] += 1;
+        }
+        continue;
+      }
+
+      if (!this.eggExplosionBurstMesh) {
+        continue;
+      }
+
+      for (let particleIndex = 0; particleIndex < particleCount; particleIndex += 1) {
+        if (eggExplosionCount >= MAX_EGG_EXPLOSION_BURST_INSTANCES) {
+          break;
+        }
+
+        const particle = getVoxelBurstParticleState(burst, particleIndex);
+        voxelFxTempObject.position.set(particle.position.x, particle.position.y, particle.position.z);
+        voxelFxTempObject.rotation.set(particle.rotationX, particle.rotationY, particle.rotationZ);
+        voxelFxTempObject.scale.setScalar(particle.scale);
+        voxelFxTempObject.updateMatrix();
+        this.eggExplosionBurstMesh.mesh.setMatrixAt(eggExplosionCount, voxelFxTempObject.matrix);
+        this.eggExplosionBurstMesh.opacityAttribute.setX(eggExplosionCount, particle.opacity);
+        eggExplosionCount += 1;
+      }
+    }
+
+    for (const profile of voxelFxProfiles) {
+      finalizeDynamicOpacityMesh(this.harvestBurstMeshes.get(profile) ?? null, harvestCounts[profile]);
+    }
+    finalizeDynamicOpacityMesh(this.eggExplosionBurstMesh, eggExplosionCount);
+  }
+
+  private syncSkyDrops(skyDrops: RuntimeSkyDropState[], elapsedTime: number) {
+    const seen = new Set<string>();
+
+    for (const skyDrop of skyDrops) {
+      let visual = this.skyDropVisuals.get(skyDrop.id);
+      if (!visual) {
+        const group = new THREE.Group();
+        const ringMaterial = new THREE.MeshBasicMaterial({
+          color: "#fff4c6",
+          opacity: 0.5,
+          transparent: true,
+          side: THREE.DoubleSide
+        });
+        const ring = new THREE.Mesh(skyDropRingGeometry, ringMaterial);
+        ring.rotation.x = -Math.PI / 2;
+        const beamMaterial = new THREE.MeshBasicMaterial({
+          color: "#fff8df",
+          opacity: 0.2,
+          transparent: true
+        });
+        const beam = new THREE.Mesh(skyDropBeamGeometry, beamMaterial);
+        const cube = new THREE.Mesh(
+          sharedVoxelGeometry,
+          getVoxelMaterials(getBlockRenderProfile("ground", skyDrop.landingVoxel.y))
+        );
+        group.add(ring, beam, cube);
+        this.skyDropsGroup.add(group);
+        visual = {
+          group,
+          ring,
+          ringMaterial,
+          beam,
+          beamMaterial,
+          cube
+        };
+        this.skyDropVisuals.set(skyDrop.id, visual);
+      }
+
+      seen.add(skyDrop.id);
+      const visualState = getSkyDropVisualState(skyDrop, elapsedTime);
+      visual.ring.visible = visualState.warningVisible;
+      visual.beam.visible = visualState.warningVisible;
+      visual.ring.position.set(skyDrop.landingVoxel.x + 0.5, skyDrop.landingVoxel.y + 0.08, skyDrop.landingVoxel.z + 0.5);
+      visual.ring.scale.setScalar(visualState.warningScale);
+      visual.beam.position.set(skyDrop.landingVoxel.x + 0.5, skyDrop.landingVoxel.y + 0.8, skyDrop.landingVoxel.z + 0.5);
+      visual.beam.scale.set(1, 0.9 + visualState.warningScale * 0.45, 1);
+      visual.ringMaterial.opacity = visualState.warningOpacity;
+      visual.beamMaterial.opacity = visualState.warningOpacity * 0.4;
+      visual.cube.visible = skyDrop.phase === "falling";
+      visual.cube.position.set(
+        skyDrop.landingVoxel.x + 0.5,
+        skyDrop.landingVoxel.y + 0.5 + skyDrop.offsetY,
+        skyDrop.landingVoxel.z + 0.5
+      );
+    }
+
+    for (const [skyDropId, visual] of this.skyDropVisuals) {
+      if (seen.has(skyDropId)) {
+        continue;
+      }
+      this.skyDropsGroup.remove(visual.group);
+      this.skyDropVisuals.delete(skyDropId);
+    }
+  }
+
+  private syncClusters(clusters: FallingClusterViewState[], elapsedTime: number) {
+    const seen = new Set<string>();
+
+    for (const cluster of clusters) {
+      let visual = this.clusterVisuals.get(cluster.id);
+      if (!visual) {
+        const group = new THREE.Group();
+        const voxelsByProfile = new Map<string, FallingClusterViewState["voxels"]>();
+
+        for (const voxel of cluster.voxels) {
+          const profile = getBlockRenderProfile(voxel.kind, voxel.y);
+          const bucket = voxelsByProfile.get(profile) ?? [];
+          bucket.push(voxel);
+          voxelsByProfile.set(profile, bucket);
+        }
+
+        for (const [profile, voxels] of voxelsByProfile) {
+          const mesh = new THREE.InstancedMesh(
+            sharedVoxelGeometry,
+            getVoxelMaterials(profile as ReturnType<typeof getBlockRenderProfile>),
+            voxels.length
+          );
+          for (let index = 0; index < voxels.length; index += 1) {
+            const voxel = voxels[index]!;
+            clusterTempObject.position.set(voxel.x + 0.5, voxel.y + 0.5, voxel.z + 0.5);
+            clusterTempObject.updateMatrix();
+            mesh.setMatrixAt(index, clusterTempObject.matrix);
+          }
+          finalizeStaticInstancedMesh(mesh, voxels.length);
+          group.add(mesh);
+        }
+
+        this.clustersGroup.add(group);
+        visual = { group };
+        this.clusterVisuals.set(cluster.id, visual);
+      }
+
+      seen.add(cluster.id);
+      const visualState = getFallingClusterVisualState(cluster, elapsedTime);
+      visual.group.position.set(visualState.shakeX, cluster.offsetY, visualState.shakeZ);
+    }
+
+    for (const [clusterId, visual] of this.clusterVisuals) {
+      if (seen.has(clusterId)) {
+        continue;
+      }
+      this.clustersGroup.remove(visual.group);
+      this.clusterVisuals.delete(clusterId);
+    }
+  }
+}

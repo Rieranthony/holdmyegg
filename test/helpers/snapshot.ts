@@ -56,6 +56,18 @@ export const normalizeSnapshot = (snapshot: SimulationSnapshot) => ({
     elapsed: round(debris.elapsed),
     duration: round(debris.duration)
   })),
+  voxelBursts: snapshot.voxelBursts.map((burst) => ({
+    id: burst.id,
+    style: burst.style,
+    kind: burst.kind,
+    position: {
+      x: round(burst.position.x),
+      y: round(burst.position.y),
+      z: round(burst.position.z)
+    },
+    elapsed: round(burst.elapsed),
+    duration: round(burst.duration)
+  })),
   skyDrops: snapshot.skyDrops.map((skyDrop) => ({
     id: skyDrop.id,
     phase: skyDrop.phase,

@@ -50,3 +50,15 @@ if (!("pointerLockElement" in document)) {
     }
   });
 }
+
+if (!("ResizeObserver" in window)) {
+  class ResizeObserver {
+    observe() {}
+
+    unobserve() {}
+
+    disconnect() {}
+  }
+
+  vi.stubGlobal("ResizeObserver", ResizeObserver);
+}

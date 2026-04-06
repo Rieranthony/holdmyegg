@@ -101,11 +101,14 @@ export default defineConfig({
               "apps/web/src/components/Hud.tsx",
               "apps/web/src/data/mapStorage.ts",
               "apps/web/src/game/camera.ts",
+              "apps/web/src/game/input.ts",
               "apps/web/src/game/fallingClusters.ts",
               "apps/web/src/game/terrainMesher.ts",
               "apps/web/src/game/terrainRaycast.ts",
               "apps/web/src/game/voxelMaterials.ts",
-              "apps/web/src/hooks/useKeyboardInput.ts"
+              "apps/web/src/hooks/useKeyboardInput.ts",
+              "apps/web/src/engine/GameHost.tsx",
+              "apps/web/src/engine/runtimeInput.ts"
             ],
             thresholds: {
               lines: 85,

@@ -34,7 +34,6 @@ export interface SimulationConfig {
   tickRate: number;
   maxMass: number;
   startingMass: number;
-  jumpCost: number;
   pushCost: number;
   destroyGain: number;
   placeCost: number;
@@ -96,6 +95,7 @@ export interface SimulationConfig {
 
 export type FallingClusterPhase = "warning" | "falling";
 export type SkyDropPhase = "warning" | "falling";
+export type SpacePhase = "none" | "float" | "reentry";
 
 export interface FallingClusterVoxelView {
   x: number;
@@ -126,6 +126,17 @@ export interface EggScatterDebrisViewState {
   kind: BlockKind;
   origin: Vector3;
   destination: Vector3;
+  elapsed: number;
+  duration: number;
+}
+
+export type VoxelBurstStyle = "eggExplosion" | "harvest";
+
+export interface VoxelBurstViewState {
+  id: string;
+  style: VoxelBurstStyle;
+  kind: BlockKind | null;
+  position: Vector3;
   elapsed: number;
   duration: number;
 }
@@ -172,6 +183,9 @@ export interface RuntimePlayerState {
   respawning: boolean;
   invulnerableRemaining: number;
   stunRemaining: number;
+  pushVisualRemaining: number;
+  spacePhase: SpacePhase;
+  spacePhaseRemaining: number;
   position: Vector3;
   velocity: Vector3;
   facing: Vector2;
@@ -189,6 +203,7 @@ export interface RuntimeFallingClusterState {
 
 export type RuntimeEggState = EggViewState;
 export type RuntimeEggScatterDebrisState = EggScatterDebrisViewState;
+export type RuntimeVoxelBurstState = VoxelBurstViewState;
 export type RuntimeSkyDropState = SkyDropViewState;
 
 export interface MatchPlayerState {
@@ -260,11 +275,15 @@ export interface SimulationSnapshot {
   fallingClusters: FallingClusterViewState[];
   eggs: EggViewState[];
   eggScatterDebris: EggScatterDebrisViewState[];
+  voxelBursts: VoxelBurstViewState[];
   skyDrops: SkyDropViewState[];
   ranking: string[];
 }
 
+export type SimulationInitialSpawnStyle = "ground" | "sky";
+
 export interface SimulationResetOptions {
   npcCount?: number;
   localPlayerName?: string;
+  initialSpawnStyle?: SimulationInitialSpawnStyle;
 }

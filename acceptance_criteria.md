@@ -13,12 +13,12 @@
 - Status: complete
 
 ## Milestone 3
-- Explore mode supports movement, jump, Mass spending, harvesting, and building
-- HUD exposes current Mass and instructions
+- Explore mode supports movement, jump, Matter spending, harvesting, and building
+- HUD exposes current Matter and instructions
 - Status: complete
 
 ## Milestone 4
-- Skirmish mode spawns NPCs
+- Brawl mode spawns NPCs
 - Push can knock players out of bounds
 - Arena terrain updates without full scene rebuilds
 - Status: complete for the prototype foundation
@@ -60,7 +60,7 @@
 ## Milestone 10
 - Runtime play shows a center-screen reticle, focused cube outline, and placement ghost
 - Harvesting and building use explicit voxel targets instead of facing-only inference
-- The public resource meter is Mass, and building is gated by harvesting first
+- The public resource meter is Matter, and building is gated by harvesting first
 - Terrain shadows and lighting provide a clearer read of voxel depth during play
 - Status: complete
 
@@ -79,8 +79,9 @@
 - Status: complete
 
 ## Milestone 13
-- The app opens on a game-first menu with `Explore`, `Skirmish`, and `Map Workshop`
-- `Explore` and `Skirmish` enter a full-view play layout, while the editor keeps the split tool layout
+- The app opens on a HoldMyEgg menu with `Explore`, `Brawl`, `Build`, and `Map Workshop`
+- `Explore` and `Brawl` enter a full-view play layout, while the editor keeps the split tool layout
+- Starting `Explore` or `Brawl` begins with a sky-drop entry onto the arena
 - The runtime camera uses an over-the-shoulder aim rig, so looking up moves the reticle ray upward and allows higher block targeting
 - The in-game `Menu` button and `Esc` both return runtime play to the main menu
 - Status: complete
@@ -91,4 +92,12 @@
 - Surface cubes keep grass treatment while underground cubes render as dirt-only subsoil
 - Decorative clouds and random sky-drop cube hazards are active during runtime play
 - Collapse debris and sky drops both apply the shared block-impact stun path, and stunned characters render as visibly smashed
+- Status: complete
+
+## Milestone 15
+- The start menu renders a live overhead arena background plus a separate animated chicken preview stage
+- The menu uses HoldMyEgg branding, a minimalist overlay, and a disabled `Build` slot with future unlimited-block and JSON-export scope
+- `Explore` and `Brawl` stay locked until the player enters a name and picks a chicken color
+- The selected player name replaces the default runtime name, and the chosen palette applies to the local chicken only
+- Geist Pixel Square is used across the UI, and shared interface surfaces keep zero border radius
 - Status: complete

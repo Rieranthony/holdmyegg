@@ -1,5 +1,7 @@
+export type ChickenPaletteName = "cream" | "gold" | "coral" | "mint" | "sky" | "cocoa";
+
 export interface ChickenPalette {
-  name: string;
+  name: ChickenPaletteName;
   body: string;
   shade: string;
   ringAccent: string;
@@ -67,5 +69,10 @@ export const getChickenPaletteIndex = (playerId: string, matchColorSeed: number)
   return (hashString(playerId) + seedOffset) % chickenPalettes.length;
 };
 
-export const getChickenPalette = (playerId: string, matchColorSeed: number) =>
-  chickenPalettes[getChickenPaletteIndex(playerId, matchColorSeed)]!;
+export const getChickenPaletteByName = (name: ChickenPaletteName) =>
+  chickenPalettes.find((palette) => palette.name === name) ?? chickenPalettes[0]!;
+
+export const getChickenPalette = (playerId: string, matchColorSeed: number, preferredName?: ChickenPaletteName | null) =>
+  preferredName
+    ? getChickenPaletteByName(preferredName)
+    : chickenPalettes[getChickenPaletteIndex(playerId, matchColorSeed)]!;

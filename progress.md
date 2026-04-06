@@ -6,7 +6,7 @@
 - Began creating the workspace scaffold and root tracking files
 - Switched the repo to a Bun workspace
 - Implemented the shared voxel map package and tests
-- Implemented the shared simulation package with Mass, jump, harvest, push, and NPC skirmish tests
+- Implemented the shared simulation package with Matter, jump, harvest, push, and NPC skirmish tests
 - Implemented the web client with editor, save/load, import/export, explore mode, skirmish mode, HUD, and chunked voxel rendering
 - Added root Vitest project configuration, shared test fixtures, and web test setup
 - Expanded tests for map validation, map mutation, chunk dirtiness, simulation rules, keyboard mapping, storage flows, and app-level mode changes
@@ -27,7 +27,7 @@
 - Added editor-side immediate settling for disconnected floating terrain
 - Added collapse warnings, falling debris, and crush damage in the gameplay simulation
 - Added a subtle forward-speed camera blend for a stronger rush feeling at max speed
-- Replaced the old resource meter with a shared Mass economy across gameplay, HUD, docs, and tests
+- Replaced the old resource meter with a shared Matter economy across gameplay, HUD, docs, and tests
 - Added live runtime harvest/build targeting with a center reticle, focused cube outline, and placement ghost
 - Added click-driven block harvesting and placement in Explore and Skirmish
 - Tuned arena lighting and shadows to improve voxel depth perception during play

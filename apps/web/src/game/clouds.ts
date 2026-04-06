@@ -105,9 +105,9 @@ export const cloudPresets: readonly VoxelCloudPreset[] = [
   {
     id: "cloud-2",
     baseX: 10,
-    y: 25.6,
+    y: 24.2,
     z: 27,
-    driftSpeed: 0.54,
+    driftSpeed: 0.61,
     bobPhase: 1.3,
     cubes: cloudShapes.wispy
   },
@@ -122,20 +122,56 @@ export const cloudPresets: readonly VoxelCloudPreset[] = [
   },
   {
     id: "cloud-4",
-    baseX: 60,
-    y: 26.7,
-    z: 44,
-    driftSpeed: 0.49,
+    baseX: 54,
+    y: 27.4,
+    z: 18,
+    driftSpeed: 0.46,
     bobPhase: 0.9,
     cubes: cloudShapes.broad
   },
   {
     id: "cloud-5",
-    baseX: 92,
-    y: 24.5,
-    z: 68,
-    driftSpeed: 0.68,
+    baseX: 76,
+    y: 29.1,
+    z: 36,
+    driftSpeed: 0.42,
     bobPhase: 1.8,
+    cubes: cloudShapes.wispy
+  },
+  {
+    id: "cloud-6",
+    baseX: 108,
+    y: 30.6,
+    z: 68,
+    driftSpeed: 0.38,
+    bobPhase: 2.5,
+    cubes: cloudShapes.tall
+  },
+  {
+    id: "cloud-7",
+    baseX: -32,
+    y: 33.6,
+    z: 22,
+    driftSpeed: 0.28,
+    bobPhase: 0.55,
+    cubes: cloudShapes.wispy
+  },
+  {
+    id: "cloud-8",
+    baseX: 24,
+    y: 35.4,
+    z: 52,
+    driftSpeed: 0.24,
+    bobPhase: 1.95,
+    cubes: cloudShapes.broad
+  },
+  {
+    id: "cloud-9",
+    baseX: 88,
+    y: 36.8,
+    z: 74,
+    driftSpeed: 0.22,
+    bobPhase: 2.85,
     cubes: cloudShapes.wispy
   }
 ] as const;

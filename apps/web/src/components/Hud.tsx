@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
 import type { HudState, OutOfBoundsSimulation } from "@out-of-bounds/sim";
 import type { ActiveMode } from "./GameCanvas";
+import { ShortcutLegend, runtimeShortcutBindings } from "./ShortcutLegend";
+
+const getModeLabel = (mode: ActiveMode) => (mode === "skirmish" ? "BRAWL" : mode.toUpperCase());
 
 const areHudStatesEqual = (left: HudState, right: HudState) => {
   if (left.mode !== right.mode || left.localPlayerId !== right.localPlayerId) {
@@ -39,14 +42,26 @@ const areHudStatesEqual = (left: HudState, right: HudState) => {
 
 export function Hud({
   runtime,
-  mode
+  mode,
+  hudState: externalHudState
 }: {
-  runtime: OutOfBoundsSimulation;
+  runtime?: OutOfBoundsSimulation;
   mode: ActiveMode;
+  hudState?: HudState | null;
 }) {
-  const [hudState, setHudState] = useState(() => runtime.getHudState());
+  const [hudState, setHudState] = useState(() => externalHudState ?? runtime?.getHudState() ?? null);
 
   useEffect(() => {
+    if (externalHudState !== undefined) {
+      setHudState(externalHudState);
+      return;
+    }
+
+    if (!runtime) {
+      setHudState(null);
+      return;
+    }
+
     if (mode === "editor") {
       return;
     }
@@ -54,13 +69,17 @@ export function Hud({
     setHudState(runtime.getHudState());
     const interval = window.setInterval(() => {
       const next = runtime.getHudState();
-      setHudState((current) => (areHudStatesEqual(current, next) ? current : next));
+      setHudState((current) => (current && areHudStatesEqual(current, next) ? current : next));
     }, 250);
 
     return () => window.clearInterval(interval);
-  }, [mode, runtime]);
+  }, [externalHudState, mode, runtime]);
 
   if (mode === "editor") {
+    return null;
+  }
+
+  if (!hudState) {
     return null;
   }
 
@@ -84,15 +103,15 @@ export function Hud({
     <div className="hud">
       <div className="hud-card">
         <div className="hud-title-row">
-          <span className="hud-kicker">{mode.toUpperCase()}</span>
-          <span className="hud-kicker">MASS FLOW</span>
+          <span className="hud-kicker">{getModeLabel(mode)}</span>
+          <span className="hud-kicker">MATTER FLOW</span>
         </div>
         <div className="hud-label">Feathers</div>
         <div className="hud-label-row">
           <span>{featherText}</span>
           <span>{localPlayer.livesRemaining} / {localPlayer.maxLives}</span>
         </div>
-        <div className="hud-label">Mass</div>
+        <div className="hud-label">Matter</div>
         <div className="meter">
           <div
             className="meter-fill"
@@ -106,7 +125,7 @@ export function Hud({
       </div>
       <div className="hud-card hud-card--compact">
         <div className="hud-label">Controls</div>
-        <p>Look `Mouse`, move `W/S`, strafe `A/D`, jump `Space`, jetpack `Space` again and hold, harvest `LMB`, build `E`, egg `Q`, push `F`, pause `Esc`.</p>
+        <ShortcutLegend bindings={runtimeShortcutBindings} variant="compact" />
       </div>
       <div className="hud-card hud-card--compact">
         <div className="hud-label">Ranking</div>
