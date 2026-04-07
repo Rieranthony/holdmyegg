@@ -3,6 +3,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "re
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDefaultArenaMap, serializeMapDocument } from "@out-of-bounds/map";
 import type { HudState } from "@out-of-bounds/sim";
+import { RUNTIME_CONTROL_SETTINGS_STORAGE_KEY } from "../data/runtimeControlSettingsStorage";
 
 const createHudState = (mode: "explore" | "playNpc", playerName = "You"): HudState => ({
   mode,
@@ -23,6 +24,9 @@ const createHudState = (mode: "explore" | "playNpc", playerName = "You"): HudSta
   eggStatus: {
     hasMatter: true,
     ready: true,
+    reason: "ready",
+    canQuickEgg: true,
+    canChargedThrow: true,
     activeCount: 0,
     maxActiveCount: 2,
     cost: 42,
@@ -431,6 +435,9 @@ const unlockMenuPlayer = () => {
     target: { value: "Anthony" }
   });
 };
+const openMenuControls = () => {
+  fireEvent.click(screen.getByRole("button", { name: /Controls/i }));
+};
 
 const createTinyArenaDocument = (name: string) => ({
   version: 1 as const,
@@ -452,6 +459,7 @@ describe("App", () => {
   beforeEach(() => {
     gameHostState.reset();
     storageState.reset();
+    window.localStorage.clear();
     vi.useRealTimers();
     vi.stubGlobal("open", vi.fn());
   });
@@ -480,7 +488,9 @@ describe("App", () => {
     expect(await screen.findByRole("heading", { name: "HoldMyEgg" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Explore/i })).toBeDisabled();
     expect(screen.getByRole("button", { name: /PLAY NPC/i })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Rules and Controls" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Rules / Shortcuts" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Controls/i })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Look Sensitivity")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Feedback / bug" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Build/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Map Workshop" })).not.toBeInTheDocument();
@@ -505,6 +515,92 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: /Explore/i })).toBeEnabled();
     expect(screen.getByRole("button", { name: /PLAY NPC/i })).toBeEnabled();
   });
+
+  it("persists menu control settings locally across app remounts", async () => {
+    const { unmount } = render(<App />);
+
+    await signalMenuReady();
+    openMenuControls();
+
+    fireEvent.change(screen.getByLabelText("Look Sensitivity"), {
+      target: { value: "1.7" }
+    });
+    fireEvent.click(screen.getByLabelText("Invert X"));
+    fireEvent.click(screen.getByLabelText("Invert Y"));
+
+    expect(
+      JSON.parse(
+        window.localStorage.getItem(RUNTIME_CONTROL_SETTINGS_STORAGE_KEY)!
+      )
+    ).toEqual({
+      version: 2,
+      settings: {
+        lookSensitivity: 1.7,
+        invertLookX: true,
+        invertLookY: true
+      }
+    });
+
+    unmount();
+
+    render(<App />);
+    await signalMenuReady();
+    openMenuControls();
+
+    expect(
+      (screen.getByLabelText("Look Sensitivity") as HTMLInputElement).value
+    ).toBe("1.7");
+    expect(screen.getByLabelText("Invert X")).toBeChecked();
+    expect(screen.getByLabelText("Invert Y")).toBeChecked();
+  });
+
+  it(
+    "keeps menu and pause control settings in sync",
+    async () => {
+      vi.useFakeTimers();
+      render(<App />);
+
+      await signalMenuReady();
+      openMenuControls();
+
+      fireEvent.change(screen.getByLabelText("Look Sensitivity"), {
+        target: { value: "1.5" }
+      });
+      fireEvent.click(screen.getByLabelText("Invert X"));
+
+      unlockMenuPlayer();
+      fireEvent.click(screen.getByRole("button", { name: /Explore/i }));
+      await advanceLaunchIntro();
+
+      fireEvent.click(screen.getByRole("button", { name: "Pause runtime" }));
+      fireEvent.click(screen.getByRole("button", { name: "Controls" }));
+
+      expect(
+        (screen.getByLabelText("Look Sensitivity") as HTMLInputElement).value
+      ).toBe("1.5");
+      expect(screen.getByLabelText("Invert X")).toBeChecked();
+      expect(screen.getByLabelText("Invert Y")).not.toBeChecked();
+
+      fireEvent.change(screen.getByLabelText("Look Sensitivity"), {
+        target: { value: "0.8" }
+      });
+      fireEvent.click(screen.getByLabelText("Invert Y"));
+
+      fireEvent.click(screen.getByRole("button", { name: "Menu" }));
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(screen.getByTestId("boot-splash")).toBeInTheDocument();
+      await signalMenuReady();
+
+      expect(
+        (screen.getByLabelText("Look Sensitivity") as HTMLInputElement).value
+      ).toBe("0.8");
+      expect(screen.getByLabelText("Invert X")).toBeChecked();
+      expect(screen.getByLabelText("Invert Y")).toBeChecked();
+    },
+    APP_FLOW_TIMEOUT
+  );
 
   it(
     "renders the editor shell when started there directly",
@@ -554,7 +650,8 @@ describe("App", () => {
       screen.getByText("tap to jump, hold Space after takeoff to fly, tap Space during reentry to recover")
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Resume" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Rules and Controls" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Controls" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Rules / Shortcuts" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Menu" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Menu" }));
@@ -688,9 +785,9 @@ describe("App", () => {
 
     await signalMenuReady();
 
-    fireEvent.click(screen.getByRole("button", { name: "Rules and Controls" }));
+    fireEvent.click(screen.getByRole("button", { name: "Rules / Shortcuts" }));
     expect(screen.getByTestId("rules-screen")).toBeInTheDocument();
-    expect(screen.getByText("Rules and Controls")).toBeInTheDocument();
+    expect(screen.getByText("Rules / Shortcuts")).toBeInTheDocument();
     expect(screen.getByText(/survive the mess you make/i)).toBeInTheDocument();
     expect(screen.getByText(/Every chicken gets 3 feathers/i)).toBeInTheDocument();
     expect(screen.getByText(/Only harvested cubes refill matter/i)).toBeInTheDocument();
@@ -706,7 +803,7 @@ describe("App", () => {
     await advanceLaunchIntro();
 
     fireEvent.click(screen.getByRole("button", { name: "Pause runtime" }));
-    fireEvent.click(screen.getByRole("button", { name: "Rules and Controls" }));
+    fireEvent.click(screen.getByRole("button", { name: "Rules / Shortcuts" }));
     expect(screen.getByTestId("rules-screen")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Back" }));

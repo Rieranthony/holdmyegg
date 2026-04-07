@@ -35,6 +35,10 @@ export interface RuntimePauseState {
   pointerCaptureFailureReason: PointerCaptureFailureReason | null;
 }
 
+export interface RuntimeOverlayState {
+  matterPulseActive: boolean;
+}
+
 export const blockKindOptions: BlockKind[] = ["ground", "boundary", "hazard"];
 export const propKindOptions: MapPropKind[] = ["tree-oak"];
 
@@ -77,6 +81,7 @@ export interface RuntimeRenderFrame {
   time: number;
   mode: GameMode;
   localPlayerId: string | null;
+  hudState: HudState | null;
   players: RuntimePlayerState[];
   eggs: RuntimeEggState[];
   eggScatterDebris: RuntimeEggScatterDebrisState[];

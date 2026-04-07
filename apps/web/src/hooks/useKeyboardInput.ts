@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { PlayerCommand, Vector2 } from "@out-of-bounds/sim";
-import { detectEggLaunchPlatform, isEggLaunchKeyCode } from "../game/eggLaunchControls";
+import { isEggLaunchKeyCode } from "../game/eggLaunchControls";
 
 export interface KeyboardInputState {
   forward: boolean;
@@ -37,14 +37,12 @@ export const useKeyboardInput = () => {
   const inputRef = useRef<KeyboardInputState>({ ...initialState });
 
   useEffect(() => {
-    const eggLaunchPlatform = detectEggLaunchPlatform();
-
     const onKeyDown = (event: KeyboardEvent) => {
       if (isFormElement(event.target)) {
         return;
       }
 
-      if (isEggLaunchKeyCode(event.code, eggLaunchPlatform)) {
+      if (isEggLaunchKeyCode(event.code)) {
         event.preventDefault();
         inputRef.current.egg = true;
         return;
@@ -84,7 +82,7 @@ export const useKeyboardInput = () => {
     };
 
     const onKeyUp = (event: KeyboardEvent) => {
-      if (isEggLaunchKeyCode(event.code, eggLaunchPlatform)) {
+      if (isEggLaunchKeyCode(event.code)) {
         event.preventDefault();
         inputRef.current.egg = false;
         return;

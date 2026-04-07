@@ -547,6 +547,7 @@ export class OutOfBoundsSimulation {
         ? getHudEggStatus({
             localPlayerId: localPlayer.id,
             localPlayerMass: localPlayer.mass,
+            localPlayer: this.getPlayerRuntimeState(localPlayer.id),
             eggs: this.getEggs(),
             eggCost: this.config.eggCost,
             maxActiveEggsPerPlayer: this.config.maxActiveEggsPerPlayer,

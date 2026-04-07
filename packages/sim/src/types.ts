@@ -259,7 +259,14 @@ export interface HudPlayerState {
   stunRemaining: number;
 }
 
+export type EggActionReason =
+  | "ready"
+  | "cooldown"
+  | "notEnoughMatter"
+  | "stateBlocked";
+
 export interface HudEggStatus {
+  reason: EggActionReason;
   hasMatter: boolean;
   ready: boolean;
   activeCount: number;
@@ -267,6 +274,8 @@ export interface HudEggStatus {
   cost: number;
   cooldownRemaining: number;
   cooldownDuration: number;
+  canQuickEgg: boolean;
+  canChargedThrow: boolean;
 }
 
 export interface HudState {

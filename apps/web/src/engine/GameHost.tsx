@@ -1,12 +1,14 @@
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef } from "react";
 import type { MapDocumentV1 } from "@out-of-bounds/map";
 import type { HudState, SimulationInitialSpawnStyle } from "@out-of-bounds/sim";
+import type { RuntimeControlSettings } from "../game/runtimeControlSettings";
 import { GameClient } from "./GameClient";
 import type {
   ActiveShellMode,
   EditorPanelState,
   GameDiagnostics,
   PlayerProfile,
+  RuntimeOverlayState,
   RuntimePauseState,
   ShellPresentation
 } from "./types";
@@ -28,9 +30,11 @@ interface GameHostProps {
   mode: ActiveShellMode;
   playerProfile?: PlayerProfile;
   presentation?: ShellPresentation;
+  runtimeSettings?: RuntimeControlSettings;
   onDiagnostics?: (diagnostics: GameDiagnostics) => void;
   onEditorStateChange?: (editorState: EditorPanelState) => void;
   onHudStateChange?: (hudState: HudState | null) => void;
+  onRuntimeOverlayChange?: (state: RuntimeOverlayState | null) => void;
   onPauseStateChange?: (state: RuntimePauseState) => void;
   onReadyToDisplay?: () => void;
   onStatus?: (message: string) => void;
@@ -44,9 +48,11 @@ export const GameHost = forwardRef<GameHostHandle, GameHostProps>(function GameH
     mode,
     playerProfile,
     presentation = "default",
+    runtimeSettings,
     onDiagnostics,
     onEditorStateChange,
     onHudStateChange,
+    onRuntimeOverlayChange,
     onPauseStateChange,
     onReadyToDisplay,
     onStatus
@@ -71,9 +77,11 @@ export const GameHost = forwardRef<GameHostHandle, GameHostProps>(function GameH
       localPlayerName: playerProfile?.name,
       localPlayerPaletteName: playerProfile?.paletteName,
       presentation,
+      runtimeSettings,
       onDiagnostics,
       onEditorStateChange,
       onHudStateChange,
+      onRuntimeOverlayChange,
       onPauseStateChange,
       onReadyToDisplay,
       onStatus
@@ -83,7 +91,7 @@ export const GameHost = forwardRef<GameHostHandle, GameHostProps>(function GameH
       client.dispose();
       clientRef.current = null;
     };
-  }, [matchColorSeed, onDiagnostics, onEditorStateChange, onHudStateChange, onPauseStateChange, onReadyToDisplay, onStatus]);
+  }, [matchColorSeed, onDiagnostics, onEditorStateChange, onHudStateChange, onPauseStateChange, onReadyToDisplay, onRuntimeOverlayChange, onStatus]);
 
   useEffect(() => {
     clientRef.current?.setShellState({
@@ -91,9 +99,19 @@ export const GameHost = forwardRef<GameHostHandle, GameHostProps>(function GameH
       initialSpawnStyle,
       localPlayerName: playerProfile?.name,
       localPlayerPaletteName: playerProfile?.paletteName,
-      presentation
+      presentation,
+      runtimeSettings
     });
-  }, [initialSpawnStyle, mode, playerProfile?.name, playerProfile?.paletteName, presentation]);
+  }, [
+    initialSpawnStyle,
+    mode,
+    playerProfile?.name,
+    playerProfile?.paletteName,
+    presentation,
+    runtimeSettings?.invertLookX,
+    runtimeSettings?.invertLookY,
+    runtimeSettings?.lookSensitivity
+  ]);
 
   useImperativeHandle(
     ref,

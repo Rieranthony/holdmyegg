@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { defaultRuntimeControlSettings } from "./runtimeControlSettings";
 import {
   aimCameraConfig,
   applyFreeLookDelta,
@@ -77,20 +78,62 @@ describe("free-look helpers", () => {
   it("applies free-look mouse deltas to yaw and pitch", () => {
     const next = applyFreeLookDelta(
       { yaw: 0, pitch: 0 },
-      { deltaX: 40, deltaY: 20 }
+      { deltaX: 40, deltaY: 20 },
+      defaultRuntimeControlSettings
     );
 
-    expect(next.yaw).toBeCloseTo(-0.2, 5);
-    expect(next.pitch).toBeCloseTo(0.08, 5);
+    expect(next.yaw).toBeCloseTo(0.2, 5);
+    expect(next.pitch).toBeCloseTo(-0.08, 5);
   });
 
   it("clamps look pitch into the supported aim range", () => {
     const next = applyFreeLookDelta(
       { yaw: 0, pitch: 0.35 },
-      { deltaX: 0, deltaY: 500 }
+      { deltaX: 0, deltaY: 500 },
+      defaultRuntimeControlSettings
     );
 
-    expect(clampLookPitch(next.pitch)).toBeCloseTo(aimCameraConfig.maxPitch, 5);
+    expect(clampLookPitch(next.pitch)).toBeCloseTo(aimCameraConfig.minPitch, 5);
+  });
+
+  it("scales free-look mouse deltas with the saved sensitivity setting", () => {
+    const next = applyFreeLookDelta(
+      { yaw: 0, pitch: 0 },
+      { deltaX: 40, deltaY: 20 },
+      {
+        ...defaultRuntimeControlSettings,
+        lookSensitivity: 1.5
+      }
+    );
+
+    expect(next.yaw).toBeCloseTo(0.3, 5);
+    expect(next.pitch).toBeCloseTo(-0.12, 5);
+  });
+
+  it("inverts horizontal look when invert x is enabled", () => {
+    const next = applyFreeLookDelta(
+      { yaw: 0, pitch: 0 },
+      { deltaX: 40, deltaY: 0 },
+      {
+        ...defaultRuntimeControlSettings,
+        invertLookX: true
+      }
+    );
+
+    expect(next.yaw).toBeCloseTo(-0.2, 5);
+  });
+
+  it("inverts vertical look when invert y is enabled", () => {
+    const next = applyFreeLookDelta(
+      { yaw: 0, pitch: 0 },
+      { deltaX: 0, deltaY: 20 },
+      {
+        ...defaultRuntimeControlSettings,
+        invertLookY: true
+      }
+    );
+
+    expect(next.pitch).toBeCloseTo(0.08, 5);
   });
 
   it("moves the aim target above the horizon when the player looks up", () => {

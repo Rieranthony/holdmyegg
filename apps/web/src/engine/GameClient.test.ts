@@ -131,6 +131,73 @@ const setNavigatorPlatform = (platform: string) => {
   });
 };
 
+const createReadyRuntimeFrame = (overrides: Record<string, unknown> = {}) => ({
+  tick: 1,
+  time: 0,
+  mode: "explore" as const,
+  localPlayerId: "human-1",
+  hudState: {
+    mode: "explore" as const,
+    localPlayerId: "human-1",
+    localPlayer: {
+      id: "human-1",
+      name: "You",
+      alive: true,
+      grounded: true,
+      mass: 84,
+      maxMass: 300,
+      livesRemaining: 3,
+      maxLives: 3,
+      respawning: false,
+      invulnerableRemaining: 0,
+      stunRemaining: 0
+    },
+    eggStatus: {
+      reason: "ready" as const,
+      hasMatter: true,
+      ready: true,
+      activeCount: 0,
+      maxActiveCount: 2,
+      cost: 42,
+      cooldownRemaining: 0,
+      cooldownDuration: 1.6,
+      canQuickEgg: true,
+      canChargedThrow: true
+    },
+    ranking: [{ id: "human-1", name: "You", alive: true }]
+  },
+  players: [
+    {
+      id: "human-1",
+      name: "You",
+      kind: "human" as const,
+      alive: true,
+      fallingOut: false,
+      grounded: true,
+      mass: 84,
+      livesRemaining: 3,
+      maxLives: 3,
+      respawning: false,
+      invulnerableRemaining: 0,
+      stunRemaining: 0,
+      pushVisualRemaining: 0,
+      spacePhase: "none" as const,
+      spacePhaseRemaining: 0,
+      position: { x: 4, y: 2, z: 5 },
+      velocity: { x: 0, y: 0, z: 0 },
+      facing: { x: 1, z: 0 },
+      jetpackActive: false,
+      eliminatedAt: null
+    }
+  ],
+  eggs: [],
+  eggScatterDebris: [],
+  voxelBursts: [],
+  skyDrops: [],
+  fallingClusters: [],
+  ...overrides
+});
+
 describe("GameClient", () => {
   beforeEach(() => {
     MockWorker.instances.length = 0;
@@ -1152,80 +1219,165 @@ describe("GameClient", () => {
     client.dispose();
   });
 
-  it("binds egg charging to the platform modifier key while keeping the grounded launch flow", () => {
-    setNavigatorPlatform("MacIntel");
-    const macClient = GameClient.mount({
+  it("applies updated runtime control settings to free-look without remounting the client", () => {
+    const client = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 30
+    });
+
+    (client as any).latestFrame = {
+      tick: 1,
+      time: 0,
+      mode: "explore",
+      localPlayerId: "human-1",
+      players: [
+        {
+          id: "human-1",
+          name: "You",
+          kind: "human",
+          alive: true,
+          fallingOut: false,
+          grounded: true,
+          mass: 24,
+          livesRemaining: 3,
+          maxLives: 3,
+          respawning: false,
+          invulnerableRemaining: 0,
+          stunRemaining: 0,
+          pushVisualRemaining: 0,
+          spacePhase: "none",
+          spacePhaseRemaining: 0,
+          position: { x: 4, y: 2, z: 5 },
+          velocity: { x: 0, y: 0, z: 0 },
+          facing: { x: 1, z: 0 },
+          jetpackActive: false,
+          eliminatedAt: null
+        }
+      ],
+      eggs: [],
+      eggScatterDebris: [],
+      voxelBursts: [],
+      skyDrops: [],
+      fallingClusters: []
+    };
+    (client as any).lookYaw = 0;
+    (client as any).lookPitch = 0;
+    (client as any).pendingLookDeltaX = 40;
+    (client as any).pendingLookDeltaY = 20;
+
+    client.setShellState({
+      mode: "explore",
+      runtimeSettings: {
+        lookSensitivity: 1.2,
+        invertLookX: false,
+        invertLookY: false
+      }
+    });
+    (client as any).updateRuntimeCamera(1 / 60);
+
+    expect((client as any).lookYaw).toBeCloseTo(0.24, 5);
+    expect((client as any).lookPitch).toBeCloseTo(-0.096, 5);
+
+    client.dispose();
+  });
+
+  it("binds grounded egg charging to Q and R", () => {
+    const client = GameClient.mount({
       canvas: createCanvas(),
       initialDocument: createDefaultArenaMap(),
       initialMode: "explore",
       matchColorSeed: 33
     });
 
-    (macClient as any).pointerLocked = true;
-    (macClient as any).runtimePaused = false;
-    (macClient as any).getLocalRuntimePlayer = () => ({
-      id: "human-1",
-      alive: true,
-      fallingOut: false,
-      grounded: true,
-      mass: 84,
-      respawning: false,
-      stunRemaining: 0,
-      spacePhase: "none"
+    (client as any).pointerLocked = true;
+    (client as any).runtimePaused = false;
+    (client as any).latestFrame = createReadyRuntimeFrame();
+
+    const qPreventDefault = vi.fn();
+    (client as any).handleKeyDown({
+      code: "KeyQ",
+      preventDefault: qPreventDefault,
+      target: window,
+      metaKey: false,
+      ctrlKey: false
     });
 
-    const macPreventDefault = vi.fn();
-    (macClient as any).handleKeyDown({
-      code: "MetaLeft",
-      preventDefault: macPreventDefault,
-      target: window
+    expect(qPreventDefault).toHaveBeenCalled();
+    expect((client as any).keyboardState.egg).toBe(true);
+    expect((client as any).eggChargeState.active).toBe(true);
+
+    const qReleaseDefault = vi.fn();
+    (client as any).handleKeyUp({
+      code: "KeyQ",
+      preventDefault: qReleaseDefault
     });
 
-    expect(macPreventDefault).toHaveBeenCalled();
-    expect((macClient as any).keyboardState.egg).toBe(true);
-    expect((macClient as any).eggChargeState.active).toBe(true);
+    expect(qReleaseDefault).toHaveBeenCalled();
+    expect((client as any).keyboardState.egg).toBe(false);
+    expect((client as any).eggChargeState.pendingThrow).toBe(true);
 
-    const macReleaseDefault = vi.fn();
-    (macClient as any).handleKeyUp({
-      code: "MetaLeft",
-      preventDefault: macReleaseDefault
+    (client as any).eggChargeState.pendingThrow = false;
+
+    const rPreventDefault = vi.fn();
+    (client as any).handleKeyDown({
+      code: "KeyR",
+      preventDefault: rPreventDefault,
+      target: window,
+      metaKey: false,
+      ctrlKey: false
     });
 
-    expect(macReleaseDefault).toHaveBeenCalled();
-    expect((macClient as any).keyboardState.egg).toBe(false);
-    expect((macClient as any).eggChargeState.pendingThrow).toBe(true);
+    expect(rPreventDefault).toHaveBeenCalled();
+    expect((client as any).eggChargeState.active).toBe(true);
 
-    macClient.dispose();
+    client.dispose();
+  });
 
-    setNavigatorPlatform("Win32");
-    const windowsClient = GameClient.mount({
+  it("no longer launches eggs from modifier keys and suppresses modifier gameplay shortcuts", () => {
+    const client = GameClient.mount({
       canvas: createCanvas(),
       initialDocument: createDefaultArenaMap(),
       initialMode: "explore",
       matchColorSeed: 34
     });
 
-    (windowsClient as any).pointerLocked = true;
-    (windowsClient as any).runtimePaused = false;
-    (windowsClient as any).getLocalRuntimePlayer = () => ({
-      id: "human-1",
-      alive: true,
-      fallingOut: false,
-      grounded: true,
-      mass: 84,
-      respawning: false,
-      stunRemaining: 0,
-      spacePhase: "none"
-    });
+    (client as any).pointerLocked = true;
+    (client as any).runtimePaused = false;
+    (client as any).latestFrame = createReadyRuntimeFrame();
 
-    (windowsClient as any).handleKeyDown({
-      code: "ControlLeft",
+    const modifierPreventDefault = vi.fn();
+    (client as any).handleKeyDown({
+      code: "KeyW",
+      preventDefault: modifierPreventDefault,
+      target: window,
+      metaKey: true,
+      ctrlKey: false
+    });
+    expect(modifierPreventDefault).toHaveBeenCalled();
+
+    (client as any).handleKeyDown({
+      code: "KeyQ",
       preventDefault: vi.fn(),
-      target: window
+      target: window,
+      metaKey: true,
+      ctrlKey: false
     });
-    expect((windowsClient as any).eggChargeState.active).toBe(true);
+    expect((client as any).keyboardState.egg).toBe(false);
+    expect((client as any).eggChargeState.active).toBe(false);
 
-    windowsClient.dispose();
+    (client as any).handleKeyDown({
+      code: "KeyR",
+      preventDefault: vi.fn(),
+      target: window,
+      metaKey: false,
+      ctrlKey: true
+    });
+    expect((client as any).keyboardState.egg).toBe(false);
+    expect((client as any).eggChargeState.active).toBe(false);
+
+    client.dispose();
   });
 
   it("does not start grounded egg charge when egg availability is blocked", () => {
@@ -1256,15 +1408,76 @@ describe("GameClient", () => {
     };
 
     (client as any).handleKeyDown({
-      code: "MetaLeft",
+      code: "KeyQ",
       preventDefault: vi.fn(),
-      target: window
+      target: window,
+      metaKey: false,
+      ctrlKey: false
     });
 
     expect((client as any).keyboardState.egg).toBe(true);
     expect((client as any).eggChargeState.active).toBe(false);
 
     client.dispose();
+  });
+
+  it("triggers matter pulse feedback and updates the chicken message when egg launches fail from low matter", () => {
+    const host = document.createElement("div");
+    const canvas = createCanvas();
+    host.appendChild(canvas);
+    document.body.appendChild(host);
+    const onRuntimeOverlayChange = vi.fn();
+    const client = GameClient.mount({
+      canvas,
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 54,
+      onRuntimeOverlayChange
+    });
+
+    const noMatterFrame = createReadyRuntimeFrame();
+    (noMatterFrame.players[0] as any).mass = 18;
+    (noMatterFrame.hudState!.localPlayer as any).mass = 18;
+    (noMatterFrame.hudState!.eggStatus as any) = {
+      reason: "notEnoughMatter",
+      hasMatter: false,
+      ready: false,
+      activeCount: 0,
+      maxActiveCount: 2,
+      cost: 42,
+      cooldownRemaining: 0,
+      cooldownDuration: 1.6,
+      canQuickEgg: false,
+      canChargedThrow: false
+    };
+
+    (client as any).pointerLocked = true;
+    (client as any).runtimePaused = false;
+    (client as any).latestFrame = noMatterFrame;
+
+    (client as any).handleKeyDown({
+      code: "KeyQ",
+      preventDefault: vi.fn(),
+      target: window,
+      metaKey: false,
+      ctrlKey: false
+    });
+
+    expect(onRuntimeOverlayChange).toHaveBeenLastCalledWith({
+      matterPulseActive: true
+    });
+    expect((client as any).eggChargeState.active).toBe(false);
+    expect(
+      (client as any).resourceBubbleElement?.querySelector(".chicken-taunt__text")?.textContent
+    ).toBe("I need more matter");
+
+    (client as any).applyRuntimeFrame(1 / 60, 2);
+    expect(onRuntimeOverlayChange).toHaveBeenLastCalledWith({
+      matterPulseActive: false
+    });
+
+    client.dispose();
+    host.remove();
   });
 
   it("does not send immediate egg throws when egg availability is blocked", () => {

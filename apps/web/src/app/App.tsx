@@ -13,10 +13,16 @@ import type { GameMode, HudState } from "@out-of-bounds/sim";
 import { ChickenPreview } from "../components/ChickenPreview";
 import { preloadGameCanvas } from "../components/GameCanvasBoundary";
 import { Hud } from "../components/Hud";
+import { RuntimeControlsSettings } from "../components/RuntimeControlsSettings";
 import {
   ShortcutLegend,
   getRuntimeShortcutBindings,
 } from "../components/ShortcutLegend";
+import {
+  loadRuntimeControlSettings,
+  resetRuntimeControlSettings,
+  saveRuntimeControlSettings,
+} from "../data/runtimeControlSettingsStorage";
 import { GameHost, type GameHostHandle } from "../engine/GameHost";
 import {
   blockKindOptions,
@@ -27,9 +33,15 @@ import {
   type PointerCaptureFailureReason,
   type PlayerProfile,
   type RuntimePauseState,
+  type RuntimeOverlayState,
   type ShellMode,
 } from "../engine/types";
 import { chickenPalettes } from "../game/colors";
+import {
+  createDefaultRuntimeControlSettings,
+  normalizeRuntimeControlSettings,
+  type RuntimeControlSettings,
+} from "../game/runtimeControlSettings";
 import { useMapPersistence } from "./useMapPersistence";
 
 const defaultStatus =
@@ -113,6 +125,25 @@ const getModeLabel = (mode: ActiveShellMode) => {
   return mode === "explore" ? "EXPLORE" : "PLAY NPC";
 };
 
+const getRuntimeControlsSummary = (
+  settings: RuntimeControlSettings,
+) => {
+  const directionSummary: string[] = [];
+
+  if (settings.invertLookX) {
+    directionSummary.push("Invert X");
+  }
+  if (settings.invertLookY) {
+    directionSummary.push("Invert Y");
+  }
+
+  return `${settings.lookSensitivity.toFixed(1)}x · ${
+    directionSummary.length > 0
+      ? directionSummary.join(" · ")
+      : "Standard"
+  }`;
+};
+
 interface AppProps {
   initialMode?: ShellMode;
   onOpenSupportWidget?: () => void;
@@ -139,18 +170,23 @@ export function App({
     createDefaultEditorPanelState(createDefaultArenaMap()),
   );
   const [hudState, setHudState] = useState<HudState | null>(null);
+  const [runtimeOverlayState, setRuntimeOverlayState] =
+    useState<RuntimeOverlayState | null>(null);
   const [pauseState, setPauseState] = useState<RuntimePauseState>(
     createDefaultPauseState,
   );
   const [launchState, setLaunchState] = useState<LaunchState | null>(null);
   const [menuLoadToken, setMenuLoadToken] = useState(1);
   const [menuLoading, setMenuLoading] = useState(initialMode === "menu");
+  const [menuControlsOpen, setMenuControlsOpen] = useState(false);
   const [matchColorSeed, setMatchColorSeed] = useState(0);
   const [diagnostics, setDiagnostics] = useState<GameDiagnostics | null>(null);
   const [playerProfile, setPlayerProfile] = useState<PlayerProfile>({
     name: "",
     paletteName: chickenPalettes[0]!.name,
   });
+  const [runtimeControlSettings, setRuntimeControlSettings] =
+    useState<RuntimeControlSettings>(() => loadRuntimeControlSettings());
 
   const updateStatus = useCallback((message: string) => {
     startTransition(() => {
@@ -219,6 +255,12 @@ export function App({
       (palette) => palette.name === playerProfile.paletteName,
     ) ?? chickenPalettes[0]!;
   const selectedPreviewPaletteName = selectedPreviewPalette.name;
+
+  useEffect(() => {
+    if (!isRuntimePlay) {
+      setRuntimeOverlayState(null);
+    }
+  }, [isRuntimePlay]);
 
   const releaseLaunchSequence = useCallback((resumeRuntime: boolean) => {
     clearLaunchTimers();
@@ -292,6 +334,25 @@ export function App({
     },
     [paletteUnlocked],
   );
+
+  const handleRuntimeControlSettingsChange = useCallback(
+    (patch: Partial<RuntimeControlSettings>) => {
+      setRuntimeControlSettings((current) => {
+        const nextSettings = normalizeRuntimeControlSettings({
+          ...current,
+          ...patch,
+        });
+        saveRuntimeControlSettings(nextSettings);
+        return nextSettings;
+      });
+    },
+    [],
+  );
+
+  const handleRuntimeControlSettingsReset = useCallback(() => {
+    resetRuntimeControlSettings();
+    setRuntimeControlSettings(createDefaultRuntimeControlSettings());
+  }, []);
 
   const openRulesFromMenu = useCallback(() => {
     setRulesOrigin("menu");
@@ -491,6 +552,7 @@ export function App({
             onReadyToDisplay={handleMenuReadyToDisplay}
             playerProfile={playerProfile}
             presentation="menu"
+            runtimeSettings={runtimeControlSettings}
           />
         </div>
         <div
@@ -602,7 +664,7 @@ export function App({
                     onClick={openRulesFromMenu}
                     type="button"
                   >
-                    Rules and Controls
+                    Rules / Shortcuts
                   </button>
                   {/* <button
                     className="menu-action menu-action--secondary menu-action--full menu-action--compact"
@@ -612,6 +674,37 @@ export function App({
                     Feedback / bug
                   </button> */}
                 </div>
+                <section className="menu-controls-panel">
+                  <button
+                    aria-expanded={menuControlsOpen}
+                    className="menu-controls-panel__toggle"
+                    onClick={() => setMenuControlsOpen((current) => !current)}
+                    type="button"
+                  >
+                    <span className="menu-controls-panel__copy">
+                      <span className="menu-controls-panel__title">
+                        Controls
+                      </span>
+                      <span className="menu-controls-panel__summary">
+                        Saved locally ·{" "}
+                        {getRuntimeControlsSummary(runtimeControlSettings)}
+                      </span>
+                    </span>
+                    <span className="menu-controls-panel__state">
+                      {menuControlsOpen ? "Hide" : "Edit"}
+                    </span>
+                  </button>
+                  {menuControlsOpen && (
+                    <div className="menu-controls-panel__body">
+                      <RuntimeControlsSettings
+                        onReset={handleRuntimeControlSettingsReset}
+                        onSettingsChange={handleRuntimeControlSettingsChange}
+                        settings={runtimeControlSettings}
+                        variant="menu"
+                      />
+                    </div>
+                  )}
+                </section>
                 <p className="menu-credit">
                   Made by{" "}
                   <a
@@ -660,8 +753,10 @@ export function App({
             onEditorStateChange={handleEditorStateChange}
             onHudStateChange={setHudState}
             onPauseStateChange={setPauseState}
+            onRuntimeOverlayChange={setRuntimeOverlayState}
             onStatus={updateStatus}
             ref={hostRef}
+            runtimeSettings={runtimeControlSettings}
           />
           {launchState && (
             <LaunchOverlay
@@ -671,11 +766,19 @@ export function App({
           )}
           {isRulesFromPause && <RulesAndControlsScreen onBack={closeRules} />}
           {!launchState && !isRulesFromPause && (
-            <Hud hudState={hudState} mode={activePlayMode} />
+            <Hud
+              hudState={hudState}
+              mode={activePlayMode}
+              overlayState={runtimeOverlayState}
+            />
           )}
           {pauseState.paused && !launchState && !isRulesFromPause && (
             <RuntimePauseOverlay
               hasStarted={pauseState.hasStarted}
+              onRuntimeControlSettingsChange={
+                handleRuntimeControlSettingsChange
+              }
+              onRuntimeControlSettingsReset={handleRuntimeControlSettingsReset}
               onResume={() => hostRef.current?.resumeRuntime()}
               onShowRules={openRulesFromPause}
               onReturnToMenu={() => {
@@ -685,6 +788,7 @@ export function App({
                 pauseState.pointerCaptureFailureReason
               }
               pointerCapturePending={pauseState.pointerCapturePending}
+              runtimeControlSettings={runtimeControlSettings}
             />
           )}
         </div>
@@ -922,6 +1026,7 @@ export function App({
             onPauseStateChange={setPauseState}
             onStatus={updateStatus}
             ref={hostRef}
+            runtimeSettings={runtimeControlSettings}
           />
           <Hud hudState={hudState} mode="editor" />
           {import.meta.env.DEV && diagnostics && (
@@ -982,7 +1087,7 @@ function RulesAndControlsScreen({ onBack }: { onBack: () => void }) {
         <div className="rules-screen__header">
           <div>
             <p className="panel-kicker">HoldMyEgg</p>
-            <h1>Rules and Controls</h1>
+            <h1>Rules / Shortcuts</h1>
             <p>
               Last chicken standing. Harvest cubes, spend matter, and survive
               the mess you make.
@@ -1012,7 +1117,7 @@ function RulesAndControlsScreen({ onBack }: { onBack: () => void }) {
 
         <section className="rules-screen__section rules-screen__section--controls">
           <div className="rules-screen__section-copy">
-            <h2>Controls</h2>
+            <h2>Shortcuts</h2>
             <p>Shortcuts are the same in Explore and PLAY NPC.</p>
           </div>
           <ShortcutLegend bindings={getRuntimeShortcutBindings()} />
@@ -1089,19 +1194,28 @@ function LaunchOverlay({
 
 function RuntimePauseOverlay({
   hasStarted,
+  onRuntimeControlSettingsChange,
+  onRuntimeControlSettingsReset,
   onResume,
   onShowRules,
   onReturnToMenu,
   pointerCaptureFailureReason,
   pointerCapturePending,
+  runtimeControlSettings,
 }: {
   hasStarted: boolean;
+  onRuntimeControlSettingsChange: (
+    patch: Partial<RuntimeControlSettings>,
+  ) => void;
+  onRuntimeControlSettingsReset: () => void;
   onResume: () => void;
   onShowRules: () => void;
   onReturnToMenu: () => void;
   pointerCaptureFailureReason: PointerCaptureFailureReason | null;
   pointerCapturePending: boolean;
+  runtimeControlSettings: RuntimeControlSettings;
 }) {
+  const [showControls, setShowControls] = useState(false);
   const isFirstCapture = !hasStarted;
   const captureFailed = pointerCaptureFailureReason !== null;
   const primaryLabel = pointerCapturePending
@@ -1155,10 +1269,18 @@ function RuntimePauseOverlay({
             </button>
             <button
               className="runtime-pause-strip__button"
+              aria-pressed={showControls}
+              onClick={() => setShowControls((current) => !current)}
+              type="button"
+            >
+              Controls
+            </button>
+            <button
+              className="runtime-pause-strip__button"
               onClick={onShowRules}
               type="button"
             >
-              Rules and Controls
+              Rules / Shortcuts
             </button>
             <button
               className="runtime-pause-strip__button"
@@ -1169,6 +1291,17 @@ function RuntimePauseOverlay({
             </button>
           </div>
         </div>
+        {showControls && (
+          <div className="runtime-pause-strip__controls-shell">
+            <p className="runtime-pause-strip__label">Controls</p>
+            <RuntimeControlsSettings
+              onReset={onRuntimeControlSettingsReset}
+              onSettingsChange={onRuntimeControlSettingsChange}
+              settings={runtimeControlSettings}
+              variant="pause"
+            />
+          </div>
+        )}
         <div className="runtime-pause-strip__commands-shell">
           <p className="runtime-pause-strip__label">Commands</p>
           <ShortcutLegend

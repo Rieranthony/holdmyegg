@@ -33,12 +33,17 @@ import {
   getYawFromPlanarVector,
   stepAngleToward
 } from "../game/camera";
+import {
+  createDefaultRuntimeControlSettings,
+  normalizeRuntimeControlSettings,
+  type RuntimeControlSettings
+} from "../game/runtimeControlSettings";
 import { cloudPresets, getVoxelCloudPosition, type VoxelCloudPreset } from "../game/clouds";
 import { getPlayerBlobShadowState } from "../game/cheapShadows";
 import { createChickenAvatarRig, type ChickenAvatarRig } from "../game/chickenModel";
 import { getChickenPalette, type ChickenPaletteName } from "../game/colors";
 import { getEggVisualState } from "../game/eggs";
-import { detectEggLaunchPlatform, isEggLaunchKeyCode } from "../game/eggLaunchControls";
+import { isEggLaunchKeyCode } from "../game/eggLaunchControls";
 import { getFallingClusterVisualState } from "../game/fallingClusters";
 import { buildPlayerCommand, initialKeyboardInputState, type KeyboardInputState } from "../game/input";
 import { configureDynamicInstancedMesh, finalizeDynamicInstancedMesh, finalizeStaticInstancedMesh } from "../game/instancedMeshes";
@@ -98,6 +103,7 @@ import type {
   EditorPanelState,
   GameDiagnostics,
   PointerCaptureFailureReason,
+  RuntimeOverlayState,
   RuntimeRenderFrame,
   RuntimePauseState,
   ShellPresentation,
@@ -108,6 +114,7 @@ interface GameClientCallbacks {
   onDiagnostics?: (diagnostics: GameDiagnostics) => void;
   onEditorStateChange?: (editorState: EditorPanelState) => void;
   onHudStateChange?: (hudState: HudState | null) => void;
+  onRuntimeOverlayChange?: (state: RuntimeOverlayState | null) => void;
   onPauseStateChange?: (state: RuntimePauseState) => void;
   onReadyToDisplay?: () => void;
   onStatus?: (message: string) => void;
@@ -122,6 +129,7 @@ interface GameClientMountOptions extends GameClientCallbacks {
   localPlayerPaletteName?: ChickenPaletteName | null;
   matchColorSeed: number;
   presentation?: ShellPresentation;
+  runtimeSettings?: RuntimeControlSettings;
 }
 
 type GameShellIntent =
@@ -243,6 +251,24 @@ const SPEED_TRACE_MIN_AIR_SPEED = 3.6;
 const SPACE_BLEND_DAMPING = 4.4;
 const SPACE_STAR_COUNT = 220;
 const POINTER_CAPTURE_TIMEOUT_MS = 1_000;
+const MATTER_PULSE_DURATION = 0.72;
+const MATTER_BUBBLE_DURATION = 1.1;
+const MATTER_FEEDBACK_COOLDOWN = 0.5;
+const modifierSensitiveRuntimeKeyCodes = new Set([
+  "KeyW",
+  "KeyA",
+  "KeyS",
+  "KeyD",
+  "ArrowUp",
+  "ArrowDown",
+  "ArrowLeft",
+  "ArrowRight",
+  "KeyQ",
+  "KeyR",
+  "KeyE",
+  "KeyF",
+  "Space"
+]);
 const voxelFxProfiles = ["earthSurface", "earthSubsoil", "darkness"] as const satisfies readonly BlockRenderProfile[];
 const speedTraceLayouts = [
   { angleDeg: 164, screenRadius: 0.68, scaleY: 1.38, width: 0.96, opacity: 0.42, travel: 0.2, speed: 0.94, phase: 0.06 },
@@ -636,7 +662,6 @@ export class GameClient {
   private readonly playerVisuals = new Map<string, PlayerVisual>();
   private readonly eggVisuals = new Map<string, EggVisual>();
   private readonly eggScatterMeshes = new Map<BlockRenderProfile, THREE.InstancedMesh>();
-  private readonly eggLaunchPlatform = detectEggLaunchPlatform();
   private readonly harvestBurstMeshes = new Map<BlockRenderProfile, DynamicOpacityMeshResource>();
   private readonly skyDropVisuals = new Map<string, SkyDropVisual>();
   private readonly clusterVisuals = new Map<string, ClusterVisual>();
@@ -644,6 +669,7 @@ export class GameClient {
   private readonly currentLookTarget = new THREE.Vector3();
   private readonly desiredLookTarget = new THREE.Vector3();
   private readonly desiredCameraPosition = new THREE.Vector3();
+  private readonly resourceBubbleScreenPosition = new THREE.Vector3();
   private readonly cloudVisuals: CloudVisual[] = [];
   private readonly spacePlanetVisuals: SpacePlanetVisual[] = [];
   private readonly cloudMainMaterial = new THREE.MeshStandardMaterial({
@@ -691,6 +717,7 @@ export class GameClient {
     pendingThrowPitch: 0,
     releaseRemaining: 0
   };
+  private readonly activeEggKeyCodes = new Set<string>();
 
   private animationFrameId: number | null = null;
   private mode: ActiveShellMode;
@@ -722,6 +749,7 @@ export class GameClient {
   private initialSpawnStyle: SimulationInitialSpawnStyle;
   private localPlayerName: string | undefined;
   private localPlayerPaletteName: ChickenPaletteName | null;
+  private runtimeControlSettings: RuntimeControlSettings;
   private eggExplosionBurstMesh: DynamicOpacityMeshResource | null = null;
   private eggExplosionShockwaveMesh: DynamicOpacityMeshResource | null = null;
   private focusedTarget: { normal: { x: number; y: number; z: number }; voxel: { x: number; y: number; z: number } } | null = null;
@@ -729,6 +757,11 @@ export class GameClient {
   private baseFogNear = 36;
   private baseFogFar = 120;
   private spaceBlend = 0;
+  private matterPulseUntil = 0;
+  private matterBubbleUntil = 0;
+  private matterFeedbackLockedUntil = 0;
+  private lastRuntimeOverlayState: RuntimeOverlayState | null = null;
+  private resourceBubbleElement: HTMLDivElement | null = null;
 
   private constructor({
     canvas,
@@ -739,6 +772,7 @@ export class GameClient {
     localPlayerPaletteName = null,
     matchColorSeed,
     presentation = "default",
+    runtimeSettings,
     ...callbacks
   }: GameClientMountOptions) {
     this.canvas = canvas;
@@ -749,6 +783,9 @@ export class GameClient {
     this.localPlayerPaletteName = localPlayerPaletteName;
     this.matchColorSeed = matchColorSeed;
     this.presentation = presentation;
+    this.runtimeControlSettings = runtimeSettings
+      ? normalizeRuntimeControlSettings(runtimeSettings)
+      : createDefaultRuntimeControlSettings();
     this.worldDocument = normalizeArenaBudgetMapDocument(initialDocument ?? createDefaultArenaMap());
     this.worker = new Worker(new URL("./worker.ts", import.meta.url), {
       type: "module"
@@ -758,6 +795,7 @@ export class GameClient {
       antialias: true,
       powerPreference: "high-performance"
     });
+    this.resourceBubbleElement = this.createResourceBubbleElement();
 
     this.focusOutline = new THREE.LineSegments(
       new THREE.EdgesGeometry(new THREE.BoxGeometry(1.04, 1.04, 1.04)),
@@ -786,18 +824,142 @@ export class GameClient {
     this.animationFrameId = requestAnimationFrame(this.animate);
   }
 
+  private createResourceBubbleElement() {
+    const host = this.canvas.parentElement;
+    if (!(host instanceof HTMLElement)) {
+      return null;
+    }
+
+    const bubble = document.createElement("div");
+    bubble.setAttribute("aria-hidden", "true");
+    bubble.className = "chicken-taunt game-host__resource-bubble";
+    bubble.innerHTML = [
+      '<span class="chicken-taunt__text"></span>',
+      '<span class="chicken-taunt__tail"></span>',
+      '<span class="chicken-taunt__tail-inner"></span>'
+    ].join("");
+    bubble.style.display = "none";
+    host.appendChild(bubble);
+    return bubble;
+  }
+
+  private updateResourceBubbleMessage(message: string | null) {
+    if (!this.resourceBubbleElement) {
+      return;
+    }
+
+    const textElement = this.resourceBubbleElement.querySelector(".chicken-taunt__text");
+    if (textElement) {
+      textElement.textContent = message ?? "";
+    }
+  }
+
+  private hideResourceBubble() {
+    if (!this.resourceBubbleElement) {
+      return;
+    }
+
+    this.resourceBubbleElement.style.display = "none";
+  }
+
+  private emitRuntimeOverlayState(force = false, elapsedTime = this.clock.elapsedTime) {
+    const matterPulseActive = elapsedTime < this.matterPulseUntil;
+    const nextState: RuntimeOverlayState = {
+      matterPulseActive
+    };
+    const unchanged =
+      !force &&
+      this.lastRuntimeOverlayState !== null &&
+      this.lastRuntimeOverlayState.matterPulseActive === nextState.matterPulseActive;
+
+    if (unchanged) {
+      return;
+    }
+
+    this.lastRuntimeOverlayState = nextState;
+    this.callbacks.onRuntimeOverlayChange?.(nextState);
+  }
+
+  private clearEggInputState() {
+    this.activeEggKeyCodes.clear();
+    this.keyboardState.egg = false;
+    this.previousEggPressed = false;
+  }
+
+  private resetRuntimeFeedback() {
+    this.matterPulseUntil = 0;
+    this.matterBubbleUntil = 0;
+    this.matterFeedbackLockedUntil = 0;
+    this.hideResourceBubble();
+    this.emitRuntimeOverlayState(true);
+  }
+
+  private triggerNotEnoughMatterFeedback() {
+    const elapsedTime = this.clock.elapsedTime;
+    if (elapsedTime < this.matterFeedbackLockedUntil) {
+      return;
+    }
+
+    this.matterPulseUntil = elapsedTime + MATTER_PULSE_DURATION;
+    this.matterBubbleUntil = elapsedTime + MATTER_BUBBLE_DURATION;
+    this.matterFeedbackLockedUntil = elapsedTime + MATTER_FEEDBACK_COOLDOWN;
+    this.updateResourceBubbleMessage("I need more matter");
+    this.emitRuntimeOverlayState(true, elapsedTime);
+  }
+
+  private updateLocalResourceBubble(localPlayer: RuntimePlayerState | null, elapsedTime: number) {
+    if (
+      !this.resourceBubbleElement ||
+      !localPlayer ||
+      !isRuntimeMode(this.mode) ||
+      this.runtimePaused ||
+      !this.pointerLocked ||
+      elapsedTime >= this.matterBubbleUntil
+    ) {
+      this.hideResourceBubble();
+      return;
+    }
+
+    this.camera.updateMatrixWorld();
+    this.resourceBubbleScreenPosition.set(
+      localPlayer.position.x + localPlayer.facing.x * 0.7,
+      localPlayer.position.y + 1.95,
+      localPlayer.position.z + localPlayer.facing.z * 0.7
+    );
+    this.resourceBubbleScreenPosition.project(this.camera);
+
+    if (
+      this.resourceBubbleScreenPosition.z < -1 ||
+      this.resourceBubbleScreenPosition.z > 1
+    ) {
+      this.hideResourceBubble();
+      return;
+    }
+
+    const x = (this.resourceBubbleScreenPosition.x * 0.5 + 0.5) * this.canvas.clientWidth;
+    const y = (-this.resourceBubbleScreenPosition.y * 0.5 + 0.5) * this.canvas.clientHeight;
+    this.resourceBubbleElement.style.display = "inline-flex";
+    this.resourceBubbleElement.style.left = `${x}px`;
+    this.resourceBubbleElement.style.top = `${y}px`;
+  }
+
   setShellState(nextState: {
     mode: ActiveShellMode;
     initialSpawnStyle?: SimulationInitialSpawnStyle;
     localPlayerName?: string;
     localPlayerPaletteName?: ChickenPaletteName | null;
     presentation?: ShellPresentation;
+    runtimeSettings?: RuntimeControlSettings;
   }) {
     const nextPresentation = nextState.presentation ?? this.presentation;
     const nextInitialSpawnStyle = nextState.initialSpawnStyle ?? this.initialSpawnStyle;
     const nextLocalPlayerName = "localPlayerName" in nextState ? nextState.localPlayerName : this.localPlayerName;
     const nextLocalPlayerPaletteName =
       "localPlayerPaletteName" in nextState ? nextState.localPlayerPaletteName ?? null : this.localPlayerPaletteName;
+    const nextRuntimeControlSettings =
+      "runtimeSettings" in nextState && nextState.runtimeSettings
+        ? normalizeRuntimeControlSettings(nextState.runtimeSettings)
+        : this.runtimeControlSettings;
     const modeChanged = this.mode !== nextState.mode;
     const presentationChanged = this.presentation !== nextPresentation;
     const localPaletteChanged = this.localPlayerPaletteName !== nextLocalPlayerPaletteName;
@@ -806,6 +968,7 @@ export class GameClient {
     this.localPlayerPaletteName = nextLocalPlayerPaletteName;
     this.presentation = nextPresentation;
     this.initialSpawnStyle = nextInitialSpawnStyle;
+    this.runtimeControlSettings = nextRuntimeControlSettings;
 
     if (!modeChanged) {
       if ((presentationChanged || localPaletteChanged) && this.mode === "editor") {
@@ -967,6 +1130,8 @@ export class GameClient {
     (this.focusOutline.material as THREE.Material).dispose();
     this.focusGhost.geometry.dispose();
     (this.focusGhost.material as THREE.Material).dispose();
+    this.resourceBubbleElement?.remove();
+    this.resourceBubbleElement = null;
     this.renderer.dispose();
   }
 
@@ -1160,6 +1325,7 @@ export class GameClient {
           return;
         case "frame":
           this.latestFrame = message.frame;
+          this.callbacks.onHudStateChange?.(message.frame.hudState);
           return;
         case "hud_state":
           this.callbacks.onHudStateChange?.(message.hudState);
@@ -1279,7 +1445,8 @@ export class GameClient {
     for (const descriptor of spacePlanetDescriptors) {
       const group = new THREE.Group();
       const [offsetX, offsetY, offsetZ] = descriptor.offset;
-      const { mainMatrices, shadeMatrices } = buildVoxelPlanetMatrices(...descriptor.radius);
+      const [radiusX, radiusY, radiusZ] = descriptor.radius;
+      const { mainMatrices, shadeMatrices } = buildVoxelPlanetMatrices(radiusX, radiusY, radiusZ);
       const mainMaterial = new THREE.MeshBasicMaterial({
         color: descriptor.colors[0],
         transparent: true,
@@ -1510,6 +1677,7 @@ export class GameClient {
     this.skyDropVisuals.clear();
     this.clusterVisuals.clear();
     this.cancelEggCharge();
+    this.resetRuntimeFeedback();
     for (const mesh of this.eggScatterMeshes.values()) {
       finalizeDynamicInstancedMesh(mesh, 0);
     }
@@ -1535,9 +1703,14 @@ export class GameClient {
       return null;
     }
 
+    if (frame?.hudState?.eggStatus) {
+      return frame.hudState.eggStatus;
+    }
+
     return getHudEggStatus({
       localPlayerId,
       localPlayerMass: localPlayer.mass,
+      localPlayer,
       eggs: frame?.eggs ?? [],
       eggCost: EGG_COST,
       maxActiveEggsPerPlayer: MAX_ACTIVE_EGGS_PER_PLAYER,
@@ -1552,6 +1725,7 @@ export class GameClient {
         ? getHudEggStatus({
             localPlayerId: localPlayer.id,
             localPlayerMass: localPlayer.mass,
+            localPlayer,
             eggs: this.latestFrame?.eggs ?? [],
             eggCost: EGG_COST,
             maxActiveEggsPerPlayer: MAX_ACTIVE_EGGS_PER_PLAYER,
@@ -1559,17 +1733,7 @@ export class GameClient {
           })
         : null)
   ) {
-    return (
-      localPlayer !== null &&
-      localPlayer.alive &&
-      !localPlayer.fallingOut &&
-      !localPlayer.respawning &&
-      localPlayer.grounded &&
-      localPlayer.stunRemaining <= 0 &&
-      localPlayer.spacePhase !== "float" &&
-      localPlayer.spacePhase !== "reentry" &&
-      eggStatus?.ready === true
-    );
+    return localPlayer !== null && eggStatus?.canChargedThrow === true;
   }
 
   private beginEggCharge() {
@@ -1758,21 +1922,42 @@ export class GameClient {
       return;
     }
 
-    if (isEggLaunchKeyCode(event.code, this.eggLaunchPlatform)) {
+    if (
+      isRuntimeMode(this.mode) &&
+      this.pointerLocked &&
+      (event.metaKey || event.ctrlKey) &&
+      modifierSensitiveRuntimeKeyCodes.has(event.code)
+    ) {
       event.preventDefault();
-      if (this.keyboardState.egg) {
+    }
+
+    if (isEggLaunchKeyCode(event.code)) {
+      event.preventDefault();
+      if (event.metaKey || event.ctrlKey) {
         return;
       }
+      if (this.activeEggKeyCodes.has(event.code)) {
+        return;
+      }
+
+      this.activeEggKeyCodes.add(event.code);
       this.keyboardState.egg = true;
       const localPlayer = this.getLocalRuntimePlayer();
       const eggStatus = this.getLocalEggStatus();
+
       if (
         isRuntimeMode(this.mode) &&
         this.pointerLocked &&
         !this.runtimePaused &&
-        this.canStartGroundEggCharge(localPlayer, eggStatus)
+        this.activeEggKeyCodes.size === 1
       ) {
-        this.beginEggCharge();
+        if (eggStatus?.reason === "notEnoughMatter") {
+          this.triggerNotEnoughMatterFeedback();
+        }
+
+        if (this.canStartGroundEggCharge(localPlayer, eggStatus)) {
+          this.beginEggCharge();
+        }
       }
       return;
     }
@@ -1811,10 +1996,11 @@ export class GameClient {
   };
 
   private readonly handleKeyUp = (event: KeyboardEvent) => {
-    if (isEggLaunchKeyCode(event.code, this.eggLaunchPlatform)) {
+    if (isEggLaunchKeyCode(event.code)) {
       event.preventDefault();
-      this.keyboardState.egg = false;
-      if (this.eggChargeState.active) {
+      this.activeEggKeyCodes.delete(event.code);
+      this.keyboardState.egg = this.activeEggKeyCodes.size > 0;
+      if (!this.keyboardState.egg && this.eggChargeState.active) {
         this.queueGroundEggThrow();
       }
       return;
@@ -1860,8 +2046,7 @@ export class GameClient {
       if (!locked) {
         this.resetPointerCaptureState();
         this.pendingResumeAfterPointerLock = false;
-        this.keyboardState.egg = false;
-        this.previousEggPressed = false;
+        this.clearEggInputState();
         this.cancelEggCharge();
         this.setRuntimePaused(true);
         return;
@@ -1905,9 +2090,9 @@ export class GameClient {
   setRuntimePaused(paused: boolean) {
     this.runtimePaused = paused;
     if (paused) {
-      this.keyboardState.egg = false;
-      this.previousEggPressed = false;
+      this.clearEggInputState();
       this.cancelEggCharge();
+      this.resetRuntimeFeedback();
     }
     this.worker.postMessage({
       type: "set_runtime_paused",
@@ -2005,6 +2190,8 @@ export class GameClient {
       this.updateSpeedTraces(null, delta, elapsedTime);
       this.updateSkyEnvironment(null, delta, elapsedTime);
       this.hideEggTrajectoryPreview();
+      this.updateLocalResourceBubble(null, elapsedTime);
+      this.emitRuntimeOverlayState(false, elapsedTime);
       this.focusOutline.visible = false;
       this.focusGhost.visible = false;
     }
@@ -2044,7 +2231,8 @@ export class GameClient {
         {
           deltaX: this.pendingLookDeltaX,
           deltaY: this.pendingLookDeltaY
-        }
+        },
+        this.runtimeControlSettings
       );
       this.lookYaw = nextLook.yaw;
       this.lookPitch = nextLook.pitch;
@@ -2219,11 +2407,11 @@ export class GameClient {
     nextCommand.destroy = this.destroyQueued;
     nextCommand.place = this.keyboardState.build && !this.previousBuildPressed;
     const immediateEggPress =
-      eggStatus?.ready === true &&
+      eggStatus?.canQuickEgg === true &&
       this.keyboardState.egg &&
       !this.previousEggPressed &&
       !this.eggChargeState.active &&
-      !this.canStartGroundEggCharge(localPlayer, eggStatus);
+      eggStatus.canChargedThrow !== true;
     nextCommand.layEgg = this.eggChargeState.pendingThrow || immediateEggPress;
     nextCommand.eggCharge = this.eggChargeState.pendingThrow ? this.eggChargeState.pendingThrowCharge : 0;
     nextCommand.eggPitch = this.eggChargeState.pendingThrow ? this.eggChargeState.pendingThrowPitch : 0;
@@ -2260,6 +2448,8 @@ export class GameClient {
       this.updateSpeedTraces(null, delta, elapsedTime);
       this.updateSkyEnvironment(null, delta, elapsedTime);
       this.updateEggLaunchPreview(null, elapsedTime);
+      this.updateLocalResourceBubble(null, elapsedTime);
+      this.emitRuntimeOverlayState(false, elapsedTime);
       return;
     }
 
@@ -2270,6 +2460,8 @@ export class GameClient {
     this.updateSpeedTraces(localPlayer, delta, elapsedTime);
     this.updateSkyEnvironment(localPlayer, delta, elapsedTime);
     this.updateEggLaunchPreview(localPlayer, elapsedTime);
+    this.updateLocalResourceBubble(localPlayer, elapsedTime);
+    this.emitRuntimeOverlayState(false, elapsedTime);
     this.syncEggs(frame.eggs, elapsedTime);
     this.syncEggScatterDebris(frame.eggScatterDebris ?? []);
     this.syncVoxelBursts(frame.voxelBursts ?? []);

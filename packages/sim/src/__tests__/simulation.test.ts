@@ -176,13 +176,16 @@ describe("OutOfBoundsSimulation", () => {
     expect("map" in matchState).toBe(false);
     expect(hudState.localPlayer?.id).toBe(localPlayerId);
     expect(hudState.eggStatus).toEqual({
+      reason: "ready",
       hasMatter: true,
       ready: true,
       activeCount: 0,
       maxActiveCount: simulation.config.maxActiveEggsPerPlayer,
       cost: simulation.config.eggCost,
       cooldownRemaining: 0,
-      cooldownDuration: simulation.config.eggFuseDuration
+      cooldownDuration: simulation.config.eggFuseDuration,
+      canQuickEgg: true,
+      canChargedThrow: true
     });
     expect(hudState.ranking.length).toBe(matchState.ranking.length);
     expect(playerState?.id).toBe(localPlayerId);
@@ -195,13 +198,38 @@ describe("OutOfBoundsSimulation", () => {
     getInternalPlayer(simulation, localPlayerId).mass = simulation.config.eggCost - 1;
 
     expect(simulation.getHudState().eggStatus).toEqual({
+      reason: "notEnoughMatter",
       hasMatter: false,
       ready: false,
       activeCount: 0,
       maxActiveCount: simulation.config.maxActiveEggsPerPlayer,
       cost: simulation.config.eggCost,
       cooldownRemaining: 0,
-      cooldownDuration: simulation.config.eggFuseDuration
+      cooldownDuration: simulation.config.eggFuseDuration,
+      canQuickEgg: false,
+      canChargedThrow: false
+    });
+  });
+
+  it("reports egg hud state as blocked while the player is stunned even with matter ready", () => {
+    const simulation = createTestSimulation("explore");
+    const localPlayerId = simulation.getLocalPlayerId()!;
+    advanceUntilGrounded(simulation, localPlayerId);
+    const localPlayer = getInternalPlayer(simulation, localPlayerId);
+    localPlayer.mass = simulation.config.eggCost + 20;
+    localPlayer.stunRemaining = 0.6;
+
+    expect(simulation.getHudState().eggStatus).toEqual({
+      reason: "stateBlocked",
+      hasMatter: true,
+      ready: false,
+      activeCount: 0,
+      maxActiveCount: simulation.config.maxActiveEggsPerPlayer,
+      cost: simulation.config.eggCost,
+      cooldownRemaining: 0,
+      cooldownDuration: simulation.config.eggFuseDuration,
+      canQuickEgg: false,
+      canChargedThrow: false
     });
   });
 
@@ -1231,12 +1259,15 @@ describe("OutOfBoundsSimulation", () => {
 
     expect(simulation.getHudState().eggStatus).toEqual(
       expect.objectContaining({
+        reason: "cooldown",
         hasMatter: true,
         ready: false,
         activeCount: 1,
         maxActiveCount: 1,
         cost: 15,
-        cooldownDuration: 999
+        cooldownDuration: 999,
+        canQuickEgg: false,
+        canChargedThrow: false
       })
     );
     expect(simulation.getHudState().eggStatus?.cooldownRemaining).toBeCloseTo(999 - 1 / simulation.config.tickRate, 4);

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { HudState, OutOfBoundsSimulation } from "@out-of-bounds/sim";
+import type { RuntimeOverlayState } from "../engine/types";
 import type { ActiveMode } from "./GameCanvas";
 
 const getModeLabel = (mode: ActiveMode) => (mode === "playNpc" ? "PLAY NPC" : mode.toUpperCase());
@@ -34,13 +35,16 @@ const areHudStatesEqual = (left: HudState, right: HudState) => {
       return false;
     }
   } else if (
+    left.eggStatus.reason !== right.eggStatus.reason ||
     left.eggStatus.hasMatter !== right.eggStatus.hasMatter ||
     left.eggStatus.ready !== right.eggStatus.ready ||
     left.eggStatus.activeCount !== right.eggStatus.activeCount ||
     left.eggStatus.maxActiveCount !== right.eggStatus.maxActiveCount ||
     left.eggStatus.cost !== right.eggStatus.cost ||
     left.eggStatus.cooldownRemaining !== right.eggStatus.cooldownRemaining ||
-    left.eggStatus.cooldownDuration !== right.eggStatus.cooldownDuration
+    left.eggStatus.cooldownDuration !== right.eggStatus.cooldownDuration ||
+    left.eggStatus.canQuickEgg !== right.eggStatus.canQuickEgg ||
+    left.eggStatus.canChargedThrow !== right.eggStatus.canChargedThrow
   ) {
     return false;
   }
@@ -55,14 +59,28 @@ const areHudStatesEqual = (left: HudState, right: HudState) => {
   });
 };
 
+const getEggCardLabel = (hudState: NonNullable<HudState["eggStatus"]>) => {
+  if (hudState.reason === "ready") {
+    return "Egg ready!";
+  }
+
+  if (hudState.reason === "notEnoughMatter") {
+    return "Need matter";
+  }
+
+  return "Egg loading";
+};
+
 export function Hud({
   runtime,
   mode,
-  hudState: externalHudState
+  hudState: externalHudState,
+  overlayState = null
 }: {
   runtime?: OutOfBoundsSimulation;
   mode: ActiveMode;
   hudState?: HudState | null;
+  overlayState?: RuntimeOverlayState | null;
 }) {
   const [hudState, setHudState] = useState(() => externalHudState ?? runtime?.getHudState() ?? null);
 
@@ -115,27 +133,43 @@ export function Hud({
           ? "Grounded"
           : "Airborne";
   const hasRanking = hudState.ranking.length > 1;
-  const showEggStatus = eggStatus?.hasMatter ?? false;
-  const eggMeterProgress = eggStatus?.ready
-    ? 1
-    : eggStatus && eggStatus.cooldownDuration > 0
+  const eggMeterProgress = eggStatus
+    ? eggStatus.cooldownRemaining > 0 && eggStatus.cooldownDuration > 0
       ? 1 - Math.max(0, Math.min(1, eggStatus.cooldownRemaining / eggStatus.cooldownDuration))
-      : 0;
+      : 1
+    : 0;
   const eggMeterWidth = `${eggMeterProgress * 100}%`;
+  const matterMeterClassName = [
+    "meter",
+    "hud-meter",
+    overlayState?.matterPulseActive ? "hud-meter--pulse" : ""
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   return (
     <div className="hud">
-      {showEggStatus && eggStatus && (
+      {eggStatus && (
         <section
           aria-label="Egg status"
-          className="hud-egg-status"
-          data-testid="hud-egg-status"
+          className={`hud-egg-card hud-egg-card--${eggStatus.reason}`}
+          data-state={eggStatus.reason}
+          data-testid="hud-egg-card"
         >
-          <div className="hud-egg-status__row">
-            <span className="hud-egg-status__label">{eggStatus.ready ? "Egg ready!" : "Egg loading"}</span>
-            <span className="hud-egg-status__meta">
+          <div className="hud-egg-card__row">
+            <span className="hud-egg-card__label">{getEggCardLabel(eggStatus)}</span>
+            <span className="hud-egg-card__meta">
               {eggStatus.activeCount} / {eggStatus.maxActiveCount}
             </span>
+          </div>
+          <div
+            aria-hidden="true"
+            className="hud-egg-card__shell"
+            data-testid="hud-egg-shell"
+          >
+            <span className="hud-egg-card__cap" />
+            <span className="hud-egg-card__middle" />
+            <span className="hud-egg-card__base" />
           </div>
           <div className="meter hud-egg-meter">
             <div
@@ -161,7 +195,7 @@ export function Hud({
         </div>
         <div className="hud-status__row hud-status__row--matter">
           <span className="hud-inline-label">Matter</span>
-          <div className="meter hud-meter">
+          <div className={matterMeterClassName} data-testid="hud-matter-meter">
             <div
               className="meter-fill"
               style={{ width: massWidth }}

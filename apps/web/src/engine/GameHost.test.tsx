@@ -2,6 +2,7 @@ import { createRef } from "react";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDefaultArenaMap } from "@out-of-bounds/map";
+import type { RuntimeControlSettings } from "../game/runtimeControlSettings";
 import type { GameHostHandle } from "./GameHost";
 import type { ActiveShellMode } from "./types";
 
@@ -169,6 +170,59 @@ describe("GameHost", () => {
         presentation: "default"
       });
     });
+  });
+
+  it("forwards runtime settings through mount and live shell updates without remounting", async () => {
+    const initialDocument = createDefaultArenaMap();
+    const initialRuntimeSettings: RuntimeControlSettings = {
+      lookSensitivity: 1.4,
+      invertLookX: true,
+      invertLookY: false
+    };
+    const nextRuntimeSettings: RuntimeControlSettings = {
+      lookSensitivity: 0.8,
+      invertLookX: false,
+      invertLookY: true
+    };
+    const { rerender } = render(
+      <GameHost
+        initialDocument={initialDocument}
+        matchColorSeed={12}
+        mode="explore"
+        runtimeSettings={initialRuntimeSettings}
+      />
+    );
+
+    await waitFor(() => {
+      expect(gameClientState.mount).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runtimeSettings: initialRuntimeSettings
+        })
+      );
+    });
+
+    gameClientState.mount.mockClear();
+    gameClientState.mockClient.setShellState.mockClear();
+
+    rerender(
+      <GameHost
+        initialDocument={initialDocument}
+        matchColorSeed={12}
+        mode="explore"
+        runtimeSettings={nextRuntimeSettings}
+      />
+    );
+
+    await waitFor(() => {
+      expect(gameClientState.mockClient.setShellState).toHaveBeenCalledWith(
+        expect.objectContaining({
+          mode: "explore",
+          runtimeSettings: nextRuntimeSettings
+        })
+      );
+    });
+
+    expect(gameClientState.mount).not.toHaveBeenCalled();
   });
 
   it("forwards the ready-to-display callback to the mounted client", async () => {

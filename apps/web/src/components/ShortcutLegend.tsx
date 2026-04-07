@@ -1,4 +1,4 @@
-import { detectEggLaunchPlatform, getEggLaunchShortcutLabels } from "../game/eggLaunchControls";
+import { getEggLaunchShortcutLabels } from "../game/eggLaunchControls";
 
 export interface ShortcutBinding {
   action: string;
@@ -8,9 +8,7 @@ export interface ShortcutBinding {
 
 export type ShortcutLegendVariant = "default" | "compact" | "pause";
 
-export const getRuntimeShortcutBindings = (
-  platform = detectEggLaunchPlatform(),
-): ShortcutBinding[] => [
+export const getRuntimeShortcutBindings = (): ShortcutBinding[] => [
   {
     action: "Look",
     detail: "aim the camera",
@@ -39,7 +37,7 @@ export const getRuntimeShortcutBindings = (
   {
     action: "Launch Eggs",
     detail: "hold to charge, release to throw, costs matter",
-    keys: getEggLaunchShortcutLabels(platform),
+    keys: getEggLaunchShortcutLabels(),
   },
   {
     action: "Push",

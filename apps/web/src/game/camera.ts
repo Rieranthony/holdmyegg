@@ -1,4 +1,9 @@
 import type { Vector2, Vector3 } from "@out-of-bounds/sim";
+import {
+  defaultRuntimeControlSettings,
+  normalizeRuntimeControlSettings,
+  type RuntimeControlSettings
+} from "./runtimeControlSettings";
 
 export interface AimAngles {
   yaw: number;
@@ -106,10 +111,33 @@ export const getSpeedCameraBlend = (forwardSpeedRatio: number) => {
 
 export const clampLookPitch = (pitch: number) => clamp(pitch, aimCameraConfig.minPitch, aimCameraConfig.maxPitch);
 
-export const applyFreeLookDelta = (angles: AimAngles, delta: PointerLookDelta): AimAngles => ({
-  yaw: normalizeAngle(angles.yaw - delta.deltaX * aimCameraConfig.yawSensitivity),
-  pitch: clampLookPitch(angles.pitch + delta.deltaY * aimCameraConfig.pitchSensitivity)
-});
+export const applyFreeLookDelta = (
+  angles: AimAngles,
+  delta: PointerLookDelta,
+  settings: RuntimeControlSettings = defaultRuntimeControlSettings
+): AimAngles => {
+  const normalizedSettings = normalizeRuntimeControlSettings(settings);
+  const horizontalDirection = normalizedSettings.invertLookX ? -1 : 1;
+  const verticalDirection = normalizedSettings.invertLookY ? -1 : 1;
+  const sensitivity = normalizedSettings.lookSensitivity;
+
+  return {
+    yaw: normalizeAngle(
+      angles.yaw +
+        delta.deltaX *
+          horizontalDirection *
+          aimCameraConfig.yawSensitivity *
+          sensitivity
+    ),
+    pitch: clampLookPitch(
+      angles.pitch -
+        delta.deltaY *
+          verticalDirection *
+          aimCameraConfig.pitchSensitivity *
+          sensitivity
+    )
+  };
+};
 
 export const getLookDirection = (yaw: number, pitch: number): Vector3 => {
   const cosPitch = Math.cos(pitch);
