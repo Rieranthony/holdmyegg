@@ -1,10 +1,9 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import type { HudState } from "@out-of-bounds/sim";
-import type { RuntimeOverlayState } from "../engine/types";
 import { Hud } from "./Hud";
 
-const createHudState = (): HudState => ({
+const createHudState = (eggStatus: HudState["eggStatus"]): HudState => ({
   mode: "explore",
   localPlayerId: "human-1",
   localPlayer: {
@@ -20,103 +19,69 @@ const createHudState = (): HudState => ({
     invulnerableRemaining: 0,
     stunRemaining: 0
   },
-  eggStatus: null,
+  eggStatus,
   ranking: [{ id: "human-1", name: "You", alive: true }]
 });
 
-const createOverlayState = (
-  overrides: Partial<RuntimeOverlayState> = {}
-): RuntimeOverlayState => ({
-  eggActionState: {
-    reason: "ready",
-    hasMatter: true,
-    cooldownRemaining: 0,
-    cooldownDuration: 1.6,
-    canQuickEgg: true,
-    canChargedThrow: true
-  },
-  interactionMode: "normal",
-  matterPulseActive: false,
-  resourceMessage: null,
-  ...overrides
-});
-
 describe("Hud", () => {
-  it("shows a blinking egg card while eggs are cooling down", () => {
+  it("shows an egg loading strip while egg slots are still cooling down", () => {
     render(
       <Hud
-        hudState={createHudState()}
-        mode="explore"
-        overlayState={createOverlayState({
-          eggActionState: {
-            reason: "cooldown",
-            hasMatter: true,
-            cooldownRemaining: 0.8,
-            cooldownDuration: 1.6,
-            canQuickEgg: false,
-            canChargedThrow: false
-          }
+        hudState={createHudState({
+          hasMatter: true,
+          ready: false,
+          activeCount: 2,
+          maxActiveCount: 2,
+          cost: 42,
+          cooldownRemaining: 0.8,
+          cooldownDuration: 1.6
         })}
+        mode="explore"
       />
     );
 
-    expect(screen.getByTestId("hud-egg-card")).toHaveAttribute("data-state", "cooldown");
-    expect(screen.getByTestId("hud-egg-caption")).toHaveTextContent("Egg loading");
+    expect(screen.getByTestId("hud-egg-status")).toHaveTextContent("Egg loading");
+    expect(screen.getByText("2 / 2")).toBeInTheDocument();
+    expect(screen.getByTestId("hud-egg-meter-fill")).toHaveStyle({ width: "50%" });
   });
 
-  it("shows the ready caption when the player can lay or throw eggs", () => {
+  it("shows a full egg strip when eggs are ready again", () => {
     render(
       <Hud
-        hudState={createHudState()}
+        hudState={createHudState({
+          hasMatter: true,
+          ready: true,
+          activeCount: 0,
+          maxActiveCount: 2,
+          cost: 42,
+          cooldownRemaining: 0,
+          cooldownDuration: 1.6
+        })}
         mode="explore"
-        overlayState={createOverlayState()}
       />
     );
 
-    expect(screen.getByTestId("hud-egg-card")).toHaveAttribute("data-state", "ready");
-    expect(screen.getByTestId("hud-egg-caption")).toHaveTextContent(
-      "Tap E to lay • Hold E or RMB to throw"
-    );
+    expect(screen.getByTestId("hud-egg-status")).toHaveTextContent("Egg ready!");
+    expect(screen.getByText("0 / 2")).toBeInTheDocument();
+    expect(screen.getByTestId("hud-egg-meter-fill")).toHaveStyle({ width: "100%" });
   });
 
-  it("dims the egg card and labels the blocker when matter is missing", () => {
+  it("hides the egg strip when the player does not have enough matter", () => {
     render(
       <Hud
-        hudState={createHudState()}
-        mode="explore"
-        overlayState={createOverlayState({
-          eggActionState: {
-            reason: "notEnoughMatter",
-            hasMatter: false,
-            cooldownRemaining: 0,
-            cooldownDuration: 1.6,
-            canQuickEgg: false,
-            canChargedThrow: false
-          }
+        hudState={createHudState({
+          hasMatter: false,
+          ready: false,
+          activeCount: 0,
+          maxActiveCount: 2,
+          cost: 42,
+          cooldownRemaining: 0,
+          cooldownDuration: 1.6
         })}
+        mode="explore"
       />
     );
 
-    expect(screen.getByTestId("hud-egg-card")).toHaveAttribute("data-state", "notEnoughMatter");
-    expect(screen.getByTestId("hud-egg-caption")).toHaveTextContent("Need matter");
-  });
-
-  it("shows build mode, pulses the matter meter, and surfaces the chicken feedback message", () => {
-    render(
-      <Hud
-        hudState={createHudState()}
-        mode="explore"
-        overlayState={createOverlayState({
-          interactionMode: "build",
-          matterPulseActive: true,
-          resourceMessage: "I need more matter"
-        })}
-      />
-    );
-
-    expect(screen.getByTestId("hud-build-badge")).toHaveTextContent("BUILD MODE");
-    expect(screen.getByTestId("hud-egg-caption")).toHaveTextContent("BUILD MODE");
-    expect(screen.getByTestId("hud-matter-meter")).toHaveClass("hud-meter--pulse");
-    expect(screen.getByTestId("hud-resource-message")).toHaveTextContent("I need more matter");
+    expect(screen.queryByTestId("hud-egg-status")).not.toBeInTheDocument();
   });
 });

@@ -115,7 +115,6 @@ vi.mock("../engine/GameHost", () => ({
         onEditorStateChange,
         onHudStateChange,
         onPauseStateChange,
-        onRuntimeOverlayChange,
         onReadyToDisplay
       }: {
         initialDocument: ReturnType<typeof createDefaultArenaMap>;
@@ -141,7 +140,6 @@ vi.mock("../engine/GameHost", () => ({
           pointerCapturePending: boolean;
           pointerLocked: boolean;
         }) => void;
-        onRuntimeOverlayChange?: (state: unknown) => void;
         onReadyToDisplay?: () => void;
       },
       ref
@@ -201,7 +199,6 @@ vi.mock("../engine/GameHost", () => ({
           pointerCapturePendingRef.current = false;
           pendingResumeAfterPointerLockRef.current = false;
           onHudStateChange?.(null);
-          onRuntimeOverlayChange?.(null);
           emitPauseState();
           return;
         }
@@ -213,9 +210,8 @@ vi.mock("../engine/GameHost", () => ({
         pointerCapturePendingRef.current = false;
         pendingResumeAfterPointerLockRef.current = false;
         onHudStateChange?.(createHudState(mode as "explore" | "playNpc", playerProfile?.name || "You"));
-        onRuntimeOverlayChange?.(null);
         emitPauseState();
-      }, [mode, onHudStateChange, onPauseStateChange, onRuntimeOverlayChange, playerProfile?.name]);
+      }, [mode, onHudStateChange, onPauseStateChange, playerProfile?.name]);
 
       useEffect(() => {
         gameHostState.registerPauseBridge({

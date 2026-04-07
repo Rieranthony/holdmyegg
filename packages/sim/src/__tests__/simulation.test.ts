@@ -169,7 +169,6 @@ describe("OutOfBoundsSimulation", () => {
 
     const matchState = simulation.getMatchState();
     const hudState = simulation.getHudState();
-    const eggActionState = simulation.getLocalEggActionState();
     const playerState = simulation.getPlayerState(localPlayerId);
 
     expect(matchState.playerIds).toContain(localPlayerId);
@@ -186,14 +185,6 @@ describe("OutOfBoundsSimulation", () => {
       cooldownDuration: simulation.config.eggFuseDuration
     });
     expect(hudState.ranking.length).toBe(matchState.ranking.length);
-    expect(eggActionState).toEqual({
-      reason: "ready",
-      hasMatter: true,
-      cooldownRemaining: 0,
-      cooldownDuration: simulation.config.eggFuseDuration,
-      canQuickEgg: true,
-      canChargedThrow: true
-    });
     expect(playerState?.id).toBe(localPlayerId);
   });
 
@@ -212,61 +203,6 @@ describe("OutOfBoundsSimulation", () => {
       cooldownRemaining: 0,
       cooldownDuration: simulation.config.eggFuseDuration
     });
-    expect(simulation.getLocalEggActionState()).toEqual({
-      reason: "notEnoughMatter",
-      hasMatter: false,
-      cooldownRemaining: 0,
-      cooldownDuration: simulation.config.eggFuseDuration,
-      canQuickEgg: false,
-      canChargedThrow: false
-    });
-  });
-
-  it("reports egg cooldown when the player is at the active egg cap", () => {
-    const simulation = createTestSimulation("explore");
-    const localPlayerId = simulation.getLocalPlayerId()!;
-    advanceUntilGrounded(simulation, localPlayerId);
-    getInternalPlayer(simulation, localPlayerId).mass =
-      simulation.config.eggCost * (simulation.config.maxActiveEggsPerPlayer + 1) + 18;
-
-    for (let index = 0; index < simulation.config.maxActiveEggsPerPlayer; index += 1) {
-      simulation.step({
-        [localPlayerId]: layEgg()
-      });
-    }
-
-    const eggActionState = simulation.getLocalEggActionState()!;
-    const expectedCooldown = Math.min(...simulation.getEggs().map((egg) => egg.fuseRemaining));
-
-    expect(eggActionState.reason).toBe("cooldown");
-    expect(eggActionState.canQuickEgg).toBe(false);
-    expect(eggActionState.canChargedThrow).toBe(false);
-    expect(eggActionState.cooldownRemaining).toBeCloseTo(expectedCooldown, 5);
-    expect(eggActionState.cooldownDuration).toBeGreaterThanOrEqual(expectedCooldown);
-  });
-
-  it("reports stateBlocked and rejects layEgg while the player is stunned", () => {
-    const simulation = createTestSimulation("explore");
-    const localPlayerId = simulation.getLocalPlayerId()!;
-    advanceUntilGrounded(simulation, localPlayerId);
-    const localPlayer = getInternalPlayer(simulation, localPlayerId);
-    localPlayer.mass = simulation.config.eggCost + 12;
-    localPlayer.stunRemaining = 0.6;
-
-    expect(simulation.getLocalEggActionState()).toEqual({
-      reason: "stateBlocked",
-      hasMatter: true,
-      cooldownRemaining: 0,
-      cooldownDuration: simulation.config.eggFuseDuration,
-      canQuickEgg: false,
-      canChargedThrow: false
-    });
-
-    simulation.step({
-      [localPlayerId]: layEgg()
-    });
-
-    expect(simulation.getEggs()).toHaveLength(0);
   });
 
   it("applies movement, friction, and air control", () => {

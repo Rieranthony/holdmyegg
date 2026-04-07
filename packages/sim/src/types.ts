@@ -269,17 +269,6 @@ export interface HudEggStatus {
   cooldownDuration: number;
 }
 
-export type EggActionReason = "ready" | "cooldown" | "notEnoughMatter" | "stateBlocked";
-
-export interface LocalEggActionState {
-  reason: EggActionReason;
-  hasMatter: boolean;
-  cooldownRemaining: number;
-  cooldownDuration: number;
-  canQuickEgg: boolean;
-  canChargedThrow: boolean;
-}
-
 export interface HudState {
   mode: GameMode;
   localPlayerId: string | null;

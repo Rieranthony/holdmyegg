@@ -7,11 +7,11 @@ import {
 } from "@out-of-bounds/map";
 import {
   defaultSimulationConfig,
+  getHudEggStatus,
   getEggChargeAlpha,
   getEggTrajectoryPosition,
   getGroundedEggLaunchVelocity,
   type HudState,
-  type LocalEggActionState,
   type RuntimeEggScatterDebrisState,
   type RuntimeEggState,
   type RuntimePlayerState,
@@ -38,6 +38,7 @@ import { getPlayerBlobShadowState } from "../game/cheapShadows";
 import { createChickenAvatarRig, type ChickenAvatarRig } from "../game/chickenModel";
 import { getChickenPalette, type ChickenPaletteName } from "../game/colors";
 import { getEggVisualState } from "../game/eggs";
+import { detectEggLaunchPlatform, isEggLaunchKeyCode } from "../game/eggLaunchControls";
 import { getFallingClusterVisualState } from "../game/fallingClusters";
 import { buildPlayerCommand, initialKeyboardInputState, type KeyboardInputState } from "../game/input";
 import { configureDynamicInstancedMesh, finalizeDynamicInstancedMesh, finalizeStaticInstancedMesh } from "../game/instancedMeshes";
@@ -97,8 +98,6 @@ import type {
   EditorPanelState,
   GameDiagnostics,
   PointerCaptureFailureReason,
-  RuntimeInteractionMode,
-  RuntimeOverlayState,
   RuntimeRenderFrame,
   RuntimePauseState,
   ShellPresentation,
@@ -111,7 +110,6 @@ interface GameClientCallbacks {
   onHudStateChange?: (hudState: HudState | null) => void;
   onPauseStateChange?: (state: RuntimePauseState) => void;
   onReadyToDisplay?: () => void;
-  onRuntimeOverlayChange?: (state: RuntimeOverlayState | null) => void;
   onStatus?: (message: string) => void;
 }
 
@@ -173,19 +171,12 @@ interface DynamicOpacityMeshResource {
 
 interface EggChargeState {
   active: boolean;
-  source: "secondary" | "egg";
   startedAt: number;
   chargeAlpha: number;
   pendingThrow: boolean;
   pendingThrowCharge: number;
   pendingThrowPitch: number;
   releaseRemaining: number;
-}
-
-interface TimedActionState {
-  feedbackTriggered: boolean;
-  pressed: boolean;
-  startedAt: number;
 }
 
 interface EggTrajectoryPreviewResource {
@@ -234,7 +225,9 @@ const AVATAR_TURN_SPEED = 4.5;
 const AVATAR_BOB_BASE_Y = 0.74;
 const EGG_FUSE_DURATION = defaultSimulationConfig.eggFuseDuration;
 const EGG_SCATTER_ARC_HEIGHT = 2.4;
+const EGG_COST = defaultSimulationConfig.eggCost;
 const EGG_CHARGE_DURATION = defaultSimulationConfig.eggChargeDuration;
+const MAX_ACTIVE_EGGS_PER_PLAYER = defaultSimulationConfig.maxActiveEggsPerPlayer;
 const MIN_GROUNDED_EGG_CHARGE = 0.18;
 const MAX_EGG_SCATTER_INSTANCES_PER_PROFILE = 64;
 const MAX_HARVEST_BURST_INSTANCES_PER_PROFILE = 128;
@@ -243,11 +236,8 @@ const MAX_EGG_EXPLOSION_SHOCKWAVE_INSTANCES = 32;
 const EGG_TRAJECTORY_MAX_POINTS = 56;
 const EGG_TRAJECTORY_TIME_STEP = 0.05;
 const EGG_TRAJECTORY_MAX_DURATION = 2.55;
-const EGG_ACTION_HOLD_THRESHOLD = 0.16;
 const PLAYER_DETAIL_DISTANCE = 18;
 const SPEED_TRACE_DEPTH = 2.4;
-const MATTER_FEEDBACK_DURATION = 0.8;
-const MATTER_FEEDBACK_MESSAGE = "I need more matter";
 const SPEED_TRACE_PUSH_BURST_DURATION = 0.2;
 const SPEED_TRACE_MIN_AIR_SPEED = 3.6;
 const SPACE_BLEND_DAMPING = 4.4;
@@ -518,46 +508,6 @@ const isFormElement = (target: EventTarget | null) =>
   target instanceof HTMLTextAreaElement ||
   target instanceof HTMLSelectElement;
 
-const areLocalEggActionStatesEqual = (
-  left: LocalEggActionState | null,
-  right: LocalEggActionState | null
-) => {
-  if (left === right) {
-    return true;
-  }
-
-  if (left === null || right === null) {
-    return false;
-  }
-
-  return (
-    left.reason === right.reason &&
-    left.hasMatter === right.hasMatter &&
-    left.canQuickEgg === right.canQuickEgg &&
-    left.canChargedThrow === right.canChargedThrow
-  );
-};
-
-const areRuntimeOverlayStatesEqual = (
-  left: RuntimeOverlayState | null,
-  right: RuntimeOverlayState | null
-) => {
-  if (left === right) {
-    return true;
-  }
-
-  if (left === null || right === null) {
-    return false;
-  }
-
-  return (
-    left.interactionMode === right.interactionMode &&
-    left.matterPulseActive === right.matterPulseActive &&
-    left.resourceMessage === right.resourceMessage &&
-    areLocalEggActionStatesEqual(left.eggActionState, right.eggActionState)
-  );
-};
-
 const addPlayerPart = (
   parent: THREE.Object3D,
   geometry: THREE.BufferGeometry,
@@ -686,6 +636,7 @@ export class GameClient {
   private readonly playerVisuals = new Map<string, PlayerVisual>();
   private readonly eggVisuals = new Map<string, EggVisual>();
   private readonly eggScatterMeshes = new Map<BlockRenderProfile, THREE.InstancedMesh>();
+  private readonly eggLaunchPlatform = detectEggLaunchPlatform();
   private readonly harvestBurstMeshes = new Map<BlockRenderProfile, DynamicOpacityMeshResource>();
   private readonly skyDropVisuals = new Map<string, SkyDropVisual>();
   private readonly clusterVisuals = new Map<string, ClusterVisual>();
@@ -733,7 +684,6 @@ export class GameClient {
   };
   private readonly eggChargeState: EggChargeState = {
     active: false,
-    source: "egg",
     startedAt: 0,
     chargeAlpha: 0,
     pendingThrow: false,
@@ -741,28 +691,17 @@ export class GameClient {
     pendingThrowPitch: 0,
     releaseRemaining: 0
   };
-  private readonly secondaryActionState: TimedActionState = {
-    feedbackTriggered: false,
-    pressed: false,
-    startedAt: 0
-  };
-  private readonly eggActionState: TimedActionState = {
-    feedbackTriggered: false,
-    pressed: false,
-    startedAt: 0
-  };
 
   private animationFrameId: number | null = null;
   private mode: ActiveShellMode;
   private worldDocument = normalizeArenaBudgetMapDocument(createDefaultArenaMap());
   private latestFrame: RuntimeRenderFrame | null = null;
-  private lastOverlayState: RuntimeOverlayState | null = null;
   private matchColorSeed: number;
   private cameraForward = { x: 1, z: 0 };
-  private interactionMode: RuntimeInteractionMode = "normal";
+  private previousBuildPressed = false;
+  private previousEggPressed = false;
   private inputSequence = 0;
   private destroyQueued = false;
-  private placeQueued = false;
   private pointerLocked = false;
   private pointerCapturePending = false;
   private pointerCaptureFailureReason: PointerCaptureFailureReason | null = null;
@@ -789,8 +728,6 @@ export class GameClient {
   private pendingReadyToDisplay = false;
   private baseFogNear = 36;
   private baseFogFar = 120;
-  private matterPulseUntil = 0;
-  private resourceMessageUntil = 0;
   private spaceBlend = 0;
 
   private constructor({
@@ -881,17 +818,10 @@ export class GameClient {
     }
 
     this.mode = nextState.mode;
-    this.latestFrame = null;
     this.lookYaw = null;
     this.hasInitializedRuntimeCamera = false;
     this.resetPointerCaptureState();
     this.pendingResumeAfterPointerLock = false;
-    this.clearTimedRuntimeActions();
-    this.setInteractionMode("normal");
-    this.destroyQueued = false;
-    this.placeQueued = false;
-    this.matterPulseUntil = 0;
-    this.resourceMessageUntil = 0;
     this.cancelEggCharge();
     this.setRuntimePaused(true);
     this.worker.postMessage({
@@ -989,15 +919,9 @@ export class GameClient {
       this.animationFrameId = null;
     }
 
-    if (this.lastOverlayState !== null) {
-      this.lastOverlayState = null;
-      this.callbacks.onRuntimeOverlayChange?.(null);
-    }
-
     window.removeEventListener("resize", this.handleResize);
     window.removeEventListener("keydown", this.handleKeyDown);
     window.removeEventListener("keyup", this.handleKeyUp);
-    window.removeEventListener("pointerup", this.handlePointerUp);
     window.removeEventListener("blur", this.handleWindowBlur);
     document.removeEventListener("visibilitychange", this.handleVisibilityChange);
     document.removeEventListener("pointerlockchange", this.handlePointerLockChange);
@@ -1168,7 +1092,6 @@ export class GameClient {
     window.addEventListener("resize", this.handleResize);
     window.addEventListener("keydown", this.handleKeyDown);
     window.addEventListener("keyup", this.handleKeyUp);
-    window.addEventListener("pointerup", this.handlePointerUp);
     window.addEventListener("blur", this.handleWindowBlur);
     document.addEventListener("visibilitychange", this.handleVisibilityChange);
     document.addEventListener("pointerlockchange", this.handlePointerLockChange);
@@ -1237,7 +1160,6 @@ export class GameClient {
           return;
         case "frame":
           this.latestFrame = message.frame;
-          this.emitRuntimeOverlayState();
           return;
         case "hud_state":
           this.callbacks.onHudStateChange?.(message.hudState);
@@ -1357,11 +1279,7 @@ export class GameClient {
     for (const descriptor of spacePlanetDescriptors) {
       const group = new THREE.Group();
       const [offsetX, offsetY, offsetZ] = descriptor.offset;
-      const { mainMatrices, shadeMatrices } = buildVoxelPlanetMatrices(
-        descriptor.radius[0],
-        descriptor.radius[1],
-        descriptor.radius[2]
-      );
+      const { mainMatrices, shadeMatrices } = buildVoxelPlanetMatrices(...descriptor.radius);
       const mainMaterial = new THREE.MeshBasicMaterial({
         color: descriptor.colors[0],
         transparent: true,
@@ -1610,13 +1528,36 @@ export class GameClient {
     return frame.players.find((player) => player.id === frame.localPlayerId) ?? null;
   }
 
-  private getLocalEggActionState(frame: RuntimeRenderFrame | null = this.latestFrame) {
-    return frame?.localEggActionState ?? null;
+  private getLocalEggStatus(frame: RuntimeRenderFrame | null = this.latestFrame) {
+    const localPlayer = this.getLocalRuntimePlayer(frame);
+    const localPlayerId = frame?.localPlayerId ?? localPlayer?.id ?? null;
+    if (!localPlayerId || !localPlayer) {
+      return null;
+    }
+
+    return getHudEggStatus({
+      localPlayerId,
+      localPlayerMass: localPlayer.mass,
+      eggs: frame?.eggs ?? [],
+      eggCost: EGG_COST,
+      maxActiveEggsPerPlayer: MAX_ACTIVE_EGGS_PER_PLAYER,
+      eggFuseDuration: EGG_FUSE_DURATION
+    });
   }
 
   private canStartGroundEggCharge(
     localPlayer: RuntimePlayerState | null,
-    eggActionState = this.getLocalEggActionState()
+    eggStatus = this.getLocalEggStatus() ??
+      (localPlayer
+        ? getHudEggStatus({
+            localPlayerId: localPlayer.id,
+            localPlayerMass: localPlayer.mass,
+            eggs: this.latestFrame?.eggs ?? [],
+            eggCost: EGG_COST,
+            maxActiveEggsPerPlayer: MAX_ACTIVE_EGGS_PER_PLAYER,
+            eggFuseDuration: EGG_FUSE_DURATION
+          })
+        : null)
   ) {
     return (
       localPlayer !== null &&
@@ -1627,31 +1568,12 @@ export class GameClient {
       localPlayer.stunRemaining <= 0 &&
       localPlayer.spacePhase !== "float" &&
       localPlayer.spacePhase !== "reentry" &&
-      eggActionState?.reason === "ready"
+      eggStatus?.ready === true
     );
   }
 
-  private setTimedActionPressed(actionState: TimedActionState, pressed: boolean, startedAt = this.clock.elapsedTime) {
-    actionState.pressed = pressed;
-    actionState.startedAt = startedAt;
-    actionState.feedbackTriggered = false;
-  }
-
-  private getTimedActionDuration(actionState: TimedActionState, elapsedTime = this.clock.elapsedTime) {
-    return actionState.pressed ? Math.max(0, elapsedTime - actionState.startedAt) : 0;
-  }
-
-  private isChargeSourcePressed() {
-    if (this.eggChargeState.source === "secondary") {
-      return this.secondaryActionState.pressed && this.interactionMode === "normal";
-    }
-
-    return this.eggActionState.pressed;
-  }
-
-  private beginEggCharge(source: "secondary" | "egg") {
+  private beginEggCharge() {
     this.eggChargeState.active = true;
-    this.eggChargeState.source = source;
     this.eggChargeState.startedAt = this.clock.elapsedTime;
     this.eggChargeState.chargeAlpha = 0;
     this.eggChargeState.pendingThrow = false;
@@ -1659,28 +1581,18 @@ export class GameClient {
     this.eggChargeState.pendingThrowPitch = 0;
   }
 
-  private queueEggLaunch(charge: number, pitch: number) {
-    this.eggChargeState.pendingThrow = true;
-    this.eggChargeState.pendingThrowCharge = charge;
-    this.eggChargeState.pendingThrowPitch = pitch;
-    this.eggChargeState.releaseRemaining = chickenPoseVisualDefaults.eggLaunchReleaseDuration;
-  }
-
-  private queueQuickEggLaunch() {
-    this.queueEggLaunch(0, this.lookPitch);
-  }
-
   private queueGroundEggThrow() {
     this.eggChargeState.active = false;
-    this.queueEggLaunch(Math.max(MIN_GROUNDED_EGG_CHARGE, this.eggChargeState.chargeAlpha), this.lookPitch);
+    this.eggChargeState.pendingThrow = true;
+    this.eggChargeState.pendingThrowCharge = Math.max(MIN_GROUNDED_EGG_CHARGE, this.eggChargeState.chargeAlpha);
+    this.eggChargeState.pendingThrowPitch = this.lookPitch;
     this.eggChargeState.chargeAlpha = 0;
-    this.eggChargeState.source = "egg";
+    this.eggChargeState.releaseRemaining = chickenPoseVisualDefaults.eggLaunchReleaseDuration;
     this.hideEggTrajectoryPreview();
   }
 
   private cancelEggCharge(clearRelease = true) {
     this.eggChargeState.active = false;
-    this.eggChargeState.source = "egg";
     this.eggChargeState.chargeAlpha = 0;
     this.eggChargeState.pendingThrow = false;
     this.eggChargeState.pendingThrowCharge = 0;
@@ -1691,49 +1603,7 @@ export class GameClient {
     this.hideEggTrajectoryPreview();
   }
 
-  private updateHeldEggActions(
-    localPlayer: RuntimePlayerState | null,
-    eggActionState: LocalEggActionState | null,
-    elapsedTime: number
-  ) {
-    const maybeStartCharge = (
-      actionState: TimedActionState,
-      source: "secondary" | "egg"
-    ) => {
-      if (
-        !actionState.pressed ||
-        this.runtimePaused ||
-        !this.pointerLocked ||
-        this.getTimedActionDuration(actionState, elapsedTime) < EGG_ACTION_HOLD_THRESHOLD ||
-        this.eggChargeState.active ||
-        this.eggChargeState.pendingThrow
-      ) {
-        return;
-      }
-
-      if (this.canStartGroundEggCharge(localPlayer, eggActionState)) {
-        this.beginEggCharge(source);
-        return;
-      }
-
-      if (!actionState.feedbackTriggered && eggActionState?.reason === "notEnoughMatter") {
-        this.triggerMatterFeedback();
-        actionState.feedbackTriggered = true;
-      }
-    };
-
-    if (this.interactionMode === "normal") {
-      maybeStartCharge(this.secondaryActionState, "secondary");
-    }
-    maybeStartCharge(this.eggActionState, "egg");
-  }
-
-  private updateEggChargeState(
-    localPlayer: RuntimePlayerState | null,
-    eggActionState: LocalEggActionState | null,
-    delta: number,
-    elapsedTime: number
-  ) {
+  private updateEggChargeState(localPlayer: RuntimePlayerState | null, delta: number, elapsedTime: number) {
     this.eggChargeState.releaseRemaining = Math.max(0, this.eggChargeState.releaseRemaining - delta);
 
     if (!this.eggChargeState.active) {
@@ -1741,10 +1611,10 @@ export class GameClient {
     }
 
     if (
+      !this.keyboardState.egg ||
       this.runtimePaused ||
       !this.pointerLocked ||
-      !this.isChargeSourcePressed() ||
-      !this.canStartGroundEggCharge(localPlayer, eggActionState)
+      !this.canStartGroundEggCharge(localPlayer)
     ) {
       this.cancelEggCharge(false);
       return;
@@ -1772,7 +1642,7 @@ export class GameClient {
       !this.eggChargeState.active ||
       this.runtimePaused ||
       !this.pointerLocked ||
-      !this.canStartGroundEggCharge(localPlayer, this.getLocalEggActionState())
+      !this.canStartGroundEggCharge(localPlayer)
     ) {
       this.hideEggTrajectoryPreview();
       return;
@@ -1888,6 +1758,25 @@ export class GameClient {
       return;
     }
 
+    if (isEggLaunchKeyCode(event.code, this.eggLaunchPlatform)) {
+      event.preventDefault();
+      if (this.keyboardState.egg) {
+        return;
+      }
+      this.keyboardState.egg = true;
+      const localPlayer = this.getLocalRuntimePlayer();
+      const eggStatus = this.getLocalEggStatus();
+      if (
+        isRuntimeMode(this.mode) &&
+        this.pointerLocked &&
+        !this.runtimePaused &&
+        this.canStartGroundEggCharge(localPlayer, eggStatus)
+      ) {
+        this.beginEggCharge();
+      }
+      return;
+    }
+
     switch (event.code) {
       case "KeyW":
       case "ArrowUp":
@@ -1912,36 +1801,25 @@ export class GameClient {
         }
         this.keyboardState.jump = true;
         break;
-      case "KeyQ":
-        if (!isRuntimeMode(this.mode)) {
-          return;
-        }
-        if (event.repeat) {
-          return;
-        }
-        event.preventDefault();
-        this.setInteractionMode(this.interactionMode === "build" ? "normal" : "build");
-        break;
       case "KeyE":
-        if (!isRuntimeMode(this.mode)) {
-          return;
-        }
-        if (event.repeat || this.eggActionState.pressed) {
-          return;
-        }
-        event.preventDefault();
-        this.setTimedActionPressed(this.eggActionState, true);
+        this.keyboardState.build = true;
         break;
       case "KeyF":
-        if (!isRuntimeMode(this.mode)) {
-          return;
-        }
         this.keyboardState.push = true;
         break;
     }
   };
 
   private readonly handleKeyUp = (event: KeyboardEvent) => {
+    if (isEggLaunchKeyCode(event.code, this.eggLaunchPlatform)) {
+      event.preventDefault();
+      this.keyboardState.egg = false;
+      if (this.eggChargeState.active) {
+        this.queueGroundEggThrow();
+      }
+      return;
+    }
+
     switch (event.code) {
       case "KeyW":
       case "ArrowUp":
@@ -1966,19 +1844,9 @@ export class GameClient {
         this.keyboardState.jump = false;
         break;
       case "KeyE":
-        if (!isRuntimeMode(this.mode)) {
-          return;
-        }
-        if (!this.eggActionState.pressed) {
-          return;
-        }
-        event.preventDefault();
-        this.releaseTimedAction(this.eggActionState, "egg");
+        this.keyboardState.build = false;
         break;
       case "KeyF":
-        if (!isRuntimeMode(this.mode)) {
-          return;
-        }
         this.keyboardState.push = false;
         break;
     }
@@ -1992,7 +1860,8 @@ export class GameClient {
       if (!locked) {
         this.resetPointerCaptureState();
         this.pendingResumeAfterPointerLock = false;
-        this.clearTimedRuntimeActions();
+        this.keyboardState.egg = false;
+        this.previousEggPressed = false;
         this.cancelEggCharge();
         this.setRuntimePaused(true);
         return;
@@ -2036,7 +1905,8 @@ export class GameClient {
   setRuntimePaused(paused: boolean) {
     this.runtimePaused = paused;
     if (paused) {
-      this.clearTimedRuntimeActions();
+      this.keyboardState.egg = false;
+      this.previousEggPressed = false;
       this.cancelEggCharge();
     }
     this.worker.postMessage({
@@ -2047,7 +1917,6 @@ export class GameClient {
       this.pendingResumeAfterPointerLock = false;
     }
     this.emitPauseState();
-    this.emitRuntimeOverlayState();
   }
 
   private emitPauseState() {
@@ -2058,98 +1927,6 @@ export class GameClient {
       pointerCapturePending: this.pointerCapturePending,
       pointerCaptureFailureReason: this.pointerCaptureFailureReason
     });
-  }
-
-  private clearTimedRuntimeActions() {
-    this.secondaryActionState.pressed = false;
-    this.secondaryActionState.feedbackTriggered = false;
-    this.secondaryActionState.startedAt = 0;
-    this.eggActionState.pressed = false;
-    this.eggActionState.feedbackTriggered = false;
-    this.eggActionState.startedAt = 0;
-  }
-
-  private setInteractionMode(nextMode: RuntimeInteractionMode) {
-    if (this.interactionMode === nextMode) {
-      return;
-    }
-
-    this.interactionMode = nextMode;
-    if (nextMode === "build" && this.eggChargeState.active && this.eggChargeState.source === "secondary") {
-      this.cancelEggCharge(false);
-    }
-    this.emitRuntimeOverlayState();
-  }
-
-  private triggerMatterFeedback() {
-    const feedbackUntil = this.clock.elapsedTime + MATTER_FEEDBACK_DURATION;
-    this.matterPulseUntil = feedbackUntil;
-    this.resourceMessageUntil = feedbackUntil;
-    this.emitRuntimeOverlayState();
-  }
-
-  private handleBlockedEggAction(eggActionState: LocalEggActionState | null) {
-    if (eggActionState?.reason === "notEnoughMatter") {
-      this.triggerMatterFeedback();
-    }
-  }
-
-  private attemptQuickEggAction(eggActionState: LocalEggActionState | null = this.getLocalEggActionState()) {
-    if (eggActionState?.canQuickEgg) {
-      this.queueQuickEggLaunch();
-      return;
-    }
-
-    this.handleBlockedEggAction(eggActionState);
-  }
-
-  private releaseTimedAction(actionState: TimedActionState, source: "secondary" | "egg") {
-    const heldLongEnough = this.getTimedActionDuration(actionState) >= EGG_ACTION_HOLD_THRESHOLD;
-    const wasChargeSource = this.eggChargeState.active && this.eggChargeState.source === source;
-    actionState.pressed = false;
-    actionState.feedbackTriggered = false;
-
-    if (wasChargeSource) {
-      this.queueGroundEggThrow();
-      return;
-    }
-
-    if (heldLongEnough) {
-      return;
-    }
-
-    if (source === "egg") {
-      this.attemptQuickEggAction();
-      return;
-    }
-
-    if (this.interactionMode === "normal") {
-      this.destroyQueued = true;
-    }
-  }
-
-  private buildRuntimeOverlayState(elapsedTime = this.clock.elapsedTime): RuntimeOverlayState | null {
-    if (!isRuntimeMode(this.mode)) {
-      return null;
-    }
-
-    const eggActionState = this.getLocalEggActionState();
-    return {
-      eggActionState,
-      interactionMode: this.interactionMode,
-      matterPulseActive: elapsedTime < this.matterPulseUntil,
-      resourceMessage: elapsedTime < this.resourceMessageUntil ? MATTER_FEEDBACK_MESSAGE : null
-    };
-  }
-
-  private emitRuntimeOverlayState(elapsedTime = this.clock.elapsedTime) {
-    const nextState = this.buildRuntimeOverlayState(elapsedTime);
-    if (areRuntimeOverlayStatesEqual(this.lastOverlayState, nextState)) {
-      return;
-    }
-
-    this.lastOverlayState = nextState;
-    this.callbacks.onRuntimeOverlayChange?.(nextState);
   }
 
   private readonly handlePointerDown = (event: PointerEvent) => {
@@ -2163,15 +1940,8 @@ export class GameClient {
         return;
       }
 
-      if (event.button === 2) {
-        if (this.interactionMode === "build") {
-          this.placeQueued = true;
-          return;
-        }
-
-        if (!this.secondaryActionState.pressed) {
-          this.setTimedActionPressed(this.secondaryActionState, true);
-        }
+      if (event.button === 0) {
+        this.destroyQueued = true;
       }
       return;
     }
@@ -2179,18 +1949,6 @@ export class GameClient {
     if (this.mode === "editor" && event.button === 0) {
       this.performEditorActionFromPointer(event);
     }
-  };
-
-  private readonly handlePointerUp = (event: PointerEvent) => {
-    if (!isRuntimeMode(this.mode) || !this.pointerLocked || event.button !== 2) {
-      return;
-    }
-
-    if (!this.secondaryActionState.pressed) {
-      return;
-    }
-
-    this.releaseTimedAction(this.secondaryActionState, "secondary");
   };
 
   private readonly handlePointerMove = (event: PointerEvent) => {
@@ -2240,19 +1998,15 @@ export class GameClient {
       this.updateRuntimeCamera(delta);
       this.updateFocusedTarget();
       const localPlayer = this.getLocalRuntimePlayer();
-      const eggActionState = this.getLocalEggActionState();
-      this.updateHeldEggActions(localPlayer, eggActionState, elapsedTime);
-      this.updateEggChargeState(localPlayer, eggActionState, delta, elapsedTime);
-      this.sendRuntimeInput();
+      this.updateEggChargeState(localPlayer, delta, elapsedTime);
+      this.sendRuntimeInput(localPlayer);
       this.applyRuntimeFrame(delta, elapsedTime);
-      this.emitRuntimeOverlayState(elapsedTime);
     } else {
       this.updateSpeedTraces(null, delta, elapsedTime);
       this.updateSkyEnvironment(null, delta, elapsedTime);
       this.hideEggTrajectoryPreview();
       this.focusOutline.visible = false;
       this.focusGhost.visible = false;
-      this.emitRuntimeOverlayState(elapsedTime);
     }
 
     this.renderer.render(this.scene, this.camera);
@@ -2362,14 +2116,13 @@ export class GameClient {
     }
 
     this.focusedTarget = terrainHit;
-    const showBuildTarget = this.interactionMode === "build" && this.pointerLocked && !this.runtimePaused;
-    this.focusOutline.visible = showBuildTarget;
+    this.focusOutline.visible = true;
     this.focusOutline.position.set(
       terrainHit.voxel.x + 0.5,
       terrainHit.voxel.y + 0.5,
       terrainHit.voxel.z + 0.5
     );
-    this.focusGhost.visible = showBuildTarget;
+    this.focusGhost.visible = true;
     this.focusGhost.position.set(
       terrainHit.voxel.x + terrainHit.normal.x + 0.5,
       terrainHit.voxel.y + terrainHit.normal.y + 0.5,
@@ -2456,22 +2209,30 @@ export class GameClient {
     });
   }
 
-  private sendRuntimeInput() {
+  private sendRuntimeInput(localPlayer: RuntimePlayerState | null = this.getLocalRuntimePlayer()) {
     if (!isRuntimeMode(this.mode) || !this.pointerLocked) {
       return;
     }
 
+    const eggStatus = this.getLocalEggStatus();
     const nextCommand = buildPlayerCommand(this.keyboardState, this.cameraForward);
     nextCommand.destroy = this.destroyQueued;
-    nextCommand.place = this.placeQueued;
-    nextCommand.layEgg = this.eggChargeState.pendingThrow;
+    nextCommand.place = this.keyboardState.build && !this.previousBuildPressed;
+    const immediateEggPress =
+      eggStatus?.ready === true &&
+      this.keyboardState.egg &&
+      !this.previousEggPressed &&
+      !this.eggChargeState.active &&
+      !this.canStartGroundEggCharge(localPlayer, eggStatus);
+    nextCommand.layEgg = this.eggChargeState.pendingThrow || immediateEggPress;
     nextCommand.eggCharge = this.eggChargeState.pendingThrow ? this.eggChargeState.pendingThrowCharge : 0;
     nextCommand.eggPitch = this.eggChargeState.pendingThrow ? this.eggChargeState.pendingThrowPitch : 0;
     nextCommand.targetVoxel = this.focusedTarget?.voxel ?? null;
     nextCommand.targetNormal = this.focusedTarget?.normal ?? null;
 
+    this.previousBuildPressed = this.keyboardState.build;
+    this.previousEggPressed = this.keyboardState.egg;
     this.destroyQueued = false;
-    this.placeQueued = false;
     this.eggChargeState.pendingThrow = false;
     this.eggChargeState.pendingThrowCharge = 0;
     this.eggChargeState.pendingThrowPitch = 0;

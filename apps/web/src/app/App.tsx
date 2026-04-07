@@ -27,7 +27,6 @@ import {
   type PointerCaptureFailureReason,
   type PlayerProfile,
   type RuntimePauseState,
-  type RuntimeOverlayState,
   type ShellMode,
 } from "../engine/types";
 import { chickenPalettes } from "../game/colors";
@@ -140,8 +139,6 @@ export function App({
     createDefaultEditorPanelState(createDefaultArenaMap()),
   );
   const [hudState, setHudState] = useState<HudState | null>(null);
-  const [runtimeOverlayState, setRuntimeOverlayState] =
-    useState<RuntimeOverlayState | null>(null);
   const [pauseState, setPauseState] = useState<RuntimePauseState>(
     createDefaultPauseState,
   );
@@ -222,12 +219,6 @@ export function App({
       (palette) => palette.name === playerProfile.paletteName,
     ) ?? chickenPalettes[0]!;
   const selectedPreviewPaletteName = selectedPreviewPalette.name;
-
-  useEffect(() => {
-    if (!isRuntimePlay) {
-      setRuntimeOverlayState(null);
-    }
-  }, [isRuntimePlay]);
 
   const releaseLaunchSequence = useCallback((resumeRuntime: boolean) => {
     clearLaunchTimers();
@@ -669,7 +660,6 @@ export function App({
             onEditorStateChange={handleEditorStateChange}
             onHudStateChange={setHudState}
             onPauseStateChange={setPauseState}
-            onRuntimeOverlayChange={setRuntimeOverlayState}
             onStatus={updateStatus}
             ref={hostRef}
           />
@@ -681,11 +671,7 @@ export function App({
           )}
           {isRulesFromPause && <RulesAndControlsScreen onBack={closeRules} />}
           {!launchState && !isRulesFromPause && (
-            <Hud
-              hudState={hudState}
-              mode={activePlayMode}
-              overlayState={runtimeOverlayState}
-            />
+            <Hud hudState={hudState} mode={activePlayMode} />
           )}
           {pauseState.paused && !launchState && !isRulesFromPause && (
             <RuntimePauseOverlay

@@ -124,67 +124,12 @@ const setPointerLockElement = (element: Element | null) => {
   });
 };
 
-const createLocalEggActionState = (
-  overrides: Partial<{
-    canChargedThrow: boolean;
-    canQuickEgg: boolean;
-    cooldownDuration: number;
-    cooldownRemaining: number;
-    hasMatter: boolean;
-    reason: "ready" | "cooldown" | "notEnoughMatter" | "stateBlocked";
-  }> = {}
-) => ({
-  reason: "ready" as const,
-  hasMatter: true,
-  cooldownRemaining: 0,
-  cooldownDuration: 1.6,
-  canQuickEgg: true,
-  canChargedThrow: true,
-  ...overrides
-});
-
-const createRuntimePlayer = (
-  overrides: Partial<Record<string, unknown>> = {}
-) => ({
-  id: "human-1",
-  name: "You",
-  kind: "human",
-  alive: true,
-  fallingOut: false,
-  grounded: true,
-  mass: 84,
-  livesRemaining: 3,
-  maxLives: 3,
-  respawning: false,
-  invulnerableRemaining: 0,
-  stunRemaining: 0,
-  pushVisualRemaining: 0,
-  spacePhase: "none",
-  spacePhaseRemaining: 0,
-  position: { x: 4, y: 2, z: 5 },
-  velocity: { x: 0, y: 0, z: 0 },
-  facing: { x: 1, z: 0 },
-  jetpackActive: false,
-  eliminatedAt: null,
-  ...overrides
-});
-
-const createRuntimeFrame = (
-  overrides: Partial<Record<string, unknown>> = {}
-) => ({
-  tick: 1,
-  time: 0.016,
-  mode: "explore",
-  localPlayerId: "human-1",
-  localEggActionState: createLocalEggActionState(),
-  players: [createRuntimePlayer()],
-  eggs: [],
-  eggScatterDebris: [],
-  voxelBursts: [],
-  skyDrops: [],
-  fallingClusters: [],
-  ...overrides
-});
+const setNavigatorPlatform = (platform: string) => {
+  Object.defineProperty(window.navigator, "platform", {
+    configurable: true,
+    value: platform
+  });
+};
 
 describe("GameClient", () => {
   beforeEach(() => {
@@ -202,6 +147,7 @@ describe("GameClient", () => {
     );
     vi.stubGlobal("cancelAnimationFrame", vi.fn());
     setPointerLockElement(null);
+    setNavigatorPlatform("MacIntel");
   });
 
   it("boots the worker, sizes the renderer, and forwards worker callback messages", () => {
@@ -1182,9 +1128,6 @@ describe("GameClient", () => {
       jetpackActive: false,
       eliminatedAt: null
     } as const;
-    (client as any).latestFrame = createRuntimeFrame({
-      players: [groundedPlayer]
-    });
 
     (client as any).updateEggLaunchPreview(groundedPlayer, 1.2);
 
@@ -1209,7 +1152,83 @@ describe("GameClient", () => {
     client.dispose();
   });
 
-  it("no longer binds egg actions to Cmd or Ctrl", () => {
+  it("binds egg charging to the platform modifier key while keeping the grounded launch flow", () => {
+    setNavigatorPlatform("MacIntel");
+    const macClient = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 33
+    });
+
+    (macClient as any).pointerLocked = true;
+    (macClient as any).runtimePaused = false;
+    (macClient as any).getLocalRuntimePlayer = () => ({
+      id: "human-1",
+      alive: true,
+      fallingOut: false,
+      grounded: true,
+      mass: 84,
+      respawning: false,
+      stunRemaining: 0,
+      spacePhase: "none"
+    });
+
+    const macPreventDefault = vi.fn();
+    (macClient as any).handleKeyDown({
+      code: "MetaLeft",
+      preventDefault: macPreventDefault,
+      target: window
+    });
+
+    expect(macPreventDefault).toHaveBeenCalled();
+    expect((macClient as any).keyboardState.egg).toBe(true);
+    expect((macClient as any).eggChargeState.active).toBe(true);
+
+    const macReleaseDefault = vi.fn();
+    (macClient as any).handleKeyUp({
+      code: "MetaLeft",
+      preventDefault: macReleaseDefault
+    });
+
+    expect(macReleaseDefault).toHaveBeenCalled();
+    expect((macClient as any).keyboardState.egg).toBe(false);
+    expect((macClient as any).eggChargeState.pendingThrow).toBe(true);
+
+    macClient.dispose();
+
+    setNavigatorPlatform("Win32");
+    const windowsClient = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 34
+    });
+
+    (windowsClient as any).pointerLocked = true;
+    (windowsClient as any).runtimePaused = false;
+    (windowsClient as any).getLocalRuntimePlayer = () => ({
+      id: "human-1",
+      alive: true,
+      fallingOut: false,
+      grounded: true,
+      mass: 84,
+      respawning: false,
+      stunRemaining: 0,
+      spacePhase: "none"
+    });
+
+    (windowsClient as any).handleKeyDown({
+      code: "ControlLeft",
+      preventDefault: vi.fn(),
+      target: window
+    });
+    expect((windowsClient as any).eggChargeState.active).toBe(true);
+
+    windowsClient.dispose();
+  });
+
+  it("does not start grounded egg charge when egg availability is blocked", () => {
     const client = GameClient.mount({
       canvas: createCanvas(),
       initialDocument: createDefaultArenaMap(),
@@ -1219,28 +1238,36 @@ describe("GameClient", () => {
 
     (client as any).pointerLocked = true;
     (client as any).runtimePaused = false;
-    (client as any).latestFrame = createRuntimeFrame();
+    (client as any).latestFrame = {
+      localPlayerId: "human-1",
+      players: [
+        {
+          id: "human-1",
+          alive: true,
+          fallingOut: false,
+          grounded: true,
+          mass: 18,
+          respawning: false,
+          stunRemaining: 0,
+          spacePhase: "none"
+        }
+      ],
+      eggs: []
+    };
 
-    const metaPreventDefault = vi.fn();
     (client as any).handleKeyDown({
       code: "MetaLeft",
-      preventDefault: metaPreventDefault,
-      target: window
-    });
-    (client as any).handleKeyDown({
-      code: "ControlLeft",
       preventDefault: vi.fn(),
       target: window
     });
 
-    expect(metaPreventDefault).not.toHaveBeenCalled();
-    expect((client as any).eggActionState.pressed).toBe(false);
+    expect((client as any).keyboardState.egg).toBe(true);
     expect((client as any).eggChargeState.active).toBe(false);
 
     client.dispose();
   });
 
-  it("toggles build mode with Q", () => {
+  it("does not send immediate egg throws when egg availability is blocked", () => {
     const client = GameClient.mount({
       canvas: createCanvas(),
       initialDocument: createDefaultArenaMap(),
@@ -1248,182 +1275,27 @@ describe("GameClient", () => {
       matchColorSeed: 53
     });
 
-    (client as any).handleKeyDown({
-      code: "KeyQ",
-      preventDefault: vi.fn(),
-      repeat: false,
-      target: window
-    });
-    expect((client as any).interactionMode).toBe("build");
-
-    (client as any).handleKeyDown({
-      code: "KeyQ",
-      preventDefault: vi.fn(),
-      repeat: false,
-      target: window
-    });
-    expect((client as any).interactionMode).toBe("normal");
-
-    client.dispose();
-  });
-
-  it("uses RMB tap to harvest and RMB hold to charged-throw in normal mode", () => {
-    const client = GameClient.mount({
-      canvas: createCanvas(),
-      initialDocument: createDefaultArenaMap(),
-      initialMode: "explore",
-      matchColorSeed: 54
-    });
-
-    (client as any).pointerLocked = true;
-    (client as any).runtimePaused = false;
-    (client as any).latestFrame = createRuntimeFrame();
-
-    (client as any).handlePointerDown({ button: 2 });
-    (client as any).handlePointerUp({ button: 2 });
-    expect((client as any).destroyQueued).toBe(true);
-    expect((client as any).eggChargeState.active).toBe(false);
-
-    (client as any).destroyQueued = false;
-    (client as any).handlePointerDown({ button: 2 });
-    (client as any).updateHeldEggActions(
-      (client as any).getLocalRuntimePlayer(),
-      (client as any).getLocalEggActionState(),
-      0.2
-    );
-    expect((client as any).eggChargeState.active).toBe(true);
-    expect((client as any).destroyQueued).toBe(false);
-
-    (client as any).eggChargeState.chargeAlpha = 0.45;
-    (client as any).handlePointerUp({ button: 2 });
-    expect((client as any).eggChargeState.pendingThrow).toBe(true);
-    expect((client as any).eggChargeState.pendingThrowCharge).toBeGreaterThan(0.18);
-
-    client.dispose();
-  });
-
-  it("uses E tap for a quick egg and E hold for a charged throw", () => {
-    const client = GameClient.mount({
-      canvas: createCanvas(),
-      initialDocument: createDefaultArenaMap(),
-      initialMode: "explore",
-      matchColorSeed: 55
-    });
-
-    (client as any).pointerLocked = true;
-    (client as any).runtimePaused = false;
-    (client as any).latestFrame = createRuntimeFrame();
-
-    (client as any).handleKeyDown({
-      code: "KeyE",
-      preventDefault: vi.fn(),
-      repeat: false,
-      target: window
-    });
-    (client as any).handleKeyUp({
-      code: "KeyE",
-      preventDefault: vi.fn()
-    });
-    expect((client as any).eggChargeState.pendingThrow).toBe(true);
-    expect((client as any).eggChargeState.pendingThrowCharge).toBe(0);
-
-    (client as any).eggChargeState.pendingThrow = false;
-    (client as any).eggChargeState.pendingThrowCharge = 0;
-    (client as any).eggChargeState.pendingThrowPitch = 0;
-
-    (client as any).handleKeyDown({
-      code: "KeyE",
-      preventDefault: vi.fn(),
-      repeat: false,
-      target: window
-    });
-    (client as any).updateHeldEggActions(
-      (client as any).getLocalRuntimePlayer(),
-      (client as any).getLocalEggActionState(),
-      0.2
-    );
-    expect((client as any).eggChargeState.active).toBe(true);
-
-    (client as any).updateEggChargeState(
-      (client as any).getLocalRuntimePlayer(),
-      (client as any).getLocalEggActionState(),
-      0.04,
-      0.24
-    );
-    (client as any).handleKeyUp({
-      code: "KeyE",
-      preventDefault: vi.fn()
-    });
-    expect((client as any).eggChargeState.pendingThrow).toBe(true);
-    expect((client as any).eggChargeState.pendingThrowCharge).toBeGreaterThan(0.18);
-
-    client.dispose();
-  });
-
-  it("uses RMB to place in build mode without harvesting or starting an egg throw", () => {
-    const client = GameClient.mount({
-      canvas: createCanvas(),
-      initialDocument: createDefaultArenaMap(),
-      initialMode: "explore",
-      matchColorSeed: 56
-    });
-
-    (client as any).pointerLocked = true;
-    (client as any).runtimePaused = false;
-    (client as any).latestFrame = createRuntimeFrame();
-    (client as any).handleKeyDown({
-      code: "KeyQ",
-      preventDefault: vi.fn(),
-      repeat: false,
-      target: window
-    });
-
-    (client as any).handlePointerDown({ button: 2 });
-
-    expect((client as any).interactionMode).toBe("build");
-    expect((client as any).placeQueued).toBe(true);
-    expect((client as any).destroyQueued).toBe(false);
-    expect((client as any).eggChargeState.active).toBe(false);
-
-    client.dispose();
-  });
-
-  it("pulses matter feedback and skips egg commands when eggs are blocked by low matter", () => {
-    const client = GameClient.mount({
-      canvas: createCanvas(),
-      initialDocument: createDefaultArenaMap(),
-      initialMode: "explore",
-      matchColorSeed: 57
-    });
-
     const worker = MockWorker.instances[0]!;
     (client as any).pointerLocked = true;
-    (client as any).runtimePaused = false;
-    (client as any).latestFrame = createRuntimeFrame({
-      localEggActionState: createLocalEggActionState({
-        reason: "notEnoughMatter",
-        hasMatter: false,
-        canQuickEgg: false,
-        canChargedThrow: false
-      })
-    });
+    (client as any).latestFrame = {
+      localPlayerId: "human-1",
+      players: [
+        {
+          id: "human-1",
+          alive: true,
+          fallingOut: false,
+          grounded: false,
+          mass: 18,
+          respawning: false,
+          stunRemaining: 0,
+          spacePhase: "none"
+        }
+      ],
+      eggs: []
+    };
+    (client as any).keyboardState.egg = true;
 
-    (client as any).handleKeyDown({
-      code: "KeyE",
-      preventDefault: vi.fn(),
-      repeat: false,
-      target: window
-    });
-    (client as any).handleKeyUp({
-      code: "KeyE",
-      preventDefault: vi.fn()
-    });
-
-    const overlayState = (client as any).buildRuntimeOverlayState(0.1);
-    expect(overlayState.matterPulseActive).toBe(true);
-    expect(overlayState.resourceMessage).toBe("I need more matter");
-
-    (client as any).sendRuntimeInput();
+    (client as any).sendRuntimeInput((client as any).getLocalRuntimePlayer());
 
     const lastMessage = worker.postMessage.mock.calls.at(-1)?.[0];
     const command = unpackRuntimeInputCommand(lastMessage.buffer);

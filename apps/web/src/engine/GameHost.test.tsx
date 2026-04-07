@@ -49,7 +49,6 @@ describe("GameHost", () => {
     const onHudStateChange = vi.fn();
     const onPauseStateChange = vi.fn();
     const onReadyToDisplay = vi.fn();
-    const onRuntimeOverlayChange = vi.fn();
     const onStatus = vi.fn();
 
     render(
@@ -62,7 +61,6 @@ describe("GameHost", () => {
         onHudStateChange={onHudStateChange}
         onPauseStateChange={onPauseStateChange}
         onReadyToDisplay={onReadyToDisplay}
-        onRuntimeOverlayChange={onRuntimeOverlayChange}
         onStatus={onStatus}
       />
     );
@@ -82,7 +80,6 @@ describe("GameHost", () => {
         onHudStateChange,
         onPauseStateChange,
         onReadyToDisplay,
-        onRuntimeOverlayChange,
         onStatus
       })
     );

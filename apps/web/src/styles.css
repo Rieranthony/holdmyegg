@@ -1253,132 +1253,39 @@ input::placeholder {
   z-index: 3;
 }
 
-.hud-egg-card {
+.hud-egg-status {
   position: absolute;
   top: 1rem;
   left: 50%;
   display: grid;
-  justify-items: center;
-  gap: 0.4rem;
-  width: min(220px, calc(100% - 2rem));
-  padding: 0.72rem 0.8rem 0.82rem;
+  gap: 0.35rem;
+  width: min(280px, calc(100% - 2rem));
+  padding: 0.55rem 0.7rem;
   border: 2px solid rgba(255, 255, 255, 0.12);
   background: rgba(16, 25, 34, 0.94);
   color: var(--text);
   box-shadow: 4px 4px 0 rgba(8, 12, 16, 0.48);
   transform: translateX(-50%);
-  isolation: isolate;
 }
 
-.hud-egg-card__badge {
-  position: absolute;
-  top: -0.7rem;
-  right: 0.62rem;
-  padding: 0.16rem 0.36rem;
-  border: 2px solid var(--line);
-  background: #7bd16f;
-  color: var(--ink);
-  font-size: 0.54rem;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  box-shadow: 2px 2px 0 rgba(8, 12, 16, 0.38);
+.hud-egg-status__row {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
 }
 
-.hud-egg-card__shell {
-  display: grid;
-  place-items: center;
-  width: 88px;
-  height: 106px;
-  padding: 0.4rem;
-  border: 2px solid rgba(255, 255, 255, 0.12);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0)),
-    rgba(255, 255, 255, 0.03);
-  transition:
-    opacity 120ms linear,
-    filter 120ms linear,
-    transform 120ms linear;
-}
-
-.hud-egg-card__shell-inner {
-  position: relative;
-  width: 58px;
-  height: 72px;
-  border: 3px solid var(--line);
-  border-radius: 48% 48% 38% 38% / 60% 60% 34% 34%;
-  background: linear-gradient(180deg, #fffef6 0%, #f8de84 100%);
-  box-shadow:
-    inset 0 8px 0 rgba(255, 255, 255, 0.58),
-    inset 0 -8px 0 rgba(244, 93, 72, 0.18),
-    4px 4px 0 rgba(8, 12, 16, 0.26);
-  overflow: hidden;
-}
-
-.hud-egg-card__shine,
-.hud-egg-card__band {
-  position: absolute;
-  display: block;
-}
-
-.hud-egg-card__shine {
-  top: 0.42rem;
-  left: 0.58rem;
-  width: 0.62rem;
-  height: 1.1rem;
-  background: rgba(255, 255, 255, 0.72);
-}
-
-.hud-egg-card__band {
-  left: 0;
-  right: 0;
-  bottom: 0.72rem;
-  height: 0.42rem;
-  background: rgba(255, 204, 69, 0.68);
-}
-
-.hud-egg-card__caption {
+.hud-egg-status__label {
   color: #fff6d3;
-  font-size: 0.58rem;
-  line-height: 1.5;
+  font-size: 0.76rem;
   letter-spacing: 0.08em;
-  text-align: center;
   text-transform: uppercase;
 }
 
-.hud-egg-card--ready .hud-egg-card__shell {
-  filter: saturate(1.06);
-  opacity: 1;
-}
-
-.hud-egg-card--cooldown .hud-egg-card__shell {
-  animation: hud-egg-card-blink 720ms steps(2, end) infinite;
-}
-
-.hud-egg-card--notEnoughMatter .hud-egg-card__shell,
-.hud-egg-card--stateBlocked .hud-egg-card__shell {
-  filter: grayscale(0.3) saturate(0.72);
-  opacity: 0.56;
-}
-
-.hud-egg-card__bubble {
-  position: absolute;
-  top: calc(100% + 0.35rem);
-  left: 50%;
-  transform: translateX(-50%);
-}
-
-@keyframes hud-egg-card-blink {
-  0%,
-  49% {
-    opacity: 0.3;
-    transform: translateY(3px) scale(0.96);
-  }
-
-  50%,
-  100% {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
+.hud-egg-status__meta {
+  margin-left: auto;
+  color: var(--text-dim);
+  font-size: 0.72rem;
+  letter-spacing: 0.12em;
 }
 
 .hud-status {
@@ -1453,28 +1360,19 @@ input::placeholder {
   border-width: 2px;
 }
 
-.hud-meter--pulse {
-  animation: hud-meter-pulse 800ms steps(2, end) 1;
-}
-
 .meter-fill {
   height: 100%;
   background: linear-gradient(90deg, var(--accent-gold), var(--accent-red));
 }
 
-@keyframes hud-meter-pulse {
-  0%,
-  100% {
-    box-shadow: none;
-    transform: scale(1);
-  }
+.hud-egg-meter {
+  height: 10px;
+  margin-top: 0;
+  border-width: 2px;
+}
 
-  50% {
-    box-shadow:
-      0 0 0 2px rgba(255, 204, 69, 0.5),
-      0 0 0 5px rgba(244, 93, 72, 0.24);
-    transform: scaleY(1.18);
-  }
+.hud-egg-meter__fill {
+  transition: width 180ms ease-out;
 }
 
 .hud-ranking {
@@ -1626,8 +1524,8 @@ input::placeholder {
     width: min(360px, calc(100% - 2rem));
   }
 
-  .hud-egg-card {
-    width: min(220px, calc(100% - 2rem));
+  .hud-egg-status {
+    width: min(260px, calc(100% - 2rem));
   }
 
   .runtime-pause-strip {
@@ -1796,24 +1694,14 @@ input::placeholder {
     padding: 0.62rem 0.7rem;
   }
 
-  .hud-egg-card {
+  .hud-egg-status {
     top: 0.75rem;
-    width: min(180px, calc(100% - 1.5rem));
-    padding: 0.62rem 0.62rem 0.72rem;
+    width: min(240px, calc(100% - 1.5rem));
+    padding: 0.52rem 0.62rem;
   }
 
-  .hud-egg-card__shell {
-    width: 76px;
-    height: 92px;
-  }
-
-  .hud-egg-card__shell-inner {
-    width: 50px;
-    height: 62px;
-  }
-
-  .hud:has(.hud-egg-card) .hud-status {
-    top: 8.15rem;
+  .hud:has(.hud-egg-status) .hud-status {
+    top: 4.2rem;
   }
 
   .hud-status__row {

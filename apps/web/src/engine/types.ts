@@ -2,7 +2,6 @@ import type {
   FallingClusterViewState,
   GameMode,
   HudState,
-  LocalEggActionState,
   RuntimeEggScatterDebrisState,
   RuntimeEggState,
   RuntimePlayerState,
@@ -78,22 +77,12 @@ export interface RuntimeRenderFrame {
   time: number;
   mode: GameMode;
   localPlayerId: string | null;
-  localEggActionState: LocalEggActionState | null;
   players: RuntimePlayerState[];
   eggs: RuntimeEggState[];
   eggScatterDebris: RuntimeEggScatterDebrisState[];
   voxelBursts: RuntimeVoxelBurstState[];
   skyDrops: RuntimeSkyDropState[];
   fallingClusters: FallingClusterViewState[];
-}
-
-export type RuntimeInteractionMode = "normal" | "build";
-
-export interface RuntimeOverlayState {
-  eggActionState: LocalEggActionState | null;
-  interactionMode: RuntimeInteractionMode;
-  matterPulseActive: boolean;
-  resourceMessage: string | null;
 }
 
 export interface GameDiagnostics {

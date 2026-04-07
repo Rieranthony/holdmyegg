@@ -1,3 +1,5 @@
+import { detectEggLaunchPlatform, getEggLaunchShortcutLabels } from "../game/eggLaunchControls";
+
 export interface ShortcutBinding {
   action: string;
   detail?: string;
@@ -6,7 +8,9 @@ export interface ShortcutBinding {
 
 export type ShortcutLegendVariant = "default" | "compact" | "pause";
 
-export const getRuntimeShortcutBindings = (): ShortcutBinding[] => [
+export const getRuntimeShortcutBindings = (
+  platform = detectEggLaunchPlatform(),
+): ShortcutBinding[] => [
   {
     action: "Look",
     detail: "aim the camera",
@@ -23,19 +27,19 @@ export const getRuntimeShortcutBindings = (): ShortcutBinding[] => [
     keys: ["Space"],
   },
   {
-    action: "Right Mouse",
-    detail: "tap harvest, hold throw, place in BUILD MODE",
-    keys: ["RMB"],
+    action: "Harvest",
+    detail: "break cubes for matter",
+    keys: ["LMB"],
   },
   {
-    action: "Egg",
-    detail: "tap to lay or egg, hold to throw",
+    action: "Build",
+    detail: "place a cube",
     keys: ["E"],
   },
   {
-    action: "Build Mode",
-    detail: "toggle placement mode",
-    keys: ["Q"],
+    action: "Launch Eggs",
+    detail: "hold to charge, release to throw, costs matter",
+    keys: getEggLaunchShortcutLabels(platform),
   },
   {
     action: "Push",

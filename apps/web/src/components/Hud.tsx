@@ -1,7 +1,5 @@
 import { useEffect, useState } from "react";
 import type { HudState, OutOfBoundsSimulation } from "@out-of-bounds/sim";
-import type { RuntimeOverlayState } from "../engine/types";
-import { ChickenTauntBubble } from "./ChickenTauntBubble";
 import type { ActiveMode } from "./GameCanvas";
 
 const getModeLabel = (mode: ActiveMode) => (mode === "playNpc" ? "PLAY NPC" : mode.toUpperCase());
@@ -57,43 +55,14 @@ const areHudStatesEqual = (left: HudState, right: HudState) => {
   });
 };
 
-const getEggCaption = (overlayState: RuntimeOverlayState | null) => {
-  if (!overlayState) {
-    return "";
-  }
-
-  if (overlayState.interactionMode === "build") {
-    return "BUILD MODE";
-  }
-
-  const eggActionState = overlayState.eggActionState;
-  if (!eggActionState) {
-    return "BUILD MODE";
-  }
-
-  if (eggActionState.reason === "notEnoughMatter") {
-    return "Need matter";
-  }
-
-  if (eggActionState.reason === "ready") {
-    return eggActionState.canChargedThrow
-      ? "Tap E to lay • Hold E or RMB to throw"
-      : "Tap E to egg";
-  }
-
-  return eggActionState.reason === "cooldown" ? "Egg loading" : "Can't egg now";
-};
-
 export function Hud({
   runtime,
   mode,
-  hudState: externalHudState,
-  overlayState = null
+  hudState: externalHudState
 }: {
   runtime?: OutOfBoundsSimulation;
   mode: ActiveMode;
   hudState?: HudState | null;
-  overlayState?: RuntimeOverlayState | null;
 }) {
   const [hudState, setHudState] = useState(() => externalHudState ?? runtime?.getHudState() ?? null);
 
@@ -135,54 +104,44 @@ export function Hud({
   }
   const massWidth = `${(localPlayer.mass / localPlayer.maxMass) * 100}%`;
   const featherText = "^".repeat(localPlayer.livesRemaining).padEnd(localPlayer.maxLives, ".");
+  const eggStatus = hudState.eggStatus;
   const statusText = localPlayer.respawning
     ? `Respawning ${Math.max(0, localPlayer.invulnerableRemaining).toFixed(1)}s shield queued`
     : localPlayer.stunRemaining > 0
       ? `Smashed ${localPlayer.stunRemaining.toFixed(1)}s`
-        : localPlayer.invulnerableRemaining > 0
-          ? `Shielded ${localPlayer.invulnerableRemaining.toFixed(1)}s`
-          : localPlayer.grounded
-            ? "Grounded"
-            : "Airborne";
+      : localPlayer.invulnerableRemaining > 0
+        ? `Shielded ${localPlayer.invulnerableRemaining.toFixed(1)}s`
+        : localPlayer.grounded
+          ? "Grounded"
+          : "Airborne";
   const hasRanking = hudState.ranking.length > 1;
-  const eggCardState = overlayState?.eggActionState?.reason ?? "stateBlocked";
-  const eggCardCaption = getEggCaption(overlayState);
-  const showEggCard = overlayState !== null;
-  const matterMeterClassName = [
-    "meter",
-    "hud-meter",
-    overlayState?.matterPulseActive ? "hud-meter--pulse" : ""
-  ]
-    .filter(Boolean)
-    .join(" ");
+  const showEggStatus = eggStatus?.hasMatter ?? false;
+  const eggMeterProgress = eggStatus?.ready
+    ? 1
+    : eggStatus && eggStatus.cooldownDuration > 0
+      ? 1 - Math.max(0, Math.min(1, eggStatus.cooldownRemaining / eggStatus.cooldownDuration))
+      : 0;
+  const eggMeterWidth = `${eggMeterProgress * 100}%`;
 
   return (
     <div className="hud">
-      {showEggCard && (
+      {showEggStatus && eggStatus && (
         <section
-          aria-label="Egg action"
-          className={`hud-egg-card hud-egg-card--${eggCardState}`}
-          data-state={eggCardState}
-          data-testid="hud-egg-card"
+          aria-label="Egg status"
+          className="hud-egg-status"
+          data-testid="hud-egg-status"
         >
-          {overlayState?.interactionMode === "build" && (
-            <span className="hud-egg-card__badge" data-testid="hud-build-badge">
-              BUILD MODE
+          <div className="hud-egg-status__row">
+            <span className="hud-egg-status__label">{eggStatus.ready ? "Egg ready!" : "Egg loading"}</span>
+            <span className="hud-egg-status__meta">
+              {eggStatus.activeCount} / {eggStatus.maxActiveCount}
             </span>
-          )}
-          <div className="hud-egg-card__shell" aria-hidden="true" data-testid="hud-egg-shell">
-            <div className="hud-egg-card__shell-inner">
-              <span className="hud-egg-card__shine" />
-              <span className="hud-egg-card__band" />
-            </div>
           </div>
-          <span className="hud-egg-card__caption" data-testid="hud-egg-caption">
-            {eggCardCaption}
-          </span>
-          <div className="hud-egg-card__bubble">
-            <ChickenTauntBubble
-              message={overlayState?.resourceMessage ?? null}
-              testId="hud-resource-message"
+          <div className="meter hud-egg-meter">
+            <div
+              className="meter-fill hud-egg-meter__fill"
+              data-testid="hud-egg-meter-fill"
+              style={{ width: eggMeterWidth }}
             />
           </div>
         </section>
@@ -202,7 +161,7 @@ export function Hud({
         </div>
         <div className="hud-status__row hud-status__row--matter">
           <span className="hud-inline-label">Matter</span>
-          <div className={matterMeterClassName} data-testid="hud-matter-meter">
+          <div className="meter hud-meter">
             <div
               className="meter-fill"
               style={{ width: massWidth }}

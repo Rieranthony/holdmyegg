@@ -9,7 +9,6 @@ import type {
   HudPlayerState,
   HudRankingEntry,
   HudState,
-  LocalEggActionState,
   MatchPlayerState,
   MatchState,
   PlayerCommand,
@@ -35,7 +34,7 @@ import type {
   VoxelBurstViewState
 } from "./types";
 import { defaultSimulationConfig } from "./config";
-import { getHudEggStatus, getLocalEggActionState } from "./eggAvailability";
+import { getHudEggStatus } from "./eggAvailability";
 import { getGroundedEggLaunchVelocity } from "./eggLaunch";
 
 const EPSILON = 0.0001;
@@ -561,24 +560,6 @@ export class OutOfBoundsSimulation {
         })
         .filter((entry): entry is HudRankingEntry => entry !== null)
     };
-  }
-
-  getLocalEggActionState(): LocalEggActionState | null {
-    const localPlayerId = this.localPlayerId;
-    const localPlayer = localPlayerId ? this.players.get(localPlayerId) ?? null : null;
-    if (!localPlayerId || !localPlayer) {
-      return null;
-    }
-
-    return getLocalEggActionState({
-      localPlayerId,
-      localPlayerMass: localPlayer.mass,
-      localPlayer: this.getPlayerRuntimeState(localPlayerId),
-      eggs: this.getEggs(),
-      eggCost: this.config.eggCost,
-      maxActiveEggsPerPlayer: this.config.maxActiveEggsPerPlayer,
-      eggFuseDuration: this.config.eggFuseDuration
-    });
   }
 
   consumeDirtyChunkKeys() {
