@@ -309,6 +309,91 @@ describe("OutOfBoundsSimulation", () => {
     expect(Math.abs(airborne.velocity.z)).toBeLessThan(simulation.config.moveSpeed);
   });
 
+  it("uses jump ledge assist to climb short stair-like obstacles without making walking auto-step", () => {
+    const createStairSimulation = () => {
+      const simulation = createTestSimulation("explore", (world) => {
+        world.setVoxel(7, DEFAULT_SURFACE_Y, 6, "boundary");
+        world.setVoxel(8, DEFAULT_SURFACE_Y, 6, "boundary");
+        world.setVoxel(8, DEFAULT_SURFACE_Y + 1, 6, "boundary");
+      });
+      const localPlayerId = simulation.getLocalPlayerId()!;
+      const localPlayer = getInternalPlayer(simulation, localPlayerId);
+      localPlayer.position = { x: 6.65, y: PLAYER_GROUND_Y, z: 6.5 };
+      localPlayer.velocity = { x: 0, y: 0, z: 0 };
+      localPlayer.facing = { x: 1, z: 0 };
+      localPlayer.grounded = true;
+      return { simulation, localPlayerId };
+    };
+
+    const { simulation: jumpedSimulation, localPlayerId: jumpedPlayerId } = createStairSimulation();
+    jumpedSimulation.step({
+      [jumpedPlayerId]: move(1, 0, {
+        jump: true,
+        jumpPressed: true
+      })
+    });
+    advanceSimulation(jumpedSimulation, 19, {
+      [jumpedPlayerId]: move(1, 0)
+    });
+    const jumpedPlayer = jumpedSimulation.getPlayerViewState(jumpedPlayerId)!;
+
+    const { simulation: walkingSimulation, localPlayerId: walkingPlayerId } = createStairSimulation();
+    advanceSimulation(walkingSimulation, 20, {
+      [walkingPlayerId]: move(1, 0)
+    });
+    const walkingPlayer = walkingSimulation.getPlayerViewState(walkingPlayerId)!;
+
+    expect(jumpedPlayer.position.x).toBeGreaterThan(walkingPlayer.position.x + 0.35);
+    expect(jumpedPlayer.position.y).toBeGreaterThan(PLAYER_GROUND_Y + 1.2);
+    expect(walkingPlayer.position.x).toBeLessThan(6.75);
+    expect(walkingPlayer.position.y).toBeLessThan(PLAYER_GROUND_Y + 0.1);
+  });
+
+  it("keeps jump ledge assist from bypassing tall walls or blocked headroom", () => {
+    const createObstacleSimulation = (mutateWorld: Parameters<typeof createTestSimulation>[1]) => {
+      const simulation = createTestSimulation("explore", mutateWorld);
+      const localPlayerId = simulation.getLocalPlayerId()!;
+      const localPlayer = getInternalPlayer(simulation, localPlayerId);
+      localPlayer.position = { x: 6.65, y: PLAYER_GROUND_Y, z: 6.5 };
+      localPlayer.velocity = { x: 0, y: 0, z: 0 };
+      localPlayer.facing = { x: 1, z: 0 };
+      localPlayer.grounded = true;
+      return { simulation, localPlayerId };
+    };
+
+    const { simulation: tallWallSimulation, localPlayerId: tallWallPlayerId } = createObstacleSimulation((world) => {
+      world.setVoxel(7, DEFAULT_SURFACE_Y, 6, "boundary");
+      world.setVoxel(7, DEFAULT_SURFACE_Y + 1, 6, "boundary");
+    });
+    tallWallSimulation.step({
+      [tallWallPlayerId]: move(1, 0, {
+        jump: true,
+        jumpPressed: true
+      })
+    });
+    advanceSimulation(tallWallSimulation, 9, {
+      [tallWallPlayerId]: move(1, 0)
+    });
+    expect(tallWallSimulation.getPlayerViewState(tallWallPlayerId)!.position.x).toBeLessThan(6.7);
+
+    const { simulation: blockedHeadroomSimulation, localPlayerId: blockedHeadroomPlayerId } = createObstacleSimulation(
+      (world) => {
+        world.setVoxel(7, DEFAULT_SURFACE_Y, 6, "boundary");
+        world.setVoxel(7, DEFAULT_SURFACE_Y + 2, 6, "boundary");
+      }
+    );
+    blockedHeadroomSimulation.step({
+      [blockedHeadroomPlayerId]: move(1, 0, {
+        jump: true,
+        jumpPressed: true
+      })
+    });
+    advanceSimulation(blockedHeadroomSimulation, 9, {
+      [blockedHeadroomPlayerId]: move(1, 0)
+    });
+    expect(blockedHeadroomSimulation.getPlayerViewState(blockedHeadroomPlayerId)!.position.x).toBeLessThan(6.7);
+  });
+
   it("rotates facing gradually toward a new move direction instead of snapping", () => {
     const simulation = new OutOfBoundsSimulation({
       turnSpeed: 1

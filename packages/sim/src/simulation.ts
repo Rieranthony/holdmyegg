@@ -42,6 +42,9 @@ import { getGroundedEggLaunchVelocity } from "./eggLaunch";
 const EPSILON = 0.0001;
 const RING_OUT_FALL_CULL_DEPTH = 12;
 const PUSH_VISUAL_DURATION = 0.24;
+const JUMP_LEDGE_ASSIST_DURATION = 0.22;
+const JUMP_LEDGE_ASSIST_MAX_HEIGHT = 1.1;
+const JUMP_LEDGE_ASSIST_CLEARANCE = 0.05;
 const HARVEST_VOXEL_BURST_DURATION = 0.24;
 const EGG_EXPLOSION_VOXEL_BURST_DURATION = 0.42;
 const INITIAL_SKY_ENTRY_SPEED = -2.4;
@@ -90,6 +93,7 @@ interface SimPlayer {
   eggTauntSequence: number;
   eggTauntRemaining: number;
   jumpBufferRemaining: number;
+  jumpAssistRemaining: number;
   jetpackHoldActivationRemaining: number;
   jetpackEligible: boolean;
   jetpackActive: boolean;
@@ -190,6 +194,11 @@ interface NpcPathProbe {
   blockedAhead: boolean;
   shortGapAhead: boolean;
   tallStepAhead: boolean;
+}
+
+interface HorizontalAxisCollision {
+  next: number;
+  blockerTopY: number;
 }
 
 interface NpcPlacementPlan {
@@ -801,6 +810,7 @@ export class OutOfBoundsSimulation {
       eggTauntSequence: 0,
       eggTauntRemaining: 0,
       jumpBufferRemaining: 0,
+      jumpAssistRemaining: 0,
       jetpackHoldActivationRemaining: 0,
       jetpackEligible: false,
       jetpackActive: false,
@@ -1106,11 +1116,40 @@ export class OutOfBoundsSimulation {
   }
 
   private canPlayerFitAt(position: Vector3) {
-    const supportY = Math.floor(position.y - 0.1);
-    if (!this.world.hasSolid(Math.floor(position.x), supportY, Math.floor(position.z))) {
+    if (!this.hasPlayerSupportAt(position)) {
       return false;
     }
 
+    return this.isPlayerVolumeClear(position);
+  }
+
+  private hasPlayerSupportAt(position: Vector3) {
+    const supportY = Math.floor(position.y - 0.1);
+    if (supportY < 0) {
+      return false;
+    }
+
+    const minX = Math.floor(position.x - this.config.playerRadius + EPSILON);
+    const maxX = Math.floor(position.x + this.config.playerRadius - EPSILON);
+    const minZ = Math.floor(position.z - this.config.playerRadius + EPSILON);
+    const maxZ = Math.floor(position.z + this.config.playerRadius - EPSILON);
+
+    for (let x = minX; x <= maxX; x += 1) {
+      for (let z = minZ; z <= maxZ; z += 1) {
+        if (!this.world.hasSolid(x, supportY, z)) {
+          continue;
+        }
+
+        if (this.doesPlayerFootprintOverlapVoxelAt(position, x, z)) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  private isPlayerVolumeClear(position: Vector3) {
     if (position.y + this.config.playerHeight >= this.world.size.y - EPSILON) {
       return false;
     }
@@ -1133,6 +1172,15 @@ export class OutOfBoundsSimulation {
     }
 
     return true;
+  }
+
+  private doesPlayerFootprintOverlapVoxelAt(position: Vector3, voxelX: number, voxelZ: number) {
+    const closestX = clamp(position.x, voxelX, voxelX + 1);
+    const closestZ = clamp(position.z, voxelZ, voxelZ + 1);
+    const deltaX = position.x - closestX;
+    const deltaZ = position.z - closestZ;
+
+    return deltaX * deltaX + deltaZ * deltaZ < this.config.playerRadius * this.config.playerRadius - EPSILON;
   }
 
   private getNpcArchetype(index: number): NpcArchetype {
@@ -1320,6 +1368,7 @@ export class OutOfBoundsSimulation {
     player.stunRemaining = Math.max(0, player.stunRemaining - dt);
     player.invulnerableRemaining = Math.max(0, player.invulnerableRemaining - dt);
     player.jumpBufferRemaining = Math.max(0, player.jumpBufferRemaining - dt);
+    player.jumpAssistRemaining = Math.max(0, player.jumpAssistRemaining - dt);
     if (command.jumpPressed) {
       player.jumpBufferRemaining = this.config.jumpBufferDuration;
     }
@@ -1794,12 +1843,13 @@ export class OutOfBoundsSimulation {
       player.velocity.y = Math.max(player.velocity.y, SPACE_FLOAT_DRIFT_SPEED);
     }
 
-    this.resolveAxis(player, "x", player.velocity.x * dt);
+    this.resolveHorizontalMovement(player, "x", player.velocity.x * dt);
     const groundedByY = this.resolveAxis(player, "y", player.velocity.y * dt);
-    this.resolveAxis(player, "z", player.velocity.z * dt);
+    this.resolveHorizontalMovement(player, "z", player.velocity.z * dt);
     player.grounded = groundedByY;
     if (player.grounded) {
       this.clearJetpackState(player);
+      player.jumpAssistRemaining = 0;
       player.spacePhase = "none";
       player.spacePhaseRemaining = 0;
       player.spaceTriggerArmed = true;
@@ -1856,6 +1906,7 @@ export class OutOfBoundsSimulation {
     player.velocity.y = this.config.jumpSpeed;
     player.grounded = false;
     player.jumpBufferRemaining = 0;
+    player.jumpAssistRemaining = JUMP_LEDGE_ASSIST_DURATION;
     player.jetpackHoldActivationRemaining = this.config.jetpackHoldActivationDelay;
     player.jetpackEligible = true;
     player.jetpackOutsideBoundsGrace = false;
@@ -2224,6 +2275,126 @@ export class OutOfBoundsSimulation {
     return grounded;
   }
 
+  private resolveHorizontalMovement(player: SimPlayer, axis: "x" | "z", delta: number) {
+    const collision = this.getHorizontalAxisCollision(player, axis, delta);
+    if (!collision) {
+      player.position[axis] += delta;
+      return;
+    }
+
+    if (this.tryJumpLedgeAssist(player, axis, delta, collision)) {
+      return;
+    }
+
+    player.position[axis] = collision.next;
+    player.velocity[axis] = 0;
+  }
+
+  private getHorizontalAxisCollision(
+    player: SimPlayer,
+    axis: "x" | "z",
+    delta: number
+  ): HorizontalAxisCollision | null {
+    if (Math.abs(delta) <= EPSILON) {
+      return null;
+    }
+
+    const direction = Math.sign(delta);
+    let next = player.position[axis] + delta;
+    let collided = false;
+    let blockerTopY = Number.NEGATIVE_INFINITY;
+
+    if (axis === "x") {
+      const minY = Math.floor(player.position.y + EPSILON);
+      const maxY = Math.floor(player.position.y + this.config.playerHeight - EPSILON);
+      const minZ = Math.floor(player.position.z - this.config.playerRadius + EPSILON);
+      const maxZ = Math.floor(player.position.z + this.config.playerRadius - EPSILON);
+      const start = Math.floor(
+        (direction > 0 ? player.position.x + this.config.playerRadius : player.position.x - this.config.playerRadius) +
+          EPSILON * direction
+      );
+      const end = Math.floor((direction > 0 ? next + this.config.playerRadius : next - this.config.playerRadius) + EPSILON * direction);
+
+      for (let x = start; direction > 0 ? x <= end : x >= end; x += direction) {
+        for (let y = minY; y <= maxY; y += 1) {
+          for (let z = minZ; z <= maxZ; z += 1) {
+            if (!this.world.hasSolid(x, y, z)) {
+              continue;
+            }
+
+            collided = true;
+            blockerTopY = Math.max(blockerTopY, y + 1);
+            next =
+              direction > 0
+                ? Math.min(next, x - this.config.playerRadius - EPSILON)
+                : Math.max(next, x + 1 + this.config.playerRadius + EPSILON);
+          }
+        }
+      }
+    } else {
+      const minX = Math.floor(player.position.x - this.config.playerRadius + EPSILON);
+      const maxX = Math.floor(player.position.x + this.config.playerRadius - EPSILON);
+      const minY = Math.floor(player.position.y + EPSILON);
+      const maxY = Math.floor(player.position.y + this.config.playerHeight - EPSILON);
+      const start = Math.floor(
+        (direction > 0 ? player.position.z + this.config.playerRadius : player.position.z - this.config.playerRadius) +
+          EPSILON * direction
+      );
+      const end = Math.floor((direction > 0 ? next + this.config.playerRadius : next - this.config.playerRadius) + EPSILON * direction);
+
+      for (let z = start; direction > 0 ? z <= end : z >= end; z += direction) {
+        for (let x = minX; x <= maxX; x += 1) {
+          for (let y = minY; y <= maxY; y += 1) {
+            if (!this.world.hasSolid(x, y, z)) {
+              continue;
+            }
+
+            collided = true;
+            blockerTopY = Math.max(blockerTopY, y + 1);
+            next =
+              direction > 0
+                ? Math.min(next, z - this.config.playerRadius - EPSILON)
+                : Math.max(next, z + 1 + this.config.playerRadius + EPSILON);
+          }
+        }
+      }
+    }
+
+    return collided ? { next, blockerTopY } : null;
+  }
+
+  private tryJumpLedgeAssist(
+    player: SimPlayer,
+    axis: "x" | "z",
+    delta: number,
+    collision: HorizontalAxisCollision
+  ) {
+    if (player.grounded || player.jumpAssistRemaining <= EPSILON) {
+      return false;
+    }
+
+    const targetY = collision.blockerTopY + JUMP_LEDGE_ASSIST_CLEARANCE;
+    const liftHeight = targetY - player.position.y;
+    if (liftHeight <= EPSILON || liftHeight > JUMP_LEDGE_ASSIST_MAX_HEIGHT) {
+      return false;
+    }
+
+    const candidatePosition = {
+      x: player.position.x,
+      y: targetY,
+      z: player.position.z
+    };
+    candidatePosition[axis] += delta;
+
+    if (!this.hasPlayerSupportAt(candidatePosition) || !this.isPlayerVolumeClear(candidatePosition)) {
+      return false;
+    }
+
+    player.position.y = targetY;
+    player.position[axis] += delta;
+    return true;
+  }
+
   private resolveOutOfBounds(player: SimPlayer) {
     if (player.position.y < this.world.boundary.fallY) {
       this.handleRingOut(player, false);
@@ -2500,6 +2671,7 @@ export class OutOfBoundsSimulation {
     player.fallingOut = fallingOut;
     player.grounded = false;
     player.jumpBufferRemaining = 0;
+    player.jumpAssistRemaining = 0;
     player.jetpackHoldActivationRemaining = 0;
     player.jetpackEligible = false;
     player.jetpackOutsideBoundsGrace = false;
@@ -2543,6 +2715,7 @@ export class OutOfBoundsSimulation {
     player.invulnerableRemaining = this.config.respawnInvulnerableDuration;
     player.stunRemaining = 0;
     player.jumpBufferRemaining = 0;
+    player.jumpAssistRemaining = 0;
     player.jetpackHoldActivationRemaining = 0;
     player.jetpackActive = false;
     player.jetpackEligible = false;
@@ -4143,6 +4316,7 @@ export class OutOfBoundsSimulation {
     player.respawnRemaining = 0;
     player.invulnerableRemaining = 0;
     player.jumpBufferRemaining = 0;
+    player.jumpAssistRemaining = 0;
     player.jetpackHoldActivationRemaining = 0;
     player.jetpackEligible = false;
     player.jetpackOutsideBoundsGrace = false;

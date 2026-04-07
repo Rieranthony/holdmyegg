@@ -227,6 +227,46 @@ describe("getChickenPoseVisualState", () => {
     });
   });
 
+  it("hits the push tackle burst early and eases through a slower recovery", () => {
+    const earlyBurstPose = getChickenPoseVisualState({
+      grounded: true,
+      velocityY: 0,
+      planarSpeed: 0,
+      elapsedTime: 0.4,
+      motionSeed: 0.3,
+      pushVisualRemaining: chickenPoseVisualDefaults.pushDuration * 0.78,
+      landingRollRemaining: 0,
+      stunned: false
+    });
+    const midpointPose = getChickenPoseVisualState({
+      grounded: true,
+      velocityY: 0,
+      planarSpeed: 0,
+      elapsedTime: 0.4,
+      motionSeed: 0.3,
+      pushVisualRemaining: chickenPoseVisualDefaults.pushDuration * 0.5,
+      landingRollRemaining: 0,
+      stunned: false
+    });
+    const lateRecoveryPose = getChickenPoseVisualState({
+      grounded: true,
+      velocityY: 0,
+      planarSpeed: 0,
+      elapsedTime: 0.4,
+      motionSeed: 0.3,
+      pushVisualRemaining: chickenPoseVisualDefaults.pushDuration * 0.18,
+      landingRollRemaining: 0,
+      stunned: false
+    });
+
+    expect(earlyBurstPose.bodyPitch).toBeGreaterThan(midpointPose.bodyPitch);
+    expect(earlyBurstPose.bodyForwardOffset).toBeGreaterThan(midpointPose.bodyForwardOffset);
+    expect(lateRecoveryPose.bodyPitch).toBeGreaterThan(0);
+    expect(lateRecoveryPose.bodyForwardOffset).toBeGreaterThan(0);
+    expect(lateRecoveryPose.bodyPitch).toBeLessThan(earlyBurstPose.bodyPitch);
+    expect(lateRecoveryPose.bodyForwardOffset).toBeLessThan(earlyBurstPose.bodyForwardOffset);
+  });
+
   it("leans into the throw while charging and keeps a brief follow-through on release", () => {
     const chargePose = getChickenPoseVisualState({
       grounded: true,

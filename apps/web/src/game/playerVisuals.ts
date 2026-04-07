@@ -36,6 +36,8 @@ const JETPACK_TRACE_LENGTH_MAX = 1.68;
 const MAX_WING_ANGLE = 1.24;
 const TAU = Math.PI * 2;
 const PUSH_VISUAL_DURATION = 0.24;
+const PUSH_ATTACK_PORTION = 0.28;
+const PUSH_RECOVERY_EXPONENT = 1.4;
 const PUSH_WING_BOOST = 0.3;
 const PUSH_BODY_PITCH = 0.26;
 const PUSH_BODY_ROLL = 0.08;
@@ -93,6 +95,8 @@ const EGG_RELEASE_BODY_PITCH = 0.28;
 const EGG_RELEASE_BODY_ROLL = 0.28;
 const EGG_RELEASE_FORWARD_OFFSET = 0.18;
 const EGG_RELEASE_HEAD_YAW = 0.14;
+
+const easeOutCubic = (value: number) => 1 - Math.pow(1 - value, 3);
 
 export interface ChickenFeatherOffset {
   x: number;
@@ -565,7 +569,10 @@ export const getChickenPoseVisualState = ({
   eggLaunchReleaseRemaining = 0
 }: ChickenPoseVisualInput): ChickenPoseVisualState => {
   const pushProgress = 1 - clamp(pushVisualRemaining / PUSH_VISUAL_DURATION, 0, 1);
-  const pushAlpha = Math.sin(pushProgress * Math.PI);
+  const pushAttackAlpha = easeOutCubic(clamp(pushProgress / PUSH_ATTACK_PORTION, 0, 1));
+  const pushRecoveryProgress = clamp((pushProgress - PUSH_ATTACK_PORTION) / (1 - PUSH_ATTACK_PORTION), 0, 1);
+  const pushRecoveryAlpha = Math.pow(1 - pushRecoveryProgress, PUSH_RECOVERY_EXPONENT);
+  const pushAlpha = pushProgress <= PUSH_ATTACK_PORTION ? pushAttackAlpha : pushRecoveryAlpha;
   const eggChargeAlpha = grounded && !stunned ? clamp(eggLaunchChargeAlpha, 0, 1) : 0;
   const eggReleaseAlpha =
     grounded && !stunned
