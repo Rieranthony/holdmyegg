@@ -165,17 +165,108 @@ describe("OutOfBoundsSimulation", () => {
     const simulation = createTestSimulation("playNpc");
     const localPlayerId = simulation.getLocalPlayerId()!;
     advanceUntilGrounded(simulation, localPlayerId);
+    getInternalPlayer(simulation, localPlayerId).mass = simulation.config.eggCost + 12;
 
     const matchState = simulation.getMatchState();
     const hudState = simulation.getHudState();
+    const eggActionState = simulation.getLocalEggActionState();
     const playerState = simulation.getPlayerState(localPlayerId);
 
     expect(matchState.playerIds).toContain(localPlayerId);
     expect(matchState.players.some((player) => player.kind === "npc")).toBe(true);
     expect("map" in matchState).toBe(false);
     expect(hudState.localPlayer?.id).toBe(localPlayerId);
+    expect(hudState.eggStatus).toEqual({
+      hasMatter: true,
+      ready: true,
+      activeCount: 0,
+      maxActiveCount: simulation.config.maxActiveEggsPerPlayer,
+      cost: simulation.config.eggCost,
+      cooldownRemaining: 0,
+      cooldownDuration: simulation.config.eggFuseDuration
+    });
     expect(hudState.ranking.length).toBe(matchState.ranking.length);
+    expect(eggActionState).toEqual({
+      reason: "ready",
+      hasMatter: true,
+      cooldownRemaining: 0,
+      cooldownDuration: simulation.config.eggFuseDuration,
+      canQuickEgg: true,
+      canChargedThrow: true
+    });
     expect(playerState?.id).toBe(localPlayerId);
+  });
+
+  it("reports egg hud status as unavailable when the player lacks matter", () => {
+    const simulation = createTestSimulation("explore");
+    const localPlayerId = simulation.getLocalPlayerId()!;
+    advanceUntilGrounded(simulation, localPlayerId);
+    getInternalPlayer(simulation, localPlayerId).mass = simulation.config.eggCost - 1;
+
+    expect(simulation.getHudState().eggStatus).toEqual({
+      hasMatter: false,
+      ready: false,
+      activeCount: 0,
+      maxActiveCount: simulation.config.maxActiveEggsPerPlayer,
+      cost: simulation.config.eggCost,
+      cooldownRemaining: 0,
+      cooldownDuration: simulation.config.eggFuseDuration
+    });
+    expect(simulation.getLocalEggActionState()).toEqual({
+      reason: "notEnoughMatter",
+      hasMatter: false,
+      cooldownRemaining: 0,
+      cooldownDuration: simulation.config.eggFuseDuration,
+      canQuickEgg: false,
+      canChargedThrow: false
+    });
+  });
+
+  it("reports egg cooldown when the player is at the active egg cap", () => {
+    const simulation = createTestSimulation("explore");
+    const localPlayerId = simulation.getLocalPlayerId()!;
+    advanceUntilGrounded(simulation, localPlayerId);
+    getInternalPlayer(simulation, localPlayerId).mass =
+      simulation.config.eggCost * (simulation.config.maxActiveEggsPerPlayer + 1) + 18;
+
+    for (let index = 0; index < simulation.config.maxActiveEggsPerPlayer; index += 1) {
+      simulation.step({
+        [localPlayerId]: layEgg()
+      });
+    }
+
+    const eggActionState = simulation.getLocalEggActionState()!;
+    const expectedCooldown = Math.min(...simulation.getEggs().map((egg) => egg.fuseRemaining));
+
+    expect(eggActionState.reason).toBe("cooldown");
+    expect(eggActionState.canQuickEgg).toBe(false);
+    expect(eggActionState.canChargedThrow).toBe(false);
+    expect(eggActionState.cooldownRemaining).toBeCloseTo(expectedCooldown, 5);
+    expect(eggActionState.cooldownDuration).toBeGreaterThanOrEqual(expectedCooldown);
+  });
+
+  it("reports stateBlocked and rejects layEgg while the player is stunned", () => {
+    const simulation = createTestSimulation("explore");
+    const localPlayerId = simulation.getLocalPlayerId()!;
+    advanceUntilGrounded(simulation, localPlayerId);
+    const localPlayer = getInternalPlayer(simulation, localPlayerId);
+    localPlayer.mass = simulation.config.eggCost + 12;
+    localPlayer.stunRemaining = 0.6;
+
+    expect(simulation.getLocalEggActionState()).toEqual({
+      reason: "stateBlocked",
+      hasMatter: true,
+      cooldownRemaining: 0,
+      cooldownDuration: simulation.config.eggFuseDuration,
+      canQuickEgg: false,
+      canChargedThrow: false
+    });
+
+    simulation.step({
+      [localPlayerId]: layEgg()
+    });
+
+    expect(simulation.getEggs()).toHaveLength(0);
   });
 
   it("applies movement, friction, and air control", () => {
@@ -1087,6 +1178,8 @@ describe("OutOfBoundsSimulation", () => {
 
     expect(simulation.getEggs()).toHaveLength(1);
     expect(simulation.getPlayerState(localPlayerId)!.mass).toBe(60);
+    expect(simulation.getPlayerState(localPlayerId)!.eggTauntSequence).toBe(1);
+    expect(simulation.getPlayerState(localPlayerId)!.eggTauntRemaining).toBeCloseTo(1.6, 5);
 
     advanceSimulation(simulation, 20, {
       [localPlayerId]: idle()
@@ -1094,6 +1187,24 @@ describe("OutOfBoundsSimulation", () => {
 
     expect(simulation.getEggs()).toEqual([]);
     expect(simulation.getWorld().getTerrainRevision()).toBeGreaterThan(terrainBefore);
+  });
+
+  it("expires egg taunts after the configured duration", () => {
+    const simulation = createTestSimulation("explore");
+    const localPlayerId = simulation.getLocalPlayerId()!;
+    const localPlayer = getInternalPlayer(simulation, localPlayerId);
+    localPlayer.mass = simulation.config.maxMass;
+    localPlayer.grounded = true;
+
+    simulation.step({
+      [localPlayerId]: layEgg()
+    });
+
+    advanceSimulation(simulation, 96, {
+      [localPlayerId]: idle()
+    });
+
+    expect(simulation.getPlayerState(localPlayerId)!.eggTauntRemaining).toBeLessThan(1e-9);
   });
 
   it("emits an egg explosion burst while keeping scatter debris available to the renderer", () => {
@@ -1158,6 +1269,41 @@ describe("OutOfBoundsSimulation", () => {
 
     expect(simulation.getEggs()).toHaveLength(1);
     expect(simulation.getPlayerState(localPlayerId)!.mass).toBe(75);
+    expect(simulation.getPlayerState(localPlayerId)!.eggTauntSequence).toBe(1);
+  });
+
+  it("reports egg hud loading progress while the player is capped on active eggs", () => {
+    const simulation = new OutOfBoundsSimulation({
+      eggCost: 15,
+      eggFuseDuration: 999,
+      maxActiveEggsPerPlayer: 1,
+      skyDropIntervalMin: 999,
+      skyDropIntervalMax: 999
+    });
+    simulation.reset("explore", createArenaDocument(), {
+      localPlayerName: "You"
+    });
+
+    const localPlayerId = simulation.getLocalPlayerId()!;
+    const localPlayer = getInternalPlayer(simulation, localPlayerId);
+    localPlayer.mass = 90;
+    localPlayer.grounded = true;
+
+    simulation.step({
+      [localPlayerId]: layEgg()
+    });
+
+    expect(simulation.getHudState().eggStatus).toEqual(
+      expect.objectContaining({
+        hasMatter: true,
+        ready: false,
+        activeCount: 1,
+        maxActiveCount: 1,
+        cost: 15,
+        cooldownDuration: 999
+      })
+    );
+    expect(simulation.getHudState().eggStatus?.cooldownRemaining).toBeCloseTo(999 - 1 / simulation.config.tickRate, 4);
   });
 
   it("treats grounded tap throws as a minimum-charge lob and lets longer holds launch harder", () => {

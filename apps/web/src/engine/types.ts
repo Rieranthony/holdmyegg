@@ -2,6 +2,7 @@ import type {
   FallingClusterViewState,
   GameMode,
   HudState,
+  LocalEggActionState,
   RuntimeEggScatterDebrisState,
   RuntimeEggState,
   RuntimePlayerState,
@@ -16,6 +17,11 @@ export type ShellMode = "boot" | "menu" | "rules" | "editor" | GameMode;
 export type ActiveShellMode = "editor" | GameMode;
 export type ShellPresentation = "default" | "menu";
 export type EditorTool = "add" | "erase" | "spawn" | "prop";
+export type PointerCaptureFailureReason =
+  | "unsupported"
+  | "error"
+  | "timeout"
+  | "focus-lost";
 
 export interface PlayerProfile {
   name: string;
@@ -26,6 +32,8 @@ export interface RuntimePauseState {
   hasStarted: boolean;
   paused: boolean;
   pointerLocked: boolean;
+  pointerCapturePending: boolean;
+  pointerCaptureFailureReason: PointerCaptureFailureReason | null;
 }
 
 export const blockKindOptions: BlockKind[] = ["ground", "boundary", "hazard"];
@@ -70,12 +78,22 @@ export interface RuntimeRenderFrame {
   time: number;
   mode: GameMode;
   localPlayerId: string | null;
+  localEggActionState: LocalEggActionState | null;
   players: RuntimePlayerState[];
   eggs: RuntimeEggState[];
   eggScatterDebris: RuntimeEggScatterDebrisState[];
   voxelBursts: RuntimeVoxelBurstState[];
   skyDrops: RuntimeSkyDropState[];
   fallingClusters: FallingClusterViewState[];
+}
+
+export type RuntimeInteractionMode = "normal" | "build";
+
+export interface RuntimeOverlayState {
+  eggActionState: LocalEggActionState | null;
+  interactionMode: RuntimeInteractionMode;
+  matterPulseActive: boolean;
+  resourceMessage: string | null;
 }
 
 export interface GameDiagnostics {

@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   chickenPreviewEggDelayRangeSeconds,
+  getNextChickenPreviewEggTaunt,
   getNextChickenPreviewEggDelay
 } from "./chickenPreviewEggs";
+import { eggTauntDurationSeconds, getEggTauntMessage } from "../game/eggTaunts";
 
 describe("chickenPreviewEggs", () => {
   it("keeps randomized egg delay inside the configured interval", () => {
@@ -23,5 +25,22 @@ describe("chickenPreviewEggs", () => {
       expect(sample).toBeGreaterThanOrEqual(chickenPreviewEggDelayRangeSeconds.min);
       expect(sample).toBeLessThanOrEqual(chickenPreviewEggDelayRangeSeconds.max);
     });
+  });
+
+  it("advances preview taunts when menu eggs spawn", () => {
+    expect(getNextChickenPreviewEggTaunt(0, true)).toEqual({
+      sequence: 1,
+      remaining: eggTauntDurationSeconds,
+      message: getEggTauntMessage("menu-preview", 1)
+    });
+    expect(getNextChickenPreviewEggTaunt(1, true)).toEqual({
+      sequence: 2,
+      remaining: eggTauntDurationSeconds,
+      message: getEggTauntMessage("menu-preview", 2)
+    });
+  });
+
+  it("keeps launch preview taunt-free", () => {
+    expect(getNextChickenPreviewEggTaunt(0, false)).toBeNull();
   });
 });

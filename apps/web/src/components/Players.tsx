@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useRef } from "react";
+import { Html } from "@react-three/drei";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import type { OutOfBoundsSimulation } from "@out-of-bounds/sim";
 import { getChickenPalette, type ChickenPaletteName } from "../game/colors";
 import { stepAngleToward } from "../game/camera";
 import { getPlayerBlobShadowState } from "../game/cheapShadows";
+import { getEggTauntMessage } from "../game/eggTaunts";
 import { createChickenAvatarRig } from "../game/chickenModel";
 import {
   chickenPoseVisualDefaults,
@@ -35,6 +37,7 @@ import {
   playerRingGeometry,
   playerShadowGeometry
 } from "../game/sceneAssets";
+import { ChickenTauntBubble } from "./ChickenTauntBubble";
 
 const AVATAR_TURN_SPEED = 4.5;
 const AVATAR_BOB_BASE_Y = 0.74;
@@ -98,13 +101,26 @@ function PlayerAvatar({
   const previousGroundedRef = useRef(false);
   const previousVelocityYRef = useRef(0);
   const landingRollRemainingRef = useRef(0);
+  const tauntAnchorRef = useRef<THREE.Group>(null);
   const palette = useMemo(
     () => getChickenPalette(playerId, matchColorSeed, isLocal ? localPlayerPaletteName : null),
     [isLocal, localPlayerPaletteName, matchColorSeed, playerId]
   );
   const motionSeed = useMemo(() => getChickenMotionSeed(playerId), [playerId]);
+  const tauntSeed = useMemo(() => `${matchColorSeed}:${playerId}`, [matchColorSeed, playerId]);
   const materialBundle = useMemo(() => createChickenMaterialBundle(palette), [palette]);
   const rig = useMemo(() => createChickenAvatarRig(materialBundle), [materialBundle]);
+  const tauntMessageRef = useRef<string | null>(null);
+  const [tauntMessage, setTauntMessage] = useState<string | null>(null);
+
+  const setEggTauntMessage = (nextMessage: string | null) => {
+    if (tauntMessageRef.current === nextMessage) {
+      return;
+    }
+
+    tauntMessageRef.current = nextMessage;
+    setTauntMessage(nextMessage);
+  };
 
   useEffect(() => {
     return () => {
@@ -154,6 +170,7 @@ function PlayerAvatar({
     group.visible = playerVisible;
     if (!playerVisible) {
       landingRollRemainingRef.current = 0;
+      setEggTauntMessage(null);
       previousGroundedRef.current = player.grounded;
       previousVelocityYRef.current = player.velocity.y;
       return;
@@ -238,6 +255,14 @@ function PlayerAvatar({
     headPivot.rotation.x = poseState.headPitch;
     headPivot.rotation.y = poseState.headYaw;
     headPivot.position.y = chickenModelRig.headPivotY + poseState.headYOffset;
+    const tauntAnchor = tauntAnchorRef.current;
+    if (tauntAnchor) {
+      tauntAnchor.position.set(
+        0.84,
+        avatar.position.y + chickenModelRig.headPivotY + poseState.headYOffset + 0.46,
+        0.18
+      );
+    }
     lowDetailHead.rotation.x = poseState.headPitch * 0.76;
     lowDetailHead.rotation.y = poseState.headYaw * 0.72;
     lowDetailHead.position.y = chickenModelRig.lowHeadPivotY + poseState.headYOffset * 0.5;
@@ -334,6 +359,12 @@ function PlayerAvatar({
       }
     });
 
+    const nextTauntMessage =
+      player.eggTauntRemaining > 0
+        ? getEggTauntMessage(tauntSeed, player.eggTauntSequence)
+        : null;
+    setEggTauntMessage(nextTauntMessage);
+
     previousGroundedRef.current = player.grounded;
     previousVelocityYRef.current = player.velocity.y;
   });
@@ -352,6 +383,13 @@ function PlayerAvatar({
         position={[0, 0.03, 0]}
         rotation={[-Math.PI / 2, 0, 0]}
       />
+      <group ref={tauntAnchorRef}>
+        {tauntMessage && (
+          <Html zIndexRange={[90, 0]}>
+            <ChickenTauntBubble message={tauntMessage} />
+          </Html>
+        )}
+      </group>
       <primitive
         dispose={null}
         object={rig.root}

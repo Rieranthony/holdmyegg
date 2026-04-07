@@ -20,6 +20,15 @@ const createHudState = (mode: "explore" | "playNpc", playerName = "You"): HudSta
     invulnerableRemaining: 0,
     stunRemaining: 0
   },
+  eggStatus: {
+    hasMatter: true,
+    ready: true,
+    activeCount: 0,
+    maxActiveCount: 2,
+    cost: 42,
+    cooldownRemaining: 0,
+    cooldownDuration: 1.6
+  },
   ranking:
     mode === "playNpc"
       ? [
@@ -50,17 +59,48 @@ const storageState = vi.hoisted(() => {
 
 const gameHostState = vi.hoisted(() => {
   let menuReadyCallback: (() => void) | null = null;
+  let pointerLockBehavior: "success" | "pending" | "unsupported" = "success";
+  let pauseBridge: {
+    failPendingPointerLock: (
+      reason: "unsupported" | "error" | "timeout" | "focus-lost",
+    ) => void;
+    resolvePendingPointerLock: () => void;
+  } | null = null;
 
   return {
     reset() {
       menuReadyCallback = null;
+      pointerLockBehavior = "success";
+      pauseBridge = null;
     },
     setMenuReadyCallback(callback: (() => void) | null) {
       menuReadyCallback = callback;
     },
     signalMenuReady() {
       menuReadyCallback?.();
-    }
+    },
+    setPointerLockBehavior(behavior: "success" | "pending" | "unsupported") {
+      pointerLockBehavior = behavior;
+    },
+    getPointerLockBehavior() {
+      return pointerLockBehavior;
+    },
+    registerPauseBridge(
+      bridge: {
+        failPendingPointerLock: (
+          reason: "unsupported" | "error" | "timeout" | "focus-lost",
+        ) => void;
+        resolvePendingPointerLock: () => void;
+      } | null,
+    ) {
+      pauseBridge = bridge;
+    },
+    failPendingPointerLock(reason: "unsupported" | "error" | "timeout" | "focus-lost") {
+      pauseBridge?.failPendingPointerLock(reason);
+    },
+    resolvePendingPointerLock() {
+      pauseBridge?.resolvePendingPointerLock();
+    },
   };
 });
 
@@ -75,6 +115,7 @@ vi.mock("../engine/GameHost", () => ({
         onEditorStateChange,
         onHudStateChange,
         onPauseStateChange,
+        onRuntimeOverlayChange,
         onReadyToDisplay
       }: {
         initialDocument: ReturnType<typeof createDefaultArenaMap>;
@@ -88,7 +129,19 @@ vi.mock("../engine/GameHost", () => ({
           tool: "add";
         }) => void;
         onHudStateChange?: (state: HudState | null) => void;
-        onPauseStateChange?: (state: { hasStarted: boolean; paused: boolean; pointerLocked: boolean }) => void;
+        onPauseStateChange?: (state: {
+          hasStarted: boolean;
+          paused: boolean;
+          pointerCaptureFailureReason:
+            | "unsupported"
+            | "error"
+            | "timeout"
+            | "focus-lost"
+            | null;
+          pointerCapturePending: boolean;
+          pointerLocked: boolean;
+        }) => void;
+        onRuntimeOverlayChange?: (state: unknown) => void;
         onReadyToDisplay?: () => void;
       },
       ref
@@ -96,6 +149,23 @@ vi.mock("../engine/GameHost", () => ({
       const [document, setDocument] = useState(initialDocument);
       const [mapName, setMapName] = useState(initialDocument.meta.name);
       const pointerLockedRef = useRef(false);
+      const hasStartedRef = useRef(false);
+      const pausedRef = useRef(false);
+      const pointerCaptureFailureReasonRef = useRef<
+        "unsupported" | "error" | "timeout" | "focus-lost" | null
+      >(null);
+      const pointerCapturePendingRef = useRef(false);
+      const pendingResumeAfterPointerLockRef = useRef(false);
+
+      const emitPauseState = () => {
+        onPauseStateChange?.({
+          hasStarted: hasStartedRef.current,
+          paused: pausedRef.current,
+          pointerCaptureFailureReason: pointerCaptureFailureReasonRef.current,
+          pointerCapturePending: pointerCapturePendingRef.current,
+          pointerLocked: pointerLockedRef.current,
+        });
+      };
 
       useEffect(() => {
         setDocument(initialDocument);
@@ -125,14 +195,52 @@ vi.mock("../engine/GameHost", () => ({
       useEffect(() => {
         if (mode === "editor") {
           pointerLockedRef.current = false;
+          hasStartedRef.current = false;
+          pausedRef.current = false;
+          pointerCaptureFailureReasonRef.current = null;
+          pointerCapturePendingRef.current = false;
+          pendingResumeAfterPointerLockRef.current = false;
           onHudStateChange?.(null);
-          onPauseStateChange?.({ hasStarted: false, paused: false, pointerLocked: false });
+          onRuntimeOverlayChange?.(null);
+          emitPauseState();
           return;
         }
 
+        pointerLockedRef.current = false;
+        hasStartedRef.current = false;
+        pausedRef.current = true;
+        pointerCaptureFailureReasonRef.current = null;
+        pointerCapturePendingRef.current = false;
+        pendingResumeAfterPointerLockRef.current = false;
         onHudStateChange?.(createHudState(mode as "explore" | "playNpc", playerProfile?.name || "You"));
-        onPauseStateChange?.({ hasStarted: false, paused: true, pointerLocked: false });
-      }, [mode, onHudStateChange, onPauseStateChange, playerProfile?.name]);
+        onRuntimeOverlayChange?.(null);
+        emitPauseState();
+      }, [mode, onHudStateChange, onPauseStateChange, onRuntimeOverlayChange, playerProfile?.name]);
+
+      useEffect(() => {
+        gameHostState.registerPauseBridge({
+          failPendingPointerLock(reason) {
+            pointerLockedRef.current = false;
+            pausedRef.current = true;
+            pointerCapturePendingRef.current = false;
+            pointerCaptureFailureReasonRef.current = reason;
+            pendingResumeAfterPointerLockRef.current = false;
+            emitPauseState();
+          },
+          resolvePendingPointerLock() {
+            pointerLockedRef.current = true;
+            hasStartedRef.current = true;
+            pointerCapturePendingRef.current = false;
+            pointerCaptureFailureReasonRef.current = null;
+            pausedRef.current = !pendingResumeAfterPointerLockRef.current;
+            pendingResumeAfterPointerLockRef.current = false;
+            emitPauseState();
+          },
+        });
+        return () => {
+          gameHostState.registerPauseBridge(null);
+        };
+      }, [onPauseStateChange]);
 
       useImperativeHandle(
         ref,
@@ -145,20 +253,71 @@ vi.mock("../engine/GameHost", () => ({
             setMapName(nextDocument.meta.name);
           },
           requestPointerLock() {
-            pointerLockedRef.current = true;
-            onPauseStateChange?.({ hasStarted: true, paused: true, pointerLocked: true });
-            return true;
+            pendingResumeAfterPointerLockRef.current = false;
+            pointerCaptureFailureReasonRef.current = null;
+
+            switch (gameHostState.getPointerLockBehavior()) {
+              case "success":
+                pointerLockedRef.current = true;
+                hasStartedRef.current = true;
+                pausedRef.current = true;
+                pointerCapturePendingRef.current = false;
+                emitPauseState();
+                return true;
+              case "pending":
+                pointerLockedRef.current = false;
+                pausedRef.current = true;
+                pointerCapturePendingRef.current = true;
+                emitPauseState();
+                return true;
+              case "unsupported":
+                pointerLockedRef.current = false;
+                pausedRef.current = true;
+                pointerCapturePendingRef.current = false;
+                pointerCaptureFailureReasonRef.current = "unsupported";
+                emitPauseState();
+                return false;
+            }
           },
           resumeRuntime() {
-            pointerLockedRef.current = true;
-            onPauseStateChange?.({ hasStarted: true, paused: false, pointerLocked: true });
+            pointerCaptureFailureReasonRef.current = null;
+
+            switch (gameHostState.getPointerLockBehavior()) {
+              case "success":
+                pointerLockedRef.current = true;
+                hasStartedRef.current = true;
+                pausedRef.current = false;
+                pointerCapturePendingRef.current = false;
+                pendingResumeAfterPointerLockRef.current = false;
+                emitPauseState();
+                return;
+              case "pending":
+                pointerLockedRef.current = false;
+                pausedRef.current = true;
+                pointerCapturePendingRef.current = true;
+                pendingResumeAfterPointerLockRef.current = true;
+                emitPauseState();
+                return;
+              case "unsupported":
+                pointerLockedRef.current = false;
+                pausedRef.current = true;
+                pointerCapturePendingRef.current = false;
+                pointerCaptureFailureReasonRef.current = "unsupported";
+                pendingResumeAfterPointerLockRef.current = false;
+                emitPauseState();
+                return;
+            }
           },
           setRuntimePaused(paused: boolean) {
-            onPauseStateChange?.({
-              hasStarted: pointerLockedRef.current || !paused,
-              paused,
-              pointerLocked: pointerLockedRef.current
-            });
+            pausedRef.current = paused;
+            hasStartedRef.current =
+              hasStartedRef.current || pointerLockedRef.current || !paused;
+            if (!paused) {
+              pointerCapturePendingRef.current = false;
+              pointerCaptureFailureReasonRef.current = null;
+              pendingResumeAfterPointerLockRef.current = false;
+            }
+            emitPauseState();
           },
           setEditorState(next: { mapName?: string }) {
             if (typeof next.mapName === "string") {
@@ -185,7 +344,12 @@ vi.mock("../engine/GameHost", () => ({
             <button
               onClick={() => {
                 pointerLockedRef.current = false;
-                onPauseStateChange?.({ hasStarted: true, paused: true, pointerLocked: false });
+                hasStartedRef.current = true;
+                pausedRef.current = true;
+                pointerCapturePendingRef.current = false;
+                pointerCaptureFailureReasonRef.current = null;
+                pendingResumeAfterPointerLockRef.current = false;
+                emitPauseState();
               }}
               type="button"
             >
@@ -246,6 +410,23 @@ const signalMenuReady = async () => {
 const advanceLaunchIntro = async () => {
   await act(async () => {
     vi.advanceTimersByTime(launchIntroTotalMs);
+  });
+};
+const setPointerLockBehavior = (
+  behavior: "success" | "pending" | "unsupported",
+) => {
+  gameHostState.setPointerLockBehavior(behavior);
+};
+const failPendingPointerLock = async (
+  reason: "unsupported" | "error" | "timeout" | "focus-lost",
+) => {
+  await act(async () => {
+    gameHostState.failPendingPointerLock(reason);
+  });
+};
+const resolvePendingPointerLock = async () => {
+  await act(async () => {
+    gameHostState.resolvePendingPointerLock();
   });
 };
 
@@ -403,6 +584,102 @@ describe("App", () => {
     expect(screen.getByTestId("boot-splash")).toBeInTheDocument();
     await signalMenuReady();
     expect(screen.queryByRole("button", { name: "Feedback / bug" })).not.toBeInTheDocument();
+    },
+    APP_FLOW_TIMEOUT
+  );
+
+  it(
+    "hands off a stalled launch into the pause overlay instead of leaving the launch overlay stuck",
+    async () => {
+      vi.useFakeTimers();
+      setPointerLockBehavior("pending");
+      render(<App />);
+
+      await signalMenuReady();
+      unlockMenuPlayer();
+
+      fireEvent.click(screen.getByRole("button", { name: /Explore/i }));
+      expect(screen.getByTestId("launch-overlay")).toBeInTheDocument();
+
+      await advanceLaunchIntro();
+
+      expect(screen.queryByTestId("launch-overlay")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Capturing..." })).toBeDisabled();
+      expect(
+        screen.getByText(/trying to capture the mouse now/i)
+      ).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Menu" })).toBeInTheDocument();
+    },
+    APP_FLOW_TIMEOUT
+  );
+
+  it(
+    "shows pointer-capture failures in the pause overlay and lets the player retry successfully",
+    async () => {
+      vi.useFakeTimers();
+      setPointerLockBehavior("pending");
+      render(<App />);
+
+      await signalMenuReady();
+      unlockMenuPlayer();
+
+      fireEvent.click(screen.getByRole("button", { name: /Explore/i }));
+      await advanceLaunchIntro();
+
+      await failPendingPointerLock("timeout");
+
+      expect(
+        screen.getByText(/mouse capture took too long/i)
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Capture Mouse" })
+      ).toBeInTheDocument();
+
+      setPointerLockBehavior("success");
+      fireEvent.click(screen.getByRole("button", { name: "Capture Mouse" }));
+
+      expect(screen.queryByRole("button", { name: "Capture Mouse" })).not.toBeInTheDocument();
+      expect(screen.getByText("Matter")).toBeInTheDocument();
+      expect(screen.queryByText(/mouse capture took too long/i)).not.toBeInTheDocument();
+    },
+    APP_FLOW_TIMEOUT
+  );
+
+  it(
+    "resets capture failure UI after returning to the menu and starting again",
+    async () => {
+      vi.useFakeTimers();
+      setPointerLockBehavior("pending");
+      render(<App />);
+
+      await signalMenuReady();
+      unlockMenuPlayer();
+
+      fireEvent.click(screen.getByRole("button", { name: /Explore/i }));
+      await advanceLaunchIntro();
+      await failPendingPointerLock("error");
+
+      expect(screen.getByText(/mouse capture was blocked/i)).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "Menu" }));
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(screen.getByTestId("boot-splash")).toBeInTheDocument();
+      await signalMenuReady();
+
+      setPointerLockBehavior("pending");
+      fireEvent.click(screen.getByRole("button", { name: /Explore/i }));
+      await advanceLaunchIntro();
+
+      expect(
+        screen.getByText(/trying to capture the mouse now/i)
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/mouse capture was blocked/i)).not.toBeInTheDocument();
+
+      await resolvePendingPointerLock();
+
+      expect(screen.getByText("Matter")).toBeInTheDocument();
     },
     APP_FLOW_TIMEOUT
   );

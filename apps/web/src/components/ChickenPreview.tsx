@@ -1,8 +1,10 @@
+import { Html } from "@react-three/drei";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import type { ChickenPaletteName } from "../game/colors";
 import { getChickenPaletteByName } from "../game/colors";
+import { ChickenTauntBubble } from "./ChickenTauntBubble";
 import {
   chickenPoseVisualDefaults,
   getChickenHeadFeatherRotation,
@@ -25,7 +27,7 @@ import {
   playerShadowGeometry
 } from "../game/sceneAssets";
 import { propMaterials } from "../game/propMaterials";
-import { getNextChickenPreviewEggDelay } from "./chickenPreviewEggs";
+import { getNextChickenPreviewEggDelay, getNextChickenPreviewEggTaunt } from "./chickenPreviewEggs";
 
 type ChickenPreviewVariant = "menu" | "launch";
 
@@ -171,6 +173,7 @@ function ChickenPreviewModel({
 }) {
   const groupRef = useRef<THREE.Group>(null);
   const shadowRef = useRef<THREE.Mesh>(null);
+  const tauntAnchorRef = useRef<THREE.Group>(null);
   const eggRefs = useRef<THREE.Group[]>([]);
   const previousGroundedRef = useRef(false);
   const previousVelocityYRef = useRef(0);
@@ -178,9 +181,22 @@ function ChickenPreviewModel({
   const phaseOffsetRef = useRef(Math.random() * Math.PI * 2);
   const eggStatesRef = useRef<PreviewEggState[]>([]);
   const nextEggSpawnAtRef = useRef(getNextChickenPreviewEggDelay());
+  const previewTauntSequenceRef = useRef(0);
+  const previewTauntExpiresAtRef = useRef(0);
+  const previewTauntMessageRef = useRef<string | null>(null);
+  const [previewTauntMessage, setPreviewTauntMessage] = useState<string | null>(null);
   const palette = useMemo(() => getChickenPaletteByName(paletteName), [paletteName]);
   const materialBundle = useMemo(() => createChickenMaterialBundle(palette), [palette]);
   const rig = useMemo(() => createChickenAvatarRig(materialBundle), [materialBundle]);
+
+  const setPreviewTaunt = (nextMessage: string | null) => {
+    if (previewTauntMessageRef.current === nextMessage) {
+      return;
+    }
+
+    previewTauntMessageRef.current = nextMessage;
+    setPreviewTauntMessage(nextMessage);
+  };
 
   useEffect(() => {
     return () => {
@@ -269,6 +285,14 @@ function ChickenPreviewModel({
     headPivot.rotation.x = poseState.headPitch;
     headPivot.rotation.y = poseState.headYaw;
     headPivot.position.y = chickenModelRig.headPivotY + poseState.headYOffset;
+    const tauntAnchor = tauntAnchorRef.current;
+    if (tauntAnchor) {
+      tauntAnchor.position.set(
+        0.84,
+        avatar.position.y + chickenModelRig.headPivotY + poseState.headYOffset + 0.44,
+        0.18
+      );
+    }
     leftLeg.rotation.x = poseState.leftLegPitch;
     rightLeg.rotation.x = poseState.rightLegPitch;
     leftWing.rotation.z = wingState.leftWingAngle + poseState.wingAngleOffset;
@@ -309,6 +333,9 @@ function ChickenPreviewModel({
     if (!decorativeEggsEnabled) {
       eggStatesRef.current = [];
       nextEggSpawnAtRef.current = elapsed + getNextChickenPreviewEggDelay();
+      previewTauntSequenceRef.current = 0;
+      previewTauntExpiresAtRef.current = 0;
+      setPreviewTaunt(null);
     } else {
       const eggs = eggStatesRef.current.filter(
         (egg) => elapsed - egg.spawnedAt <= previewEggLifetime
@@ -338,7 +365,18 @@ function ChickenPreviewModel({
           wobblePhase: Math.random() * Math.PI * 2,
           rollSpeed: THREE.MathUtils.lerp(4.8, 7.4, Math.random())
         });
+        const nextTaunt = getNextChickenPreviewEggTaunt(previewTauntSequenceRef.current, decorativeEggsEnabled);
+        if (nextTaunt) {
+          previewTauntSequenceRef.current = nextTaunt.sequence;
+          previewTauntExpiresAtRef.current = elapsed + nextTaunt.remaining;
+          setPreviewTaunt(nextTaunt.message);
+        }
         nextEggSpawnAtRef.current = elapsed + getNextChickenPreviewEggDelay();
+      }
+
+      if (previewTauntMessageRef.current !== null && elapsed >= previewTauntExpiresAtRef.current) {
+        previewTauntExpiresAtRef.current = 0;
+        setPreviewTaunt(null);
       }
     }
 
@@ -412,6 +450,13 @@ function ChickenPreviewModel({
         ref={shadowRef}
         rotation={[-Math.PI / 2, 0, 0]}
       />
+      <group ref={tauntAnchorRef}>
+        {previewTauntMessage && (
+          <Html zIndexRange={[80, 0]}>
+            <ChickenTauntBubble message={previewTauntMessage} />
+          </Html>
+        )}
+      </group>
       {Array.from({ length: previewEggPoolSize }, (_, index) => (
         <group
           key={`preview-egg-${index}`}

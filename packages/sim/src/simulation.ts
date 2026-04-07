@@ -9,6 +9,7 @@ import type {
   HudPlayerState,
   HudRankingEntry,
   HudState,
+  LocalEggActionState,
   MatchPlayerState,
   MatchState,
   PlayerCommand,
@@ -34,6 +35,7 @@ import type {
   VoxelBurstViewState
 } from "./types";
 import { defaultSimulationConfig } from "./config";
+import { getHudEggStatus, getLocalEggActionState } from "./eggAvailability";
 import { getGroundedEggLaunchVelocity } from "./eggLaunch";
 
 const EPSILON = 0.0001;
@@ -64,6 +66,7 @@ const EGG_GROUND_IMPACT_CARRY = 0.94;
 const EGG_GROUND_FRICTION_MULTIPLIER = 1.45;
 const EGG_WALL_BOUNCE_DAMPING = 0.72;
 const EGG_CEILING_BOUNCE_DAMPING = 0.82;
+const EGG_TAUNT_DURATION = 1.6;
 const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
 
 interface SimPlayer {
@@ -83,6 +86,8 @@ interface SimPlayer {
   position: Vector3;
   velocity: Vector3;
   facing: Vector2;
+  eggTauntSequence: number;
+  eggTauntRemaining: number;
   jumpBufferRemaining: number;
   jetpackHoldActivationRemaining: number;
   jetpackEligible: boolean;
@@ -539,6 +544,16 @@ export class OutOfBoundsSimulation {
       mode: this.mode,
       localPlayerId: this.localPlayerId,
       localPlayer: localPlayer ? this.toHudPlayerState(localPlayer) : null,
+      eggStatus: localPlayer
+        ? getHudEggStatus({
+            localPlayerId: localPlayer.id,
+            localPlayerMass: localPlayer.mass,
+            eggs: this.getEggs(),
+            eggCost: this.config.eggCost,
+            maxActiveEggsPerPlayer: this.config.maxActiveEggsPerPlayer,
+            eggFuseDuration: this.config.eggFuseDuration
+          })
+        : null,
       ranking: this.getRanking()
         .map((playerId) => {
           const player = this.players.get(playerId);
@@ -546,6 +561,24 @@ export class OutOfBoundsSimulation {
         })
         .filter((entry): entry is HudRankingEntry => entry !== null)
     };
+  }
+
+  getLocalEggActionState(): LocalEggActionState | null {
+    const localPlayerId = this.localPlayerId;
+    const localPlayer = localPlayerId ? this.players.get(localPlayerId) ?? null : null;
+    if (!localPlayerId || !localPlayer) {
+      return null;
+    }
+
+    return getLocalEggActionState({
+      localPlayerId,
+      localPlayerMass: localPlayer.mass,
+      localPlayer: this.getPlayerRuntimeState(localPlayerId),
+      eggs: this.getEggs(),
+      eggCost: this.config.eggCost,
+      maxActiveEggsPerPlayer: this.config.maxActiveEggsPerPlayer,
+      eggFuseDuration: this.config.eggFuseDuration
+    });
   }
 
   consumeDirtyChunkKeys() {
@@ -687,6 +720,8 @@ export class OutOfBoundsSimulation {
       position: entryState.position,
       velocity: entryState.velocity,
       facing: kind === "npc" ? { x: -1, z: 0 } : { x: 1, z: 0 },
+      eggTauntSequence: 0,
+      eggTauntRemaining: 0,
       jumpBufferRemaining: 0,
       jetpackHoldActivationRemaining: 0,
       jetpackEligible: false,
@@ -934,6 +969,8 @@ export class OutOfBoundsSimulation {
       position: { ...player.position },
       velocity: { ...player.velocity },
       facing: { ...player.facing },
+      eggTauntSequence: player.eggTauntSequence,
+      eggTauntRemaining: player.eggTauntRemaining,
       eliminatedAt: player.eliminatedAt
     };
   }
@@ -1056,6 +1093,7 @@ export class OutOfBoundsSimulation {
   private applyIntent(player: SimPlayer, command: PlayerCommand, dt: number) {
     player.pushCooldownRemaining = Math.max(0, player.pushCooldownRemaining - dt);
     player.pushVisualRemaining = Math.max(0, player.pushVisualRemaining - dt);
+    player.eggTauntRemaining = Math.max(0, player.eggTauntRemaining - dt);
     player.stunRemaining = Math.max(0, player.stunRemaining - dt);
     player.invulnerableRemaining = Math.max(0, player.invulnerableRemaining - dt);
     player.jumpBufferRemaining = Math.max(0, player.jumpBufferRemaining - dt);
@@ -1404,6 +1442,8 @@ export class OutOfBoundsSimulation {
     this.eggs.set(egg.id, egg);
     this.invalidateEggCollection();
     player.mass -= this.config.eggCost;
+    player.eggTauntSequence += 1;
+    player.eggTauntRemaining = EGG_TAUNT_DURATION;
   }
 
   private isHarvestable(kind: BlockKind) {
@@ -2271,6 +2311,8 @@ export class OutOfBoundsSimulation {
     player.jetpackOutsideBoundsGrace = false;
     player.stunRemaining = 0;
     player.pushVisualRemaining = 0;
+    player.eggTauntSequence = 0;
+    player.eggTauntRemaining = 0;
     player.spacePhase = "none";
     player.spacePhaseRemaining = 0;
     player.spaceTriggerArmed = true;
@@ -2312,6 +2354,8 @@ export class OutOfBoundsSimulation {
     player.jetpackEligible = false;
     player.jetpackOutsideBoundsGrace = false;
     player.pushVisualRemaining = 0;
+    player.eggTauntSequence = 0;
+    player.eggTauntRemaining = 0;
     player.spacePhase = "none";
     player.spacePhaseRemaining = 0;
     player.spaceTriggerArmed = true;
@@ -3500,6 +3544,8 @@ export class OutOfBoundsSimulation {
     player.jetpackEligible = false;
     player.jetpackOutsideBoundsGrace = false;
     player.pushVisualRemaining = 0;
+    player.eggTauntSequence = 0;
+    player.eggTauntRemaining = 0;
     player.spacePhase = "none";
     player.spacePhaseRemaining = 0;
     player.spaceTriggerArmed = true;

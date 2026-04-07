@@ -8,6 +8,7 @@ import type {
   GameDiagnostics,
   PlayerProfile,
   RuntimePauseState,
+  RuntimeOverlayState,
   ShellPresentation
 } from "./types";
 
@@ -33,6 +34,7 @@ interface GameHostProps {
   onHudStateChange?: (hudState: HudState | null) => void;
   onPauseStateChange?: (state: RuntimePauseState) => void;
   onReadyToDisplay?: () => void;
+  onRuntimeOverlayChange?: (state: RuntimeOverlayState | null) => void;
   onStatus?: (message: string) => void;
 }
 
@@ -49,6 +51,7 @@ export const GameHost = forwardRef<GameHostHandle, GameHostProps>(function GameH
     onHudStateChange,
     onPauseStateChange,
     onReadyToDisplay,
+    onRuntimeOverlayChange,
     onStatus
   },
   ref
@@ -76,6 +79,7 @@ export const GameHost = forwardRef<GameHostHandle, GameHostProps>(function GameH
       onHudStateChange,
       onPauseStateChange,
       onReadyToDisplay,
+      onRuntimeOverlayChange,
       onStatus
     });
     clientRef.current = client;
@@ -83,7 +87,7 @@ export const GameHost = forwardRef<GameHostHandle, GameHostProps>(function GameH
       client.dispose();
       clientRef.current = null;
     };
-  }, [matchColorSeed, onDiagnostics, onEditorStateChange, onHudStateChange, onPauseStateChange, onReadyToDisplay, onStatus]);
+  }, [matchColorSeed, onDiagnostics, onEditorStateChange, onHudStateChange, onPauseStateChange, onReadyToDisplay, onRuntimeOverlayChange, onStatus]);
 
   useEffect(() => {
     clientRef.current?.setShellState({

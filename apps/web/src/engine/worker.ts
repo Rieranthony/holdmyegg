@@ -169,6 +169,7 @@ const buildRuntimeFrame = (): RuntimeRenderFrame => {
     time: matchState.time,
     mode: matchState.mode,
     localPlayerId: matchState.localPlayerId,
+    localEggActionState: runtime.getLocalEggActionState(),
     players: runtime
       .getPlayerIds()
       .map((playerId) => runtime.getPlayerRuntimeState(playerId))

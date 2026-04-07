@@ -24,8 +24,10 @@ import {
   type ActiveShellMode,
   type EditorPanelState,
   type GameDiagnostics,
+  type PointerCaptureFailureReason,
   type PlayerProfile,
   type RuntimePauseState,
+  type RuntimeOverlayState,
   type ShellMode,
 } from "../engine/types";
 import { chickenPalettes } from "../game/colors";
@@ -39,7 +41,7 @@ const launchTimings = {
   drop: 350,
 } as const;
 
-type LaunchPhase = "dimming" | "staging" | "awaiting-pointer-lock" | "dropping";
+type LaunchPhase = "dimming" | "staging" | "dropping";
 type RulesOrigin = "menu" | "pause";
 
 interface LaunchState {
@@ -60,7 +62,24 @@ const createDefaultPauseState = (): RuntimePauseState => ({
   hasStarted: false,
   paused: false,
   pointerLocked: false,
+  pointerCapturePending: false,
+  pointerCaptureFailureReason: null,
 });
+
+const getPointerCaptureFailureMessage = (
+  reason: PointerCaptureFailureReason,
+) => {
+  switch (reason) {
+    case "unsupported":
+      return "This browser could not capture the mouse. Try a different browser or head back to the menu.";
+    case "error":
+      return "Mouse capture was blocked. Click Capture Mouse to try again.";
+    case "timeout":
+      return "Mouse capture took too long. You are safe here. Click Capture Mouse to retry.";
+    case "focus-lost":
+      return "Mouse capture was interrupted when the window lost focus. Click Capture Mouse when you are back in the game.";
+  }
+};
 
 const hexToRgba = (hex: string, alpha: number) => {
   const normalized = hex.replace("#", "");
@@ -121,6 +140,8 @@ export function App({
     createDefaultEditorPanelState(createDefaultArenaMap()),
   );
   const [hudState, setHudState] = useState<HudState | null>(null);
+  const [runtimeOverlayState, setRuntimeOverlayState] =
+    useState<RuntimeOverlayState | null>(null);
   const [pauseState, setPauseState] = useState<RuntimePauseState>(
     createDefaultPauseState,
   );
@@ -202,29 +223,56 @@ export function App({
     ) ?? chickenPalettes[0]!;
   const selectedPreviewPaletteName = selectedPreviewPalette.name;
 
-  const releaseLaunchSequence = useCallback(() => {
+  useEffect(() => {
+    if (!isRuntimePlay) {
+      setRuntimeOverlayState(null);
+    }
+  }, [isRuntimePlay]);
+
+  const releaseLaunchSequence = useCallback((resumeRuntime: boolean) => {
     clearLaunchTimers();
     setLaunchState((current) =>
       current ? { ...current, phase: "dropping" } : current,
     );
-    hostRef.current?.setRuntimePaused(false);
+    if (resumeRuntime) {
+      hostRef.current?.setRuntimePaused(false);
+    }
     launchTimersRef.current = [
       window.setTimeout(() => {
         setLaunchState(null);
+        const currentPauseState = pauseStateRef.current;
+        if (
+          !resumeRuntime &&
+          currentPauseState.pointerLocked &&
+          currentPauseState.pointerCaptureFailureReason === null
+        ) {
+          hostRef.current?.setRuntimePaused(false);
+        }
       }, launchTimings.drop),
     ];
   }, [clearLaunchTimers]);
 
   useEffect(() => {
     if (
-      launchState?.phase !== "awaiting-pointer-lock" ||
-      !pauseState.pointerLocked
+      launchState !== null ||
+      !isRuntimePlay ||
+      !pauseState.paused ||
+      !pauseState.pointerLocked ||
+      pauseState.pointerCapturePending ||
+      pauseState.pointerCaptureFailureReason !== null
     ) {
       return;
     }
 
-    releaseLaunchSequence();
-  }, [launchState?.phase, pauseState.pointerLocked, releaseLaunchSequence]);
+    hostRef.current?.setRuntimePaused(false);
+  }, [
+    isRuntimePlay,
+    launchState,
+    pauseState.paused,
+    pauseState.pointerCaptureFailureReason,
+    pauseState.pointerCapturePending,
+    pauseState.pointerLocked,
+  ]);
 
   const handleEditorStateChange = useCallback((nextState: EditorPanelState) => {
     setEditorState(nextState);
@@ -253,10 +301,6 @@ export function App({
     },
     [paletteUnlocked],
   );
-
-  const handleLaunchCapture = useCallback(() => {
-    hostRef.current?.requestPointerLock();
-  }, []);
 
   const openRulesFromMenu = useCallback(() => {
     setRulesOrigin("menu");
@@ -300,6 +344,8 @@ export function App({
         hasStarted: false,
         paused: nextMode === "explore" || nextMode === "playNpc",
         pointerLocked: false,
+        pointerCapturePending: false,
+        pointerCaptureFailureReason: null,
       });
       updateStatus(getModeStatusMessage(nextMode));
     },
@@ -342,14 +388,7 @@ export function App({
       );
       launchTimersRef.current.push(
         window.setTimeout(() => {
-          if (pauseStateRef.current.pointerLocked) {
-            releaseLaunchSequence();
-            return;
-          }
-
-          setLaunchState((current) =>
-            current ? { ...current, phase: "awaiting-pointer-lock" } : current,
-          );
+          releaseLaunchSequence(pauseStateRef.current.pointerLocked);
         }, launchTimings.dim + launchTimings.stage),
       );
     },
@@ -630,24 +669,23 @@ export function App({
             onEditorStateChange={handleEditorStateChange}
             onHudStateChange={setHudState}
             onPauseStateChange={setPauseState}
+            onRuntimeOverlayChange={setRuntimeOverlayState}
             onStatus={updateStatus}
             ref={hostRef}
           />
           {launchState && (
             <LaunchOverlay
-              mode={launchState.mode}
-              onCapturePointerLock={handleLaunchCapture}
-              onReturnToMenu={() => {
-                void returnToMenu();
-              }}
               paletteName={selectedPreviewPaletteName}
               phase={launchState.phase}
-              pointerLocked={pauseState.pointerLocked}
             />
           )}
           {isRulesFromPause && <RulesAndControlsScreen onBack={closeRules} />}
           {!launchState && !isRulesFromPause && (
-            <Hud hudState={hudState} mode={activePlayMode} />
+            <Hud
+              hudState={hudState}
+              mode={activePlayMode}
+              overlayState={runtimeOverlayState}
+            />
           )}
           {pauseState.paused && !launchState && !isRulesFromPause && (
             <RuntimePauseOverlay
@@ -657,6 +695,10 @@ export function App({
               onReturnToMenu={() => {
                 void returnToMenu();
               }}
+              pointerCaptureFailureReason={
+                pauseState.pointerCaptureFailureReason
+              }
+              pointerCapturePending={pauseState.pointerCapturePending}
             />
           )}
         </div>
@@ -1036,22 +1078,12 @@ function RulesAndControlsScreen({ onBack }: { onBack: () => void }) {
 }
 
 function LaunchOverlay({
-  mode,
-  onCapturePointerLock,
-  onReturnToMenu,
   paletteName,
   phase,
-  pointerLocked,
 }: {
-  mode: GameMode;
-  onCapturePointerLock: () => void;
-  onReturnToMenu: () => void;
   paletteName: PlayerProfile["paletteName"];
   phase: LaunchPhase;
-  pointerLocked: boolean;
 }) {
-  const needsCapture = phase === "awaiting-pointer-lock" && !pointerLocked;
-
   return (
     <div
       className={`launch-overlay launch-overlay--${phase}`.trim()}
@@ -1064,27 +1096,6 @@ function LaunchOverlay({
             <ChickenPreview paletteName={paletteName} variant="launch" />
           )}
         </div>
-        {needsCapture && (
-          <div className="launch-overlay__copy">
-            <p className="panel-kicker">
-              {mode === "explore" ? "Explore" : "PLAY NPC"}
-            </p>
-            <h2>Capture Mouse</h2>
-            <p>One more click and the camera is yours.</p>
-            <div className="launch-overlay__actions">
-              <button onClick={onCapturePointerLock} type="button">
-                Capture Mouse
-              </button>
-              <button
-                className="menu-action--secondary"
-                onClick={onReturnToMenu}
-                type="button"
-              >
-                Menu
-              </button>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );
@@ -1095,17 +1106,46 @@ function RuntimePauseOverlay({
   onResume,
   onShowRules,
   onReturnToMenu,
+  pointerCaptureFailureReason,
+  pointerCapturePending,
 }: {
   hasStarted: boolean;
   onResume: () => void;
   onShowRules: () => void;
   onReturnToMenu: () => void;
+  pointerCaptureFailureReason: PointerCaptureFailureReason | null;
+  pointerCapturePending: boolean;
 }) {
+  const isFirstCapture = !hasStarted;
+  const captureFailed = pointerCaptureFailureReason !== null;
+  const primaryLabel = pointerCapturePending
+    ? "Capturing..."
+    : isFirstCapture || captureFailed
+      ? "Capture Mouse"
+      : "Resume";
+  const kicker = pointerCapturePending
+    ? "Capturing Mouse"
+    : captureFailed
+      ? "Capture Failed"
+      : hasStarted
+        ? "Paused"
+        : "Click To Start";
+  const message = pointerCapturePending
+    ? "Trying to capture the mouse now. If it still does not lock, you can retry or head back to the menu."
+    : pointerCaptureFailureReason
+      ? getPointerCaptureFailureMessage(pointerCaptureFailureReason)
+      : hasStarted
+        ? "Mouse unlocked. Resume to jump back in."
+        : "Capture the mouse to drop into the arena.";
+
   return (
     <div className="runtime-pause-overlay">
       <button
-        aria-label="Resume play"
+        aria-label={
+          isFirstCapture || captureFailed ? "Capture mouse" : "Resume play"
+        }
         className="runtime-pause-backdrop"
+        disabled={pointerCapturePending}
         onClick={onResume}
         type="button"
       />
@@ -1115,22 +1155,17 @@ function RuntimePauseOverlay({
       >
         <div className="runtime-pause-strip__top">
           <div className="runtime-pause-strip__intro">
-            <p className="panel-kicker">
-              {hasStarted ? "Paused" : "Click To Start"}
-            </p>
-            <p className="runtime-pause-strip__message">
-              {hasStarted
-                ? "Mouse unlocked. Resume to jump back in."
-                : "Click once to capture the mouse and drop into the arena."}
-            </p>
+            <p className="panel-kicker">{kicker}</p>
+            <p className="runtime-pause-strip__message">{message}</p>
           </div>
           <div className="runtime-pause-strip__actions">
             <button
               className="runtime-pause-strip__button"
+              disabled={pointerCapturePending}
               onClick={onResume}
               type="button"
             >
-              Resume
+              {primaryLabel}
             </button>
             <button
               className="runtime-pause-strip__button"

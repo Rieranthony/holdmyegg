@@ -175,6 +175,8 @@ export interface PlayerViewState {
   position: Vector3;
   velocity: Vector3;
   facing: Vector2;
+  eggTauntSequence: number;
+  eggTauntRemaining: number;
   eliminatedAt: number | null;
 }
 
@@ -197,6 +199,8 @@ export interface RuntimePlayerState {
   position: Vector3;
   velocity: Vector3;
   facing: Vector2;
+  eggTauntSequence: number;
+  eggTauntRemaining: number;
   jetpackActive: boolean;
   eliminatedAt: number | null;
 }
@@ -255,10 +259,32 @@ export interface HudPlayerState {
   stunRemaining: number;
 }
 
+export interface HudEggStatus {
+  hasMatter: boolean;
+  ready: boolean;
+  activeCount: number;
+  maxActiveCount: number;
+  cost: number;
+  cooldownRemaining: number;
+  cooldownDuration: number;
+}
+
+export type EggActionReason = "ready" | "cooldown" | "notEnoughMatter" | "stateBlocked";
+
+export interface LocalEggActionState {
+  reason: EggActionReason;
+  hasMatter: boolean;
+  cooldownRemaining: number;
+  cooldownDuration: number;
+  canQuickEgg: boolean;
+  canChargedThrow: boolean;
+}
+
 export interface HudState {
   mode: GameMode;
   localPlayerId: string | null;
   localPlayer: HudPlayerState | null;
+  eggStatus: HudEggStatus | null;
   ranking: HudRankingEntry[];
 }
 
