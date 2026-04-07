@@ -488,14 +488,14 @@ function GameLoop({
   const consumedActionsRef = useRef<RuntimeActionCounts>({
     destroy: 0
   });
-  const previousBuildPressedRef = useRef(false);
   const previousEggPressedRef = useRef(false);
 
   useFrame((_, delta) => {
     if (paused) {
       accumulatorRef.current = 0;
-      previousBuildPressedRef.current = keyboardRef.current.build;
       previousEggPressedRef.current = keyboardRef.current.egg;
+      keyboardRef.current.placePressed = false;
+      keyboardRef.current.pushPressed = false;
       keyboardRef.current.jumpPressed = false;
       keyboardRef.current.jumpReleased = false;
       return;
@@ -530,14 +530,14 @@ function GameLoop({
       }
 
       command.destroy = runtimeActionsRef.current.destroy > consumedActionsRef.current.destroy;
-      command.place = keyboardRef.current.build && !previousBuildPressedRef.current;
       command.layEgg = keyboardRef.current.egg && !previousEggPressedRef.current;
       consumedActionsRef.current.destroy = runtimeActionsRef.current.destroy;
-      previousBuildPressedRef.current = keyboardRef.current.build;
       previousEggPressedRef.current = keyboardRef.current.egg;
 
       runtime.step(localPlayerId ? { [localPlayerId]: command } : {}, step);
       mergeRuntimePhaseDiagnostics(runtimePhaseDiagnosticsRef.current, runtime.consumePerformanceDiagnostics());
+      keyboardRef.current.placePressed = false;
+      keyboardRef.current.pushPressed = false;
       keyboardRef.current.jumpPressed = false;
       keyboardRef.current.jumpReleased = false;
     }

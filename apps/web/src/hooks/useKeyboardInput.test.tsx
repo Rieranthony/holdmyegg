@@ -13,9 +13,9 @@ describe("buildPlayerCommand", () => {
         jump: true,
         jumpPressed: true,
         jumpReleased: false,
-        build: false,
-        push: false,
-        egg: false
+        egg: false,
+        placePressed: false,
+        pushPressed: false
       },
       { x: 1, z: 0 }
     );
@@ -39,9 +39,9 @@ describe("buildPlayerCommand", () => {
         jump: false,
         jumpPressed: false,
         jumpReleased: false,
-        build: true,
-        push: true,
-        egg: false
+        egg: false,
+        placePressed: true,
+        pushPressed: true
       },
       { x: 1, z: 0 }
     );
@@ -67,9 +67,9 @@ describe("buildPlayerCommand", () => {
           jump: false,
           jumpPressed: false,
           jumpReleased: false,
-          build: false,
-          push: false,
-          egg: false
+          egg: false,
+          placePressed: false,
+          pushPressed: false
         },
         { x: Math.SQRT1_2, z: Math.SQRT1_2 }
       )
@@ -97,24 +97,34 @@ describe("useKeyboardInput", () => {
       code: "KeyW"
     });
     fireEvent.keyDown(window, {
-      code: "KeyE"
-    });
-    fireEvent.keyDown(window, {
       code: "KeyF"
     });
+    fireEvent.keyUp(window, {
+      code: "KeyW"
+    });
     fireEvent.keyDown(window, {
-      code: "KeyQ"
+      code: "KeyW"
+    });
+    fireEvent.keyDown(window, {
+      code: "KeyW",
+      repeat: true
+    });
+    fireEvent.keyDown(window, {
+      code: "KeyE"
     });
     fireEvent.keyDown(window, {
       code: "Space"
     });
     expect(result.current.current.forward).toBe(true);
-    expect(result.current.current.build).toBe(true);
-    expect(result.current.current.push).toBe(true);
+    expect(result.current.current.placePressed).toBe(true);
+    expect(result.current.current.pushPressed).toBe(true);
     expect(result.current.current.egg).toBe(true);
     expect(result.current.current.jump).toBe(true);
     expect(result.current.current.jumpPressed).toBe(true);
     expect(result.current.current.jumpReleased).toBe(false);
+
+    result.current.current.placePressed = false;
+    result.current.current.pushPressed = false;
 
     fireEvent.keyUp(window, {
       code: "KeyW"
@@ -123,17 +133,11 @@ describe("useKeyboardInput", () => {
       code: "KeyE"
     });
     fireEvent.keyUp(window, {
-      code: "KeyF"
-    });
-    fireEvent.keyUp(window, {
-      code: "KeyQ"
-    });
-    fireEvent.keyUp(window, {
       code: "Space"
     });
     expect(result.current.current.forward).toBe(false);
-    expect(result.current.current.build).toBe(false);
-    expect(result.current.current.push).toBe(false);
+    expect(result.current.current.placePressed).toBe(false);
+    expect(result.current.current.pushPressed).toBe(false);
     expect(result.current.current.egg).toBe(false);
     expect(result.current.current.jump).toBe(false);
     expect(result.current.current.jumpReleased).toBe(true);

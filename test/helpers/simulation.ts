@@ -16,7 +16,8 @@ export const createTestSimulation = (
   const simulation = new OutOfBoundsSimulation();
   simulation.reset(mode, world.toDocument(), {
     npcCount: mode === "playNpc" ? 9 : 0,
-    localPlayerName: "You"
+    localPlayerName: "You",
+    initialSpawnSeed: mode === "playNpc" ? 1 : undefined
   });
   return simulation;
 };

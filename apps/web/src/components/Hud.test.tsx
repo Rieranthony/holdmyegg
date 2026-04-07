@@ -29,7 +29,7 @@ const inactiveOverlayState: RuntimeOverlayState = {
 };
 
 describe("Hud", () => {
-  it("shows a blinking egg loading card while egg slots are still cooling down", () => {
+  it("renders only the shared egg icon when launch is cooling down", () => {
     render(
       <Hud
         hudState={createHudState({
@@ -49,14 +49,14 @@ describe("Hud", () => {
       />
     );
 
-    expect(screen.getByTestId("hud-egg-card")).toHaveTextContent("Egg loading");
     expect(screen.getByTestId("hud-egg-card")).toHaveAttribute("data-state", "cooldown");
-    expect(screen.getByText("2 / 2")).toBeInTheDocument();
-    expect(screen.getByTestId("hud-egg-shell")).toBeInTheDocument();
-    expect(screen.getByTestId("hud-egg-meter-fill")).toHaveStyle({ width: "50%" });
+    expect(screen.getByTestId("hud-egg-icon")).toBeInTheDocument();
+    expect(screen.queryByText("Egg loading")).not.toBeInTheDocument();
+    expect(screen.queryByText("2 / 2")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("hud-egg-meter-fill")).not.toBeInTheDocument();
   });
 
-  it("shows a steady ready card when eggs can launch again", () => {
+  it("shows the same icon at full state when eggs are ready", () => {
     render(
       <Hud
         hudState={createHudState({
@@ -76,13 +76,13 @@ describe("Hud", () => {
       />
     );
 
-    expect(screen.getByTestId("hud-egg-card")).toHaveTextContent("Egg ready!");
     expect(screen.getByTestId("hud-egg-card")).toHaveAttribute("data-state", "ready");
-    expect(screen.getByText("0 / 2")).toBeInTheDocument();
-    expect(screen.getByTestId("hud-egg-meter-fill")).toHaveStyle({ width: "100%" });
+    expect(screen.getByTestId("hud-egg-icon")).toBeInTheDocument();
+    expect(screen.queryByText("Egg ready!")).not.toBeInTheDocument();
+    expect(screen.queryByText("0 / 2")).not.toBeInTheDocument();
   });
 
-  it("keeps the egg card visible with a need matter warning when the player is dry", () => {
+  it("keeps the icon visible without labels when the player is dry", () => {
     render(
       <Hud
         hudState={createHudState({
@@ -102,9 +102,9 @@ describe("Hud", () => {
       />
     );
 
-    expect(screen.getByTestId("hud-egg-card")).toHaveTextContent("Need matter");
     expect(screen.getByTestId("hud-egg-card")).toHaveAttribute("data-state", "notEnoughMatter");
-    expect(screen.getByTestId("hud-egg-meter-fill")).toHaveStyle({ width: "100%" });
+    expect(screen.getByTestId("hud-egg-icon")).toBeInTheDocument();
+    expect(screen.queryByText("Need matter")).not.toBeInTheDocument();
   });
 
   it("pulses the matter meter when the runtime overlay flags a no-matter attempt", () => {

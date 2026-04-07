@@ -1,8 +1,8 @@
 import * as THREE from "three";
 
-const PIXEL_TEXTURE_SIZE = 8;
+export const PIXEL_TEXTURE_SIZE = 8;
 
-const palette = {
+export const propTexturePalette = {
   b: "#8b5a2b",
   B: "#6d421c",
   l: "#5eaa43",
@@ -34,7 +34,7 @@ const createPixelTexture = (rows: string[]) => {
 
   rows.forEach((row, y) => {
     [...row].forEach((token, x) => {
-      const hex = palette[token as keyof typeof palette];
+      const hex = propTexturePalette[token as keyof typeof propTexturePalette];
       if (!hex) {
         throw new Error(`Unknown prop texture token "${token}" at ${x},${y}`);
       }
@@ -68,8 +68,8 @@ const createStandardMaterial = (texture: THREE.Texture) =>
     metalness: 0
   });
 
-const textures = {
-  bark: createPixelTexture([
+export const propTextureRows = {
+  bark: [
     "bBbBbBbB",
     "BbBbBbBb",
     "bBbBBbBb",
@@ -78,8 +78,8 @@ const textures = {
     "BbBbBBbB",
     "bBbBbBbB",
     "BbBbBbBb"
-  ]),
-  leaves: createPixelTexture([
+  ],
+  leaves: [
     "lLllLllL",
     "LlLllLll",
     "llLLllLl",
@@ -88,8 +88,8 @@ const textures = {
     "LllLLllL",
     "llLllLll",
     "LllLllLl"
-  ]),
-  nest: createPixelTexture([
+  ],
+  nest: [
     "nNnnNnnN",
     "NnnNNnnn",
     "nnNnnNnN",
@@ -98,8 +98,8 @@ const textures = {
     "NnnnNnnN",
     "nnNnnNNn",
     "NnnNnnnN"
-  ]),
-  grass: createPixelTexture([
+  ],
+  grass: [
     "gGGgGGgG",
     "GgGGgGGg",
     "gGGgGGgG",
@@ -108,8 +108,8 @@ const textures = {
     "GgGGgGGg",
     "gGGgGGgG",
     "GGggGGgg"
-  ]),
-  stem: createPixelTexture([
+  ],
+  stem: [
     "ssssssss",
     "sSsSsSsS",
     "ssssssss",
@@ -118,8 +118,8 @@ const textures = {
     "sSsSsSsS",
     "ssssssss",
     "sSsSsSsS"
-  ]),
-  egg: createPixelTexture([
+  ],
+  egg: [
     "eeeeeeee",
     "eweeeewe",
     "eeeeeeee",
@@ -128,8 +128,8 @@ const textures = {
     "eweeeewe",
     "eeeeeeee",
     "eeeweeee"
-  ]),
-  flowerYellow: createPixelTexture([
+  ],
+  flowerYellow: [
     "yyyyyyyy",
     "ycyyyycy",
     "yyyyyyyy",
@@ -138,8 +138,8 @@ const textures = {
     "ycyyyycy",
     "yyyyyyyy",
     "yycyyyyy"
-  ]),
-  flowerPink: createPixelTexture([
+  ],
+  flowerPink: [
     "pppppppp",
     "pcppppcp",
     "pppppppp",
@@ -148,8 +148,8 @@ const textures = {
     "pcppppcp",
     "pppppppp",
     "ppcppppp"
-  ]),
-  flowerWhite: createPixelTexture([
+  ],
+  flowerWhite: [
     "wwwwwwww",
     "wcwwwwcw",
     "wwwwwwww",
@@ -158,7 +158,19 @@ const textures = {
     "wcwwwwcw",
     "wwwwwwww",
     "wwcwwwww"
-  ])
+  ]
+} as const;
+
+const textures = {
+  bark: createPixelTexture(propTextureRows.bark),
+  leaves: createPixelTexture(propTextureRows.leaves),
+  nest: createPixelTexture(propTextureRows.nest),
+  grass: createPixelTexture(propTextureRows.grass),
+  stem: createPixelTexture(propTextureRows.stem),
+  egg: createPixelTexture(propTextureRows.egg),
+  flowerYellow: createPixelTexture(propTextureRows.flowerYellow),
+  flowerPink: createPixelTexture(propTextureRows.flowerPink),
+  flowerWhite: createPixelTexture(propTextureRows.flowerWhite)
 };
 
 export const propMaterials = {

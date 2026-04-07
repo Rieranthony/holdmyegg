@@ -8,9 +8,9 @@ export interface KeyboardInputState {
   jump: boolean;
   jumpPressed: boolean;
   jumpReleased: boolean;
-  build: boolean;
-  push: boolean;
   egg: boolean;
+  placePressed: boolean;
+  pushPressed: boolean;
 }
 
 export const initialKeyboardInputState: KeyboardInputState = {
@@ -21,9 +21,9 @@ export const initialKeyboardInputState: KeyboardInputState = {
   jump: false,
   jumpPressed: false,
   jumpReleased: false,
-  build: false,
-  push: false,
-  egg: false
+  egg: false,
+  placePressed: false,
+  pushPressed: false
 };
 
 const normalize = (x: number, z: number): Vector2 => {
@@ -64,8 +64,8 @@ export const buildPlayerCommand = (
     jumpPressed: input.jumpPressed,
     jumpReleased: input.jumpReleased,
     destroy: false,
-    place: false,
-    push: input.push,
+    place: input.placePressed,
+    push: input.pushPressed,
     layEgg: false,
     targetVoxel: null,
     targetNormal: null

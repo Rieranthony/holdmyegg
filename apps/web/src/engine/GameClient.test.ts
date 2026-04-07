@@ -166,6 +166,14 @@ const createReadyRuntimeFrame = (overrides: Record<string, unknown> = {}) => ({
     },
     ranking: [{ id: "human-1", name: "You", alive: true }]
   },
+  focusState: {
+    focusedVoxel: { x: 4, y: 2, z: 5 },
+    targetNormal: { x: 0, y: 1, z: 0 },
+    placeVoxel: { x: 4, y: 3, z: 5 },
+    destroyValid: true,
+    placeValid: true,
+    invalidReason: null
+  },
   players: [
     {
       id: "human-1",
@@ -1283,7 +1291,7 @@ describe("GameClient", () => {
     client.dispose();
   });
 
-  it("binds grounded egg charging to Q and R", () => {
+  it("queues build on F without triggering egg launch", () => {
     const client = GameClient.mount({
       canvas: createCanvas(),
       initialDocument: createDefaultArenaMap(),
@@ -1295,47 +1303,23 @@ describe("GameClient", () => {
     (client as any).runtimePaused = false;
     (client as any).latestFrame = createReadyRuntimeFrame();
 
-    const qPreventDefault = vi.fn();
     (client as any).handleKeyDown({
-      code: "KeyQ",
-      preventDefault: qPreventDefault,
+      code: "KeyF",
+      preventDefault: vi.fn(),
       target: window,
       metaKey: false,
-      ctrlKey: false
+      ctrlKey: false,
+      repeat: false
     });
 
-    expect(qPreventDefault).toHaveBeenCalled();
-    expect((client as any).keyboardState.egg).toBe(true);
-    expect((client as any).eggChargeState.active).toBe(true);
-
-    const qReleaseDefault = vi.fn();
-    (client as any).handleKeyUp({
-      code: "KeyQ",
-      preventDefault: qReleaseDefault
-    });
-
-    expect(qReleaseDefault).toHaveBeenCalled();
+    expect((client as any).keyboardState.placePressed).toBe(true);
     expect((client as any).keyboardState.egg).toBe(false);
-    expect((client as any).eggChargeState.pendingThrow).toBe(true);
-
-    (client as any).eggChargeState.pendingThrow = false;
-
-    const rPreventDefault = vi.fn();
-    (client as any).handleKeyDown({
-      code: "KeyR",
-      preventDefault: rPreventDefault,
-      target: window,
-      metaKey: false,
-      ctrlKey: false
-    });
-
-    expect(rPreventDefault).toHaveBeenCalled();
-    expect((client as any).eggChargeState.active).toBe(true);
+    expect((client as any).eggChargeState.active).toBe(false);
 
     client.dispose();
   });
 
-  it("no longer launches eggs from modifier keys and suppresses modifier gameplay shortcuts", () => {
+  it("does not launch eggs from modifier keys and ignores runtime build on Q", () => {
     const client = GameClient.mount({
       canvas: createCanvas(),
       initialDocument: createDefaultArenaMap(),
@@ -1361,14 +1345,13 @@ describe("GameClient", () => {
       code: "KeyQ",
       preventDefault: vi.fn(),
       target: window,
-      metaKey: true,
+      metaKey: false,
       ctrlKey: false
     });
-    expect((client as any).keyboardState.egg).toBe(false);
-    expect((client as any).eggChargeState.active).toBe(false);
+    expect((client as any).keyboardState.placePressed).toBe(false);
 
     (client as any).handleKeyDown({
-      code: "KeyR",
+      code: "KeyE",
       preventDefault: vi.fn(),
       target: window,
       metaKey: false,
@@ -1377,6 +1360,408 @@ describe("GameClient", () => {
     expect((client as any).keyboardState.egg).toBe(false);
     expect((client as any).eggChargeState.active).toBe(false);
 
+    client.dispose();
+  });
+
+  it("queues a quick egg on tap E and a charged throw on hold E", () => {
+    const client = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 35
+    });
+
+    (client as any).pointerLocked = true;
+    (client as any).runtimePaused = false;
+    (client as any).latestFrame = createReadyRuntimeFrame();
+
+    (client as any).handleKeyDown({
+      code: "KeyE",
+      preventDefault: vi.fn(),
+      target: window,
+      metaKey: false,
+      ctrlKey: false
+    });
+    (client as any).handleKeyUp({
+      code: "KeyE",
+      preventDefault: vi.fn()
+    });
+
+    expect((client as any).quickEggQueued).toBe(true);
+
+    (client as any).quickEggQueued = false;
+
+    (client as any).handleKeyDown({
+      code: "KeyE",
+      preventDefault: vi.fn(),
+      target: window,
+      metaKey: false,
+      ctrlKey: false
+    });
+    (client as any).updateHoldToThrowState((client as any).getLocalRuntimePlayer(), 0.2);
+    expect((client as any).eggChargeState.active).toBe(true);
+
+    (client as any).handleKeyUp({
+      code: "KeyE",
+      preventDefault: vi.fn()
+    });
+
+    expect((client as any).eggChargeState.pendingThrow).toBe(true);
+
+    client.dispose();
+  });
+
+  it("always destroys on RMB in runtime play", () => {
+    const client = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 36
+    });
+
+    const worker = MockWorker.instances[0]!;
+    (client as any).pointerLocked = true;
+    (client as any).runtimePaused = false;
+    (client as any).latestFrame = createReadyRuntimeFrame();
+    vi.spyOn(client as any, "updateFocusedTarget").mockImplementation(() => {
+      (client as any).focusedTarget = {
+        voxel: { x: 4, y: 2, z: 5 },
+        normal: { x: 0, y: 1, z: 0 }
+      };
+    });
+
+    (client as any).handlePointerDown({
+      button: 2,
+      preventDefault: vi.fn()
+    });
+
+    expect((client as any).destroyQueued).toBe(true);
+
+    (client as any).sendRuntimeInput((client as any).getLocalRuntimePlayer());
+    let lastMessage = worker.postMessage.mock.calls.at(-1)?.[0];
+    let command = unpackRuntimeInputCommand(lastMessage.buffer);
+    expect(command.destroy).toBe(true);
+    expect(command.place).toBe(false);
+    expect(command.targetVoxel).toEqual({ x: 4, y: 2, z: 5 });
+    expect(command.targetNormal).toEqual({ x: 0, y: 1, z: 0 });
+
+    client.dispose();
+  });
+
+  it("also destroys on primary click in runtime play", () => {
+    const client = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 36
+    });
+
+    const worker = MockWorker.instances[0]!;
+    (client as any).pointerLocked = true;
+    (client as any).runtimePaused = false;
+    (client as any).latestFrame = createReadyRuntimeFrame();
+    vi.spyOn(client as any, "updateFocusedTarget").mockImplementation(() => {
+      (client as any).focusedTarget = {
+        voxel: { x: 4, y: 2, z: 5 },
+        normal: { x: 0, y: 1, z: 0 }
+      };
+    });
+
+    (client as any).handlePointerDown({
+      button: 0,
+      preventDefault: vi.fn()
+    });
+
+    expect((client as any).destroyQueued).toBe(true);
+
+    (client as any).sendRuntimeInput((client as any).getLocalRuntimePlayer());
+    const lastMessage = worker.postMessage.mock.calls.at(-1)?.[0];
+    const command = unpackRuntimeInputCommand(lastMessage.buffer);
+    expect(command.destroy).toBe(true);
+    expect(command.targetVoxel).toEqual({ x: 4, y: 2, z: 5 });
+
+    client.dispose();
+  });
+
+  it("places on F when a build target is focused", () => {
+    const client = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 37
+    });
+
+    const worker = MockWorker.instances[0]!;
+
+    (client as any).pointerLocked = true;
+    (client as any).runtimePaused = false;
+    (client as any).latestFrame = createReadyRuntimeFrame();
+    (client as any).focusedTarget = {
+      voxel: { x: 4, y: 2, z: 5 },
+      normal: { x: 0, y: 1, z: 0 }
+    };
+
+    (client as any).handleKeyDown({
+      code: "KeyF",
+      preventDefault: vi.fn(),
+      target: window,
+      metaKey: false,
+      ctrlKey: false,
+      repeat: false
+    });
+
+    (client as any).sendRuntimeInput((client as any).getLocalRuntimePlayer());
+    const lastMessage = worker.postMessage.mock.calls.at(-1)?.[0];
+    const command = unpackRuntimeInputCommand(lastMessage.buffer);
+
+    expect(command.place).toBe(true);
+    expect(command.targetVoxel).toEqual({ x: 4, y: 2, z: 5 });
+    expect(command.targetNormal).toEqual({ x: 0, y: 1, z: 0 });
+    expect((client as any).keyboardState.placePressed).toBe(false);
+
+    client.dispose();
+  });
+
+  it("does not place on F when no build target is focused", () => {
+    const client = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 38
+    });
+
+    const worker = MockWorker.instances[0]!;
+    (client as any).pointerLocked = true;
+    (client as any).runtimePaused = false;
+    (client as any).latestFrame = createReadyRuntimeFrame();
+
+    (client as any).handleKeyDown({
+      code: "KeyF",
+      preventDefault: vi.fn(),
+      target: window,
+      metaKey: false,
+      ctrlKey: false,
+      repeat: false
+    });
+
+    (client as any).sendRuntimeInput((client as any).getLocalRuntimePlayer());
+    const lastMessage = worker.postMessage.mock.calls.at(-1)?.[0];
+    const command = unpackRuntimeInputCommand(lastMessage.buffer);
+
+    expect(command.place).toBe(false);
+    expect(command.targetVoxel).toBe(null);
+    expect(command.targetNormal).toBe(null);
+
+    client.dispose();
+  });
+
+  it("queues destroy for the raw terrain target even when the worker focus state blocks it", () => {
+    const client = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 42
+    });
+
+    const worker = MockWorker.instances[0]!;
+    (client as any).pointerLocked = true;
+    (client as any).runtimePaused = false;
+    (client as any).latestFrame = createReadyRuntimeFrame({
+      focusState: {
+        focusedVoxel: { x: 24, y: 2, z: 24 },
+        targetNormal: { x: 0, y: 1, z: 0 },
+        placeVoxel: { x: 24, y: 3, z: 24 },
+        destroyValid: false,
+        placeValid: false,
+        invalidReason: "outOfRange"
+      }
+    });
+    vi.spyOn(client as any, "updateFocusedTarget").mockImplementation(() => {
+      (client as any).focusedTarget = {
+        voxel: { x: 24, y: 2, z: 24 },
+        normal: { x: 0, y: 1, z: 0 }
+      };
+    });
+
+    (client as any).handlePointerDown({
+      button: 2,
+      preventDefault: vi.fn()
+    });
+
+    expect((client as any).destroyQueued).toBe(true);
+
+    (client as any).sendRuntimeInput((client as any).getLocalRuntimePlayer());
+    const lastMessage = worker.postMessage.mock.calls.at(-1)?.[0];
+    const command = unpackRuntimeInputCommand(lastMessage.buffer);
+
+    expect(command.destroy).toBe(true);
+    expect(command.targetVoxel).toEqual({ x: 24, y: 2, z: 24 });
+
+    client.dispose();
+  });
+
+  it("does not start a charged throw from RMB in normal mode", () => {
+    const client = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 39
+    });
+
+    (client as any).pointerLocked = true;
+    (client as any).runtimePaused = false;
+    (client as any).latestFrame = createReadyRuntimeFrame();
+    vi.spyOn(client as any, "updateFocusedTarget").mockImplementation(() => {
+      (client as any).focusedTarget = {
+        voxel: { x: 4, y: 2, z: 5 },
+        normal: { x: 0, y: 1, z: 0 }
+      };
+    });
+
+    (client as any).handlePointerDown({
+      button: 2,
+      preventDefault: vi.fn()
+    });
+    (client as any).updateHoldToThrowState((client as any).getLocalRuntimePlayer(), 0.2);
+
+    expect((client as any).eggChargeState.active).toBe(false);
+    expect((client as any).destroyQueued).toBe(true);
+
+    client.dispose();
+  });
+
+  it("updates the runtime focus cue from the worker frame state", () => {
+    const client = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 43
+    });
+
+    const worker = MockWorker.instances[0]!;
+    (client as any).pointerLocked = true;
+    (client as any).focusedTarget = {
+      voxel: { x: 4, y: 2, z: 5 },
+      normal: { x: 0, y: 1, z: 0 }
+    };
+
+    worker.emit({
+      type: "frame",
+      frame: createReadyRuntimeFrame({
+        focusState: {
+          focusedVoxel: { x: 4, y: 2, z: 5 },
+          targetNormal: { x: 0, y: 1, z: 0 },
+          placeVoxel: { x: 4, y: 3, z: 5 },
+          destroyValid: false,
+          placeValid: false,
+          invalidReason: "outOfRange"
+        }
+      })
+    });
+
+    expect((client as any).focusOutline.visible).toBe(false);
+    expect((client as any).focusGhost.visible).toBe(false);
+
+    worker.emit({
+      type: "frame",
+      frame: createReadyRuntimeFrame()
+    });
+
+    expect((client as any).focusOutline.visible).toBe(true);
+    expect((client as any).focusGhost.visible).toBe(true);
+
+    client.dispose();
+  });
+
+  it("queues push on double tap W without breaking forward movement", () => {
+    const client = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 40
+    });
+
+    const worker = MockWorker.instances[0]!;
+    const performanceNowSpy = vi.spyOn(performance, "now");
+    performanceNowSpy.mockReturnValueOnce(100);
+    performanceNowSpy.mockReturnValueOnce(260);
+
+    (client as any).pointerLocked = true;
+    (client as any).runtimePaused = false;
+    (client as any).latestFrame = createReadyRuntimeFrame();
+
+    (client as any).handleKeyDown({
+      code: "KeyW",
+      preventDefault: vi.fn(),
+      target: window,
+      metaKey: false,
+      ctrlKey: false,
+      repeat: false
+    });
+    (client as any).handleKeyUp({
+      code: "KeyW",
+      preventDefault: vi.fn()
+    });
+    (client as any).handleKeyDown({
+      code: "KeyW",
+      preventDefault: vi.fn(),
+      target: window,
+      metaKey: false,
+      ctrlKey: false,
+      repeat: false
+    });
+
+    expect((client as any).keyboardState.forward).toBe(true);
+    expect((client as any).keyboardState.pushPressed).toBe(true);
+
+    (client as any).sendRuntimeInput((client as any).getLocalRuntimePlayer());
+    const lastMessage = worker.postMessage.mock.calls.at(-1)?.[0];
+    const command = unpackRuntimeInputCommand(lastMessage.buffer);
+
+    expect(command.push).toBe(true);
+    expect(command.moveX).toBeCloseTo(1, 4);
+    expect(command.moveZ).toBeCloseTo(0, 4);
+    expect((client as any).keyboardState.pushPressed).toBe(false);
+
+    performanceNowSpy.mockRestore();
+    client.dispose();
+  });
+
+  it("ignores key repeat when detecting double tap W push", () => {
+    const client = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 41
+    });
+
+    const performanceNowSpy = vi.spyOn(performance, "now");
+    performanceNowSpy.mockReturnValue(100);
+
+    (client as any).pointerLocked = true;
+    (client as any).runtimePaused = false;
+    (client as any).latestFrame = createReadyRuntimeFrame();
+
+    (client as any).handleKeyDown({
+      code: "KeyW",
+      preventDefault: vi.fn(),
+      target: window,
+      metaKey: false,
+      ctrlKey: false,
+      repeat: false
+    });
+    (client as any).handleKeyDown({
+      code: "KeyW",
+      preventDefault: vi.fn(),
+      target: window,
+      metaKey: false,
+      ctrlKey: false,
+      repeat: true
+    });
+
+    expect((client as any).keyboardState.pushPressed).toBe(false);
+
+    performanceNowSpy.mockRestore();
     client.dispose();
   });
 
@@ -1408,12 +1793,13 @@ describe("GameClient", () => {
     };
 
     (client as any).handleKeyDown({
-      code: "KeyQ",
+      code: "KeyE",
       preventDefault: vi.fn(),
       target: window,
       metaKey: false,
       ctrlKey: false
     });
+    (client as any).updateHoldToThrowState((client as any).getLocalRuntimePlayer(), 0.2);
 
     expect((client as any).keyboardState.egg).toBe(true);
     expect((client as any).eggChargeState.active).toBe(false);
@@ -1456,7 +1842,7 @@ describe("GameClient", () => {
     (client as any).latestFrame = noMatterFrame;
 
     (client as any).handleKeyDown({
-      code: "KeyQ",
+      code: "KeyE",
       preventDefault: vi.fn(),
       target: window,
       metaKey: false,
@@ -1490,6 +1876,7 @@ describe("GameClient", () => {
 
     const worker = MockWorker.instances[0]!;
     (client as any).pointerLocked = true;
+    (client as any).runtimePaused = false;
     (client as any).latestFrame = {
       localPlayerId: "human-1",
       players: [
@@ -1506,13 +1893,64 @@ describe("GameClient", () => {
       ],
       eggs: []
     };
-    (client as any).keyboardState.egg = true;
+
+    (client as any).handleKeyDown({
+      code: "KeyE",
+      preventDefault: vi.fn(),
+      target: window,
+      metaKey: false,
+      ctrlKey: false
+    });
+    (client as any).handleKeyUp({
+      code: "KeyE",
+      preventDefault: vi.fn()
+    });
 
     (client as any).sendRuntimeInput((client as any).getLocalRuntimePlayer());
 
     const lastMessage = worker.postMessage.mock.calls.at(-1)?.[0];
     const command = unpackRuntimeInputCommand(lastMessage.buffer);
     expect(command.layEgg).toBe(false);
+
+    client.dispose();
+  });
+
+  it("hides the egg trajectory preview when charged throws are blocked", () => {
+    const client = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 55
+    });
+
+    (client as any).pointerLocked = true;
+    (client as any).runtimePaused = false;
+    (client as any).latestFrame = createReadyRuntimeFrame({
+      hudState: {
+        ...createReadyRuntimeFrame().hudState,
+        eggStatus: {
+          reason: "cooldown",
+          hasMatter: true,
+          ready: false,
+          activeCount: 2,
+          maxActiveCount: 2,
+          cost: 42,
+          cooldownRemaining: 0.8,
+          cooldownDuration: 1.6,
+          canQuickEgg: false,
+          canChargedThrow: false
+        }
+      }
+    });
+    (client as any).eggChargeState.active = true;
+    (client as any).eggChargeState.source = "key";
+    (client as any).eggKeyAction.pressed = true;
+
+    (client as any).updateEggLaunchPreview((client as any).getLocalRuntimePlayer(), 1.2);
+
+    const preview = (client as any).eggTrajectoryPreview;
+    expect(preview.group.visible).toBe(false);
+    expect(preview.landingRing.visible).toBe(false);
 
     client.dispose();
   });

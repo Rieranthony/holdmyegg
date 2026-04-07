@@ -573,7 +573,7 @@ describe("App", () => {
       await advanceLaunchIntro();
 
       fireEvent.click(screen.getByRole("button", { name: "Pause runtime" }));
-      fireEvent.click(screen.getByRole("button", { name: "Controls" }));
+      fireEvent.click(screen.getByRole("button", { name: "Tune Controls" }));
 
       expect(
         (screen.getByLabelText("Look Sensitivity") as HTMLInputElement).value
@@ -645,12 +645,9 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Pause runtime" }));
     expect(screen.getByText("Jump / Fly")).toBeInTheDocument();
     expect(screen.getByText("WASD")).toBeInTheDocument();
-    expect(screen.getByText("Esc")).toBeInTheDocument();
-    expect(
-      screen.getByText("tap to jump, hold Space after takeoff to fly, tap Space during reentry to recover")
-    ).toBeInTheDocument();
+    expect(screen.getByText("jump, jetpack, recover")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Resume" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Controls" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Tune Controls" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Rules / Shortcuts" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Menu" })).toBeInTheDocument();
 

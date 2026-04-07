@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { HudState, OutOfBoundsSimulation } from "@out-of-bounds/sim";
 import type { RuntimeOverlayState } from "../engine/types";
 import type { ActiveMode } from "./GameCanvas";
+import { EggIcon } from "./EggIcon";
 
 const getModeLabel = (mode: ActiveMode) => (mode === "playNpc" ? "PLAY NPC" : mode.toUpperCase());
 
@@ -57,18 +58,6 @@ const areHudStatesEqual = (left: HudState, right: HudState) => {
     const other = right.ranking[index];
     return other && entry.id === other.id && entry.name === other.name && entry.alive === other.alive;
   });
-};
-
-const getEggCardLabel = (hudState: NonNullable<HudState["eggStatus"]>) => {
-  if (hudState.reason === "ready") {
-    return "Egg ready!";
-  }
-
-  if (hudState.reason === "notEnoughMatter") {
-    return "Need matter";
-  }
-
-  return "Egg loading";
 };
 
 export function Hud({
@@ -133,12 +122,6 @@ export function Hud({
           ? "Grounded"
           : "Airborne";
   const hasRanking = hudState.ranking.length > 1;
-  const eggMeterProgress = eggStatus
-    ? eggStatus.cooldownRemaining > 0 && eggStatus.cooldownDuration > 0
-      ? 1 - Math.max(0, Math.min(1, eggStatus.cooldownRemaining / eggStatus.cooldownDuration))
-      : 1
-    : 0;
-  const eggMeterWidth = `${eggMeterProgress * 100}%`;
   const matterMeterClassName = [
     "meter",
     "hud-meter",
@@ -151,33 +134,15 @@ export function Hud({
     <div className="hud">
       {eggStatus && (
         <section
-          aria-label="Egg status"
+          aria-label={eggStatus.reason === "ready" ? "Egg ready" : "Egg unavailable"}
           className={`hud-egg-card hud-egg-card--${eggStatus.reason}`}
           data-state={eggStatus.reason}
           data-testid="hud-egg-card"
         >
-          <div className="hud-egg-card__row">
-            <span className="hud-egg-card__label">{getEggCardLabel(eggStatus)}</span>
-            <span className="hud-egg-card__meta">
-              {eggStatus.activeCount} / {eggStatus.maxActiveCount}
-            </span>
-          </div>
-          <div
-            aria-hidden="true"
-            className="hud-egg-card__shell"
-            data-testid="hud-egg-shell"
-          >
-            <span className="hud-egg-card__cap" />
-            <span className="hud-egg-card__middle" />
-            <span className="hud-egg-card__base" />
-          </div>
-          <div className="meter hud-egg-meter">
-            <div
-              className="meter-fill hud-egg-meter__fill"
-              data-testid="hud-egg-meter-fill"
-              style={{ width: eggMeterWidth }}
-            />
-          </div>
+          <EggIcon
+            className="hud-egg-card__icon"
+            testId="hud-egg-icon"
+          />
         </section>
       )}
       <section

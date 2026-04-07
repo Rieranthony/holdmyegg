@@ -15,6 +15,7 @@ import { preloadGameCanvas } from "../components/GameCanvasBoundary";
 import { Hud } from "../components/Hud";
 import { RuntimeControlsSettings } from "../components/RuntimeControlsSettings";
 import {
+  getPauseShortcutBindings,
   ShortcutLegend,
   getRuntimeShortcutBindings,
 } from "../components/ShortcutLegend";
@@ -1237,6 +1238,11 @@ function RuntimePauseOverlay({
       : hasStarted
         ? "Mouse unlocked. Resume to jump back in."
         : "Capture the mouse to drop into the arena.";
+  const title = pointerCapturePending
+    ? "Locking The Arena"
+    : hasStarted
+      ? "Arena On Hold"
+      : "Ready To Drop";
 
   return (
     <div className="runtime-pause-overlay">
@@ -1255,12 +1261,22 @@ function RuntimePauseOverlay({
       >
         <div className="runtime-pause-strip__top">
           <div className="runtime-pause-strip__intro">
-            <p className="panel-kicker">{kicker}</p>
+            <div className="runtime-pause-strip__eyebrow">
+              <p className="panel-kicker">{kicker}</p>
+              <span className="runtime-pause-strip__status-chip">
+                {pointerCapturePending
+                  ? "WAIT"
+                  : isFirstCapture || captureFailed
+                    ? "UNLOCKED"
+                    : "SAFE"}
+              </span>
+            </div>
+            <h2 className="runtime-pause-strip__title">{title}</h2>
             <p className="runtime-pause-strip__message">{message}</p>
           </div>
           <div className="runtime-pause-strip__actions">
             <button
-              className="runtime-pause-strip__button"
+              className="runtime-pause-strip__button runtime-pause-strip__button--primary"
               disabled={pointerCapturePending}
               onClick={onResume}
               type="button"
@@ -1273,7 +1289,7 @@ function RuntimePauseOverlay({
               onClick={() => setShowControls((current) => !current)}
               type="button"
             >
-              Controls
+              {showControls ? "Hide Controls" : "Tune Controls"}
             </button>
             <button
               className="runtime-pause-strip__button"
@@ -1291,24 +1307,42 @@ function RuntimePauseOverlay({
             </button>
           </div>
         </div>
-        {showControls && (
-          <div className="runtime-pause-strip__controls-shell">
-            <p className="runtime-pause-strip__label">Controls</p>
-            <RuntimeControlsSettings
-              onReset={onRuntimeControlSettingsReset}
-              onSettingsChange={onRuntimeControlSettingsChange}
-              settings={runtimeControlSettings}
+        <div
+          className={`runtime-pause-strip__body ${
+            showControls
+              ? "runtime-pause-strip__body--with-controls"
+              : "runtime-pause-strip__body--commands-only"
+          }`}
+        >
+          <div className="runtime-pause-strip__commands-shell">
+            <div className="runtime-pause-strip__section-head">
+              <p className="runtime-pause-strip__label">Arena Shortcuts</p>
+              <p className="runtime-pause-strip__meta">
+                Quick reference while the mouse is free.
+              </p>
+            </div>
+            <ShortcutLegend
+              bindings={getPauseShortcutBindings()}
+              className="runtime-pause-strip__commands"
               variant="pause"
             />
           </div>
-        )}
-        <div className="runtime-pause-strip__commands-shell">
-          <p className="runtime-pause-strip__label">Commands</p>
-          <ShortcutLegend
-            bindings={getRuntimeShortcutBindings()}
-            className="runtime-pause-strip__commands"
-            variant="pause"
-          />
+          {showControls && (
+            <div className="runtime-pause-strip__controls-shell">
+              <div className="runtime-pause-strip__section-head">
+                <p className="runtime-pause-strip__label">Aim Setup</p>
+                <p className="runtime-pause-strip__meta">
+                  Adjust camera feel before jumping back in.
+                </p>
+              </div>
+              <RuntimeControlsSettings
+                onReset={onRuntimeControlSettingsReset}
+                onSettingsChange={onRuntimeControlSettingsChange}
+                settings={runtimeControlSettings}
+                variant="pause"
+              />
+            </div>
+          )}
         </div>
       </div>
     </div>

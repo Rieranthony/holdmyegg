@@ -170,6 +170,11 @@ const buildRuntimeFrame = (): RuntimeRenderFrame => {
     mode: matchState.mode,
     localPlayerId: matchState.localPlayerId,
     hudState: runtime.getHudState(),
+    focusState: runtime.getRuntimeInteractionFocusState(
+      latestRuntimeInput.targetVoxel,
+      latestRuntimeInput.targetNormal,
+      matchState.localPlayerId
+    ),
     players: runtime
       .getPlayerIds()
       .map((playerId) => runtime.getPlayerRuntimeState(playerId))

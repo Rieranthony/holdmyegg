@@ -26,6 +26,7 @@ import {
   disposeChickenMaterialBundle,
   playerShadowGeometry
 } from "../game/sceneAssets";
+import { eggBaseGeometry as previewEggBaseGeometry, eggCapGeometry as previewEggCapGeometry, eggMiddleGeometry as previewEggMiddleGeometry } from "../game/eggVisualRecipe";
 import { propMaterials } from "../game/propMaterials";
 import { getNextChickenPreviewEggDelay, getNextChickenPreviewEggTaunt } from "./chickenPreviewEggs";
 
@@ -49,9 +50,6 @@ interface PreviewEggState {
   rollSpeed: number;
 }
 
-const previewEggBaseGeometry = new THREE.BoxGeometry(0.34, 0.18, 0.34);
-const previewEggMiddleGeometry = new THREE.BoxGeometry(0.46, 0.2, 0.46);
-const previewEggCapGeometry = new THREE.BoxGeometry(0.26, 0.16, 0.26);
 const previewEggDropDuration = 0.32;
 const previewEggLifetime = 7.5;
 const previewEggPoolSize = 5;

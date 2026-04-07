@@ -17,6 +17,8 @@ import type {
   RuntimeEggScatterDebrisState,
   RuntimeEggState,
   RuntimeFallingClusterState,
+  RuntimeInteractionFocusState,
+  RuntimeInteractionInvalidReason,
   RuntimePlayerState,
   RuntimeSkyDropState,
   RuntimeVoxelBurstState,
@@ -195,6 +197,32 @@ interface NpcPlacementPlan {
   targetNormal: Vec3i;
 }
 
+interface NpcHarvestCandidate {
+  voxel: Vec3i;
+  kind: BlockKind;
+  distance: number;
+  horizontalDistance: number;
+  forwardDot: number;
+  topGroundY: number;
+  topSolidY: number;
+  aboveGround: boolean;
+  exposed: boolean;
+  isSelfSupport: boolean;
+}
+
+interface NpcBuriedProbe {
+  buried: boolean;
+  exitTarget: Vector3 | null;
+  moveDirection: Vector2;
+  exitCardinal: Vec3i;
+  headBlockedVoxel: Vec3i | null;
+  sideBlockedVoxel: Vec3i | null;
+  floorBlockedVoxel: Vec3i | null;
+  headroomOpen: boolean;
+}
+
+type SpawnQuadrant = "nw" | "ne" | "sw" | "se";
+
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 const lerp = (start: number, end: number, alpha: number) => start + (end - start) * alpha;
 const length2 = (x: number, z: number) => Math.hypot(x, z);
@@ -292,6 +320,7 @@ export class OutOfBoundsSimulation {
   private skyDropCooldown = 0;
   private rngState = 1;
   private spawnCandidates: Vector3[] = [];
+  private initialSpawnCandidates: Vector3[] = [];
   private readonly performanceDiagnostics: SimulationPerformanceDiagnostics = {
     skyDropUpdateMs: 0,
     skyDropLandingMs: 0,
@@ -346,6 +375,10 @@ export class OutOfBoundsSimulation {
     const initialSpawnStyle = options.initialSpawnStyle ?? "ground";
     const npcCount = mode === "playNpc" ? clamp(options.npcCount ?? 9, 1, this.config.maxNpcCount) : 0;
     this.spawnCandidates = this.buildSpawnCandidates(npcCount + 1);
+    this.initialSpawnCandidates =
+      mode === "playNpc"
+        ? this.buildPlayNpcInitialSpawnCandidates(npcCount + 1, options.initialSpawnSeed)
+        : this.spawnCandidates.map((spawn) => ({ ...spawn }));
     const local = this.spawnPlayer("human", options.localPlayerName ?? "You", 0, initialSpawnStyle);
     this.localPlayerId = local.id;
 
@@ -533,6 +566,69 @@ export class OutOfBoundsSimulation {
       playerIds: players.map((player) => player.id),
       players,
       ranking: this.getRanking()
+    };
+  }
+
+  getRuntimeInteractionFocusState(
+    targetVoxel: Vec3i | null,
+    targetNormal: Vec3i | null,
+    playerId: string | null = this.localPlayerId
+  ): RuntimeInteractionFocusState | null {
+    if (!playerId || !targetVoxel || !targetNormal) {
+      return null;
+    }
+
+    const player = this.players.get(playerId);
+    if (!player || !player.alive || player.fallingOut || player.respawning) {
+      return null;
+    }
+
+    const kind = this.world.getVoxelKind(targetVoxel.x, targetVoxel.y, targetVoxel.z);
+    if (!kind) {
+      return null;
+    }
+
+    const placeVoxel = {
+      x: targetVoxel.x + targetNormal.x,
+      y: targetVoxel.y + targetNormal.y,
+      z: targetVoxel.z + targetNormal.z
+    };
+    const inRange = this.isTargetInInteractRange(player, targetVoxel);
+    const destroyValid = inRange && this.isHarvestable(kind);
+
+    let placeValid = false;
+    let invalidReason: RuntimeInteractionInvalidReason | null = null;
+
+    if (!inRange) {
+      invalidReason = "outOfRange";
+    } else if (!isInBounds(this.world.size, placeVoxel.x, placeVoxel.y, placeVoxel.z)) {
+      invalidReason = "outOfBounds";
+    } else if (this.world.hasSolid(placeVoxel.x, placeVoxel.y, placeVoxel.z)) {
+      invalidReason = "occupied";
+    } else if (this.isVoxelBlockedByAnyPlayer(placeVoxel)) {
+      invalidReason = "blockedByPlayer";
+    } else if (
+      this.isVoxelBlockedByFallingCluster(placeVoxel) ||
+      this.isVoxelBlockedBySkyDrop(placeVoxel) ||
+      this.isVoxelBlockedByEgg(placeVoxel) ||
+      this.isVoxelBlockedByEggScatterDebris(placeVoxel)
+    ) {
+      invalidReason = "blockedByDebris";
+    } else {
+      placeValid = true;
+    }
+
+    if (!destroyValid && kind === "hazard" && !placeValid) {
+      invalidReason = "hazard";
+    }
+
+    return {
+      focusedVoxel: targetVoxel,
+      targetNormal,
+      placeVoxel,
+      destroyValid,
+      placeValid,
+      invalidReason: destroyValid || placeValid ? invalidReason : invalidReason ?? "hazard"
     };
   }
 
@@ -756,12 +852,157 @@ export class OutOfBoundsSimulation {
       y: this.world.getTopSolidY(Math.floor(this.world.size.x / 2), Math.floor(this.world.size.z / 2)) + 1.05,
       z: this.world.size.z / 2 + 0.5
     };
-    const spawn = this.spawnCandidates[spawnIndex] ?? this.spawnCandidates[spawnIndex % Math.max(1, this.spawnCandidates.length)] ?? fallback;
+    const initialSpawns = this.initialSpawnCandidates.length > 0 ? this.initialSpawnCandidates : this.spawnCandidates;
+    const spawn =
+      initialSpawns[spawnIndex] ??
+      initialSpawns[spawnIndex % Math.max(1, initialSpawns.length)] ??
+      fallback;
     return {
       x: spawn.x,
       y: spawn.y,
       z: spawn.z
     };
+  }
+
+  private buildPlayNpcInitialSpawnCandidates(requiredCount: number, initialSpawnSeed?: number) {
+    const candidates = this.spawnCandidates.length > 0 ? this.spawnCandidates : this.buildSpawnCandidates(requiredCount);
+    if (candidates.length <= 1 || requiredCount <= 1) {
+      return candidates.map((spawn) => ({ ...spawn }));
+    }
+
+    const derivedSeed =
+      initialSpawnSeed ??
+      (hashString(`${Date.now()}:${Math.random()}:${requiredCount}:${this.world.meta.updatedAt}`) || 1);
+    const random = this.createSeededRandom(derivedSeed);
+    const buckets = this.groupSpawnsByQuadrant(candidates);
+    const populatedQuadrants = this.getSpawnQuadrants().filter((quadrant) => buckets[quadrant].length > 0);
+    if (populatedQuadrants.length === 0) {
+      return candidates.map((spawn) => ({ ...spawn }));
+    }
+
+    for (const quadrant of this.getSpawnQuadrants()) {
+      buckets[quadrant] = this.shuffleSpawnBucket(buckets[quadrant], random);
+    }
+
+    const humanQuadrant = populatedQuadrants[Math.floor(random() * populatedQuadrants.length)] ?? populatedQuadrants[0]!;
+    const playerSpawn = buckets[humanQuadrant][0] ?? candidates[0]!;
+    const usedKeys = new Set<string>([this.getSpawnKey(playerSpawn)]);
+    const orderedSpawns: Vector3[] = [{ ...playerSpawn }];
+
+    for (const quadrant of this.getNpcQuadrantPriority(humanQuadrant, random)) {
+      for (const spawn of buckets[quadrant]) {
+        const key = this.getSpawnKey(spawn);
+        if (usedKeys.has(key)) {
+          continue;
+        }
+
+        orderedSpawns.push({ ...spawn });
+        usedKeys.add(key);
+        if (orderedSpawns.length >= requiredCount) {
+          return orderedSpawns;
+        }
+      }
+    }
+
+    for (const spawn of this.shuffleSpawnBucket(candidates, random)) {
+      const key = this.getSpawnKey(spawn);
+      if (usedKeys.has(key)) {
+        continue;
+      }
+
+      orderedSpawns.push({ ...spawn });
+      usedKeys.add(key);
+      if (orderedSpawns.length >= requiredCount) {
+        break;
+      }
+    }
+
+    return orderedSpawns;
+  }
+
+  private createSeededRandom(seed: number) {
+    let state = seed >>> 0 || 1;
+    return () => {
+      state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+      return state / 0x100000000;
+    };
+  }
+
+  private getSpawnQuadrants(): SpawnQuadrant[] {
+    return ["nw", "ne", "sw", "se"];
+  }
+
+  private groupSpawnsByQuadrant(spawns: Vector3[]) {
+    const buckets: Record<SpawnQuadrant, Vector3[]> = {
+      nw: [],
+      ne: [],
+      sw: [],
+      se: []
+    };
+
+    for (const spawn of spawns) {
+      buckets[this.getSpawnQuadrant(spawn)].push({ ...spawn });
+    }
+
+    return buckets;
+  }
+
+  private getSpawnQuadrant(spawn: Vector3): SpawnQuadrant {
+    const midX = this.world.size.x / 2;
+    const midZ = this.world.size.z / 2;
+    const east = spawn.x >= midX;
+    const south = spawn.z >= midZ;
+
+    if (!east && !south) {
+      return "nw";
+    }
+
+    if (east && !south) {
+      return "ne";
+    }
+
+    if (!east && south) {
+      return "sw";
+    }
+
+    return "se";
+  }
+
+  private getNpcQuadrantPriority(humanQuadrant: SpawnQuadrant, random: () => number): SpawnQuadrant[] {
+    const diagonallyOpposite = {
+      nw: "se",
+      ne: "sw",
+      sw: "ne",
+      se: "nw"
+    } satisfies Record<SpawnQuadrant, SpawnQuadrant>;
+    const adjacentQuadrants = {
+      nw: ["ne", "sw"],
+      ne: ["nw", "se"],
+      sw: ["se", "nw"],
+      se: ["sw", "ne"]
+    } satisfies Record<SpawnQuadrant, [SpawnQuadrant, SpawnQuadrant]>;
+    const adjacent = [...adjacentQuadrants[humanQuadrant]];
+    if (random() >= 0.5) {
+      adjacent.reverse();
+    }
+
+    return [diagonallyOpposite[humanQuadrant], ...adjacent, humanQuadrant];
+  }
+
+  private shuffleSpawnBucket(spawns: Vector3[], random: () => number) {
+    const shuffled = spawns.map((spawn) => ({ ...spawn }));
+    for (let index = shuffled.length - 1; index > 0; index -= 1) {
+      const swapIndex = Math.floor(random() * (index + 1));
+      const current = shuffled[index]!;
+      shuffled[index] = shuffled[swapIndex]!;
+      shuffled[swapIndex] = current;
+    }
+
+    return shuffled;
+  }
+
+  private getSpawnKey(spawn: Vector3) {
+    return `${spawn.x}:${spawn.y}:${spawn.z}`;
   }
 
   private buildSpawnCandidates(requiredCount: number): Vector3[] {
@@ -1315,48 +1556,19 @@ export class OutOfBoundsSimulation {
   }
 
   private tryPlace(player: SimPlayer, targetVoxel: Vec3i | null, targetNormal: Vec3i | null) {
-    if (!targetVoxel || !targetNormal || player.mass < this.config.placeCost) {
+    if (player.mass < this.config.placeCost) {
       return;
     }
 
-    const placement = {
-      x: targetVoxel.x + targetNormal.x,
-      y: targetVoxel.y + targetNormal.y,
-      z: targetVoxel.z + targetNormal.z
-    };
-
-    if (!isInBounds(this.world.size, placement.x, placement.y, placement.z)) {
-      return;
-    }
-
-    if (!this.isTargetInInteractRange(player, targetVoxel)) {
-      return;
-    }
-
-    if (this.world.hasSolid(placement.x, placement.y, placement.z)) {
-      return;
-    }
-
-    if (this.isVoxelBlockedByAnyPlayer(placement)) {
-      return;
-    }
-
-    if (this.isVoxelBlockedByFallingCluster(placement)) {
-      return;
-    }
-
-    if (this.isVoxelBlockedBySkyDrop(placement)) {
-      return;
-    }
-
-    if (this.isVoxelBlockedByEgg(placement) || this.isVoxelBlockedByEggScatterDebris(placement)) {
+    const focusState = this.getRuntimeInteractionFocusState(targetVoxel, targetNormal, player.id);
+    if (!focusState?.placeValid) {
       return;
     }
 
     const placedVoxel = {
-      x: placement.x,
-      y: placement.y,
-      z: placement.z,
+      x: focusState.placeVoxel.x,
+      y: focusState.placeVoxel.y,
+      z: focusState.placeVoxel.z,
       kind: "ground" as const
     };
     this.addDirtyChunkKeys(this.world.setVoxels([placedVoxel]));
@@ -2960,6 +3172,11 @@ export class OutOfBoundsSimulation {
     memory.targetLockRemaining = Math.max(0, memory.targetLockRemaining - dt);
     memory.jumpHoldRemaining = Math.max(0, memory.jumpHoldRemaining - dt);
 
+    const buriedProbe = this.createNpcBuriedProbe(player);
+    if (buriedProbe.buried) {
+      return this.generateBuriedRecoveryCommand(player, memory, buriedProbe);
+    }
+
     const center = {
       x: this.world.size.x / 2,
       z: this.world.size.z / 2
@@ -3020,10 +3237,14 @@ export class OutOfBoundsSimulation {
         : null;
     const supportDestroyTarget = target ? this.findSupportCollapseTarget(player, target) : null;
     const harvestTarget =
-      supportDestroyTarget ??
       this.findDestroyTarget(
         player,
-        target ? normalize2(target.position.x - player.position.x, target.position.z - player.position.z) : move
+        target ? normalize2(target.position.x - player.position.x, target.position.z - player.position.z) : move,
+        {
+          supportCollapseTarget: supportDestroyTarget,
+          allowGroundFallback: lowMatter || probe.blockedAhead || probe.tallStepAhead || needRecovery,
+          allowSelfSupport: false
+        }
       );
     const eggPlan = target
       ? this.getNpcEggPlan(player, target, targetPlan.edgeDistance)
@@ -3075,7 +3296,7 @@ export class OutOfBoundsSimulation {
       desiredIntent = "harvest";
       destroy = true;
       targetVoxel = harvestTarget;
-      if (supportDestroyTarget && target) {
+      if (supportDestroyTarget && target && harvestTarget && this.isSameVoxel(harvestTarget, supportDestroyTarget)) {
         move = normalize2(target.position.x - player.position.x, target.position.z - player.position.z);
       }
     } else if (pushReady && target) {
@@ -3261,6 +3482,247 @@ export class OutOfBoundsSimulation {
     memory.targetPlayerId = bestPlan.target?.id ?? null;
     memory.targetLockRemaining = bestPlan.target ? (bestPlan.target.id === this.localPlayerId ? 0.45 : 0.65) : 0;
     return bestPlan;
+  }
+
+  private isSameVoxel(left: Vec3i, right: Vec3i) {
+    return left.x === right.x && left.y === right.y && left.z === right.z;
+  }
+
+  private createNpcBuriedProbe(player: SimPlayer): NpcBuriedProbe {
+    const cellX = Math.floor(player.position.x);
+    const cellZ = Math.floor(player.position.z);
+    const supportY = Math.floor(player.position.y - 0.1);
+    const chestY = Math.floor(player.position.y + this.config.playerHeight * 0.5);
+    const headY = Math.floor(player.position.y + this.config.playerHeight - 0.2);
+    const topGroundY = this.world.getTopGroundY(cellX, cellZ);
+    const feetBelowGround = topGroundY >= 0 && player.position.y < topGroundY + 0.9;
+    let nearbyTopGroundY = topGroundY;
+    for (const direction of [
+      { x: 1, y: 0, z: 0 },
+      { x: -1, y: 0, z: 0 },
+      { x: 0, y: 0, z: 1 },
+      { x: 0, y: 0, z: -1 }
+    ] as const) {
+      nearbyTopGroundY = Math.max(
+        nearbyTopGroundY,
+        this.world.getTopGroundY(cellX + direction.x, cellZ + direction.z)
+      );
+    }
+
+    const belowNearbySurface = nearbyTopGroundY >= 0 && player.position.y < nearbyTopGroundY + 0.85;
+    const embeddedByTerrain =
+      this.world.hasSolid(cellX, chestY, cellZ) ||
+      this.world.hasSolid(cellX, headY, cellZ);
+    const exitTarget = this.findNpcRecoveryExit(player);
+    const moveDirection =
+      exitTarget
+        ? normalize2(exitTarget.x - player.position.x, exitTarget.z - player.position.z)
+        : normalize2(this.world.size.x / 2 - player.position.x, this.world.size.z / 2 - player.position.z);
+    const exitCardinal =
+      length2(moveDirection.x, moveDirection.z) > EPSILON
+        ? this.toCardinalDirection(moveDirection)
+        : this.toCardinalDirection(player.facing);
+    const headBlockedVoxel = this.findNpcRecoveryBlockedVoxel(player, { x: 0, y: 0, z: 0 }, [headY, headY + 1, chestY]);
+    const sideBlockedVoxel = this.findNpcRecoveryBlockedVoxel(
+      player,
+      exitCardinal,
+      [Math.max(supportY + 2, chestY), headY, headY + 1]
+    );
+    const floorBlockedVoxel =
+      exitTarget === null
+        ? this.findNpcRecoveryBlockedVoxel(player, exitCardinal, [supportY], true)
+        : null;
+    return {
+      buried:
+        embeddedByTerrain ||
+        feetBelowGround ||
+        belowNearbySurface,
+      exitTarget,
+      moveDirection,
+      exitCardinal,
+      headBlockedVoxel,
+      sideBlockedVoxel,
+      floorBlockedVoxel,
+      headroomOpen:
+        headBlockedVoxel === null &&
+        !this.world.hasSolid(cellX, chestY, cellZ) &&
+        !this.world.hasSolid(cellX, headY, cellZ)
+    };
+  }
+
+  private findNpcRecoveryExit(player: SimPlayer): Vector3 | null {
+    const originCellX = Math.floor(player.position.x);
+    const originCellZ = Math.floor(player.position.z);
+    let bestTarget: Vector3 | null = null;
+    let bestScore = Number.POSITIVE_INFINITY;
+
+    for (let radius = 0; radius <= 5; radius += 1) {
+      for (let offsetX = -radius; offsetX <= radius; offsetX += 1) {
+        for (let offsetZ = -radius; offsetZ <= radius; offsetZ += 1) {
+          if (radius > 0 && Math.max(Math.abs(offsetX), Math.abs(offsetZ)) !== radius) {
+            continue;
+          }
+
+          const cellX = originCellX + offsetX;
+          const cellZ = originCellZ + offsetZ;
+          if (!isInBounds(this.world.size, cellX, 0, cellZ)) {
+            continue;
+          }
+
+          const topSolidY = this.world.getTopSolidY(cellX, cellZ);
+          if (topSolidY < 0) {
+            continue;
+          }
+
+          const candidate = {
+            x: cellX + 0.5,
+            y: topSolidY + 1.05,
+            z: cellZ + 0.5
+          };
+          if (candidate.y <= player.position.y + 0.1) {
+            continue;
+          }
+
+          if (!this.canPlayerFitAt(candidate)) {
+            continue;
+          }
+
+          const horizontal = Math.hypot(candidate.x - player.position.x, candidate.z - player.position.z);
+          const verticalGain = Math.max(0, candidate.y - player.position.y);
+          const score = horizontal + verticalGain * 0.45 - (this.world.getTopGroundY(cellX, cellZ) === topSolidY ? 0.15 : 0);
+          if (score >= bestScore - EPSILON) {
+            continue;
+          }
+
+          bestScore = score;
+          bestTarget = candidate;
+        }
+      }
+    }
+
+    return bestTarget;
+  }
+
+  private findNpcRecoveryBlockedVoxel(
+    player: SimPlayer,
+    direction: Vec3i,
+    yLevels: number[],
+    allowFloorTarget = false
+  ): Vec3i | null {
+    const baseX = Math.floor(player.position.x) + direction.x;
+    const baseZ = Math.floor(player.position.z) + direction.z;
+
+    for (const y of yLevels) {
+      const candidate = { x: baseX, y, z: baseZ };
+      const kind = this.world.getVoxelKind(candidate.x, candidate.y, candidate.z);
+      if (!kind || !this.isHarvestable(kind) || !this.isTargetInInteractRange(player, candidate)) {
+        continue;
+      }
+
+      if (!allowFloorTarget && this.isNpcDirectSupportVoxel(player, candidate)) {
+        continue;
+      }
+
+      return candidate;
+    }
+
+    return null;
+  }
+
+  private generateBuriedRecoveryCommand(player: SimPlayer, memory: NpcMemory, buriedProbe: NpcBuriedProbe): PlayerCommand {
+    let move =
+      length2(buriedProbe.moveDirection.x, buriedProbe.moveDirection.z) > EPSILON
+        ? buriedProbe.moveDirection
+        : normalize2(this.world.size.x / 2 - player.position.x, this.world.size.z / 2 - player.position.z);
+    let desiredLook = move;
+    const pathProbe = this.createNpcPathProbe(player, move, desiredLook);
+    const buildPlan =
+      player.mass >= this.config.placeCost + 2
+        ? this.findNpcPlacementPlan(player, pathProbe)
+        : null;
+    const recoveryDestroyTarget =
+      buriedProbe.headBlockedVoxel ??
+      buriedProbe.sideBlockedVoxel ??
+      buriedProbe.floorBlockedVoxel;
+
+    let jump = memory.jumpHoldRemaining > EPSILON && !player.grounded;
+    let jumpPressed = false;
+    let destroy = false;
+    let place = false;
+    let targetVoxel: Vec3i | null = null;
+    let targetNormal: Vec3i | null = null;
+
+    if (recoveryDestroyTarget) {
+      destroy = true;
+      targetVoxel = recoveryDestroyTarget;
+      if (buriedProbe.headBlockedVoxel && this.isSameVoxel(recoveryDestroyTarget, buriedProbe.headBlockedVoxel)) {
+        move = { x: 0, z: 0 };
+      }
+    } else if (
+      buildPlan &&
+      (pathProbe.shortGapAhead ||
+        pathProbe.tallStepAhead ||
+        pathProbe.frontTopSolidY < 0 ||
+        (buriedProbe.exitTarget !== null && buriedProbe.exitTarget.y > player.position.y + 0.7))
+    ) {
+      place = true;
+      targetVoxel = buildPlan.targetVoxel;
+      targetNormal = buildPlan.targetNormal;
+    }
+
+    const shouldClimb =
+      buriedProbe.headroomOpen &&
+      (
+        pathProbe.obstacleAhead ||
+        pathProbe.shortGapAhead ||
+        pathProbe.tallStepAhead ||
+        (buriedProbe.exitTarget !== null && buriedProbe.exitTarget.y > player.position.y + 0.35)
+      );
+
+    if (!destroy && player.grounded && shouldClimb) {
+      jump = true;
+      jumpPressed = true;
+      memory.jumpHoldRemaining = 0.36;
+    } else if (
+      !destroy &&
+      !player.grounded &&
+      (
+        memory.jumpHoldRemaining > EPSILON ||
+        (buriedProbe.headroomOpen && buriedProbe.exitTarget !== null && buriedProbe.exitTarget.y >= player.position.y - 0.1)
+      )
+    ) {
+      jump = true;
+    }
+
+    if (length2(move.x, move.z) <= EPSILON) {
+      move = desiredLook;
+    }
+
+    if (length2(desiredLook.x, desiredLook.z) <= EPSILON) {
+      desiredLook = move;
+    }
+
+    memory.intent = "recover";
+    memory.intentRemaining = 0.34;
+    memory.targetLockRemaining = 0;
+
+    return {
+      moveX: move.x,
+      moveZ: move.z,
+      lookX: desiredLook.x !== 0 || desiredLook.z !== 0 ? desiredLook.x : player.facing.x,
+      lookZ: desiredLook.x !== 0 || desiredLook.z !== 0 ? desiredLook.z : player.facing.z,
+      eggCharge: 0,
+      eggPitch: 0,
+      jump,
+      jumpPressed,
+      jumpReleased: false,
+      destroy,
+      place,
+      push: false,
+      layEgg: false,
+      targetVoxel,
+      targetNormal
+    };
   }
 
   private createNpcPathProbe(player: SimPlayer, move: Vector2, fallbackLook: Vector2): NpcPathProbe {
@@ -3462,28 +3924,187 @@ export class OutOfBoundsSimulation {
     return outwardDot > 0.15 && (facingDot > 0.78 || target.stunRemaining > EPSILON);
   }
 
-  private findDestroyTarget(player: SimPlayer, direction = player.facing): Vec3i | null {
-    const sampleHeights = [-0.25, 0.15, 0.6, 1.1];
+  private isNpcDirectSupportVoxel(player: SimPlayer, targetVoxel: Vec3i) {
+    return (
+      targetVoxel.x === Math.floor(player.position.x) &&
+      targetVoxel.z === Math.floor(player.position.z) &&
+      targetVoxel.y === Math.floor(player.position.y - 0.1)
+    );
+  }
+
+  private collectNpcHarvestCandidates(player: SimPlayer, direction = player.facing): NpcHarvestCandidate[] {
+    const chest = this.getPlayerChestPosition(player);
     const normalizedDirection = normalize2(direction.x, direction.z);
+    const minX = Math.max(0, Math.floor(chest.x - this.config.interactRange));
+    const maxX = Math.min(this.world.size.x - 1, Math.ceil(chest.x + this.config.interactRange));
+    const minY = Math.max(0, Math.floor(chest.y - this.config.interactRange));
+    const maxY = Math.min(this.world.size.y - 1, Math.ceil(chest.y + this.config.interactRange));
+    const minZ = Math.max(0, Math.floor(chest.z - this.config.interactRange));
+    const maxZ = Math.min(this.world.size.z - 1, Math.ceil(chest.z + this.config.interactRange));
+    const candidates: NpcHarvestCandidate[] = [];
 
-    for (const height of sampleHeights) {
-      for (let distance = 0.65; distance <= this.config.interactRange; distance += 0.25) {
-        const sampleX = player.position.x + normalizedDirection.x * distance;
-        const sampleY = player.position.y + height;
-        const sampleZ = player.position.z + normalizedDirection.z * distance;
-        const targetVoxel = {
-          x: Math.floor(sampleX),
-          y: Math.floor(sampleY),
-          z: Math.floor(sampleZ)
-        };
-        const kind = this.world.getVoxelKind(targetVoxel.x, targetVoxel.y, targetVoxel.z);
+    for (let x = minX; x <= maxX; x += 1) {
+      for (let y = minY; y <= maxY; y += 1) {
+        for (let z = minZ; z <= maxZ; z += 1) {
+          const kind = this.world.getVoxelKind(x, y, z);
+          if (!kind || !this.isHarvestable(kind)) {
+            continue;
+          }
 
-        if (!kind || !this.isHarvestable(kind) || !this.isTargetInInteractRange(player, targetVoxel)) {
-          continue;
+          const voxel = { x, y, z };
+          if (!this.isTargetInInteractRange(player, voxel)) {
+            continue;
+          }
+
+          const centerX = x + 0.5;
+          const centerY = y + 0.5;
+          const centerZ = z + 0.5;
+          const deltaX = centerX - chest.x;
+          const deltaZ = centerZ - chest.z;
+          const horizontalDistance = Math.hypot(deltaX, deltaZ);
+          const aim = normalize2(deltaX, deltaZ);
+          const forwardDot =
+            length2(normalizedDirection.x, normalizedDirection.z) > EPSILON
+              ? aim.x * normalizedDirection.x + aim.z * normalizedDirection.z
+              : 0;
+
+          candidates.push({
+            voxel,
+            kind,
+            distance: Math.hypot(deltaX, centerY - chest.y, deltaZ),
+            horizontalDistance,
+            forwardDot,
+            topGroundY: this.world.getTopGroundY(x, z),
+            topSolidY: this.world.getTopSolidY(x, z),
+            aboveGround: y > this.world.getTopGroundY(x, z),
+            exposed: this.world.isSurfaceVoxel(x, y, z),
+            isSelfSupport: this.isNpcDirectSupportVoxel(player, voxel)
+          });
         }
-
-        return targetVoxel;
       }
+    }
+
+    candidates.sort((left, right) => left.distance - right.distance);
+    return candidates;
+  }
+
+  private findElevatedHarvestTarget(candidates: NpcHarvestCandidate[]) {
+    let bestCandidate: NpcHarvestCandidate | null = null;
+    let bestScore = Number.NEGATIVE_INFINITY;
+
+    for (const candidate of candidates) {
+      if (!candidate.aboveGround || candidate.isSelfSupport || candidate.forwardDot < -0.35) {
+        continue;
+      }
+
+      const elevation = candidate.voxel.y - candidate.topGroundY;
+      const score =
+        elevation * 3.1 +
+        candidate.forwardDot * 2.6 +
+        (candidate.exposed ? 1.4 : 0.5) -
+        candidate.distance * 0.7;
+      if (score <= bestScore) {
+        continue;
+      }
+
+      bestScore = score;
+      bestCandidate = candidate;
+    }
+
+    return bestCandidate?.voxel ?? null;
+  }
+
+  private findBlockingHarvestTarget(player: SimPlayer, candidates: NpcHarvestCandidate[]) {
+    const supportY = Math.floor(player.position.y - 0.1);
+    const headThreshold = Math.floor(player.position.y + this.config.playerHeight * 0.5);
+    let bestCandidate: NpcHarvestCandidate | null = null;
+    let bestScore = Number.NEGATIVE_INFINITY;
+
+    for (const candidate of candidates) {
+      if (
+        candidate.isSelfSupport ||
+        candidate.voxel.y < supportY + 1 ||
+        (candidate.forwardDot < -0.15 && candidate.horizontalDistance > 1.25)
+      ) {
+        continue;
+      }
+
+      const sameColumn =
+        candidate.voxel.x === Math.floor(player.position.x) &&
+        candidate.voxel.z === Math.floor(player.position.z);
+      const score =
+        candidate.forwardDot * 2.2 +
+        (sameColumn ? 2.8 : 0) +
+        (candidate.voxel.y >= headThreshold ? 1.3 : 0.4) +
+        (candidate.exposed ? 0.6 : 0) -
+        candidate.distance * 0.85;
+      if (score <= bestScore) {
+        continue;
+      }
+
+      bestScore = score;
+      bestCandidate = candidate;
+    }
+
+    return bestCandidate?.voxel ?? null;
+  }
+
+  private findGroundFallbackHarvestTarget(candidates: NpcHarvestCandidate[], allowSelfSupport: boolean) {
+    let bestCandidate: NpcHarvestCandidate | null = null;
+    let bestScore = Number.NEGATIVE_INFINITY;
+
+    for (const candidate of candidates) {
+      const isSurfaceGround = candidate.voxel.y >= candidate.topGroundY;
+      if (
+        candidate.aboveGround ||
+        (!allowSelfSupport && candidate.isSelfSupport) ||
+        (!isSurfaceGround && candidate.voxel.y < candidate.topGroundY - 1)
+      ) {
+        continue;
+      }
+
+      const score =
+        candidate.forwardDot * 1.9 +
+        (candidate.exposed ? 0.75 : 0.2) -
+        candidate.distance * 0.9 -
+        Math.max(0, candidate.topGroundY - candidate.voxel.y) * 1.2;
+      if (score <= bestScore) {
+        continue;
+      }
+
+      bestScore = score;
+      bestCandidate = candidate;
+    }
+
+    return bestCandidate?.voxel ?? null;
+  }
+
+  private findDestroyTarget(
+    player: SimPlayer,
+    direction = player.facing,
+    options: {
+      supportCollapseTarget?: Vec3i | null;
+      allowGroundFallback?: boolean;
+      allowSelfSupport?: boolean;
+    } = {}
+  ): Vec3i | null {
+    const candidates = this.collectNpcHarvestCandidates(player, direction);
+    const elevatedTarget = this.findElevatedHarvestTarget(candidates);
+    if (elevatedTarget) {
+      return elevatedTarget;
+    }
+
+    if (options.supportCollapseTarget) {
+      return options.supportCollapseTarget;
+    }
+
+    const blockingTarget = this.findBlockingHarvestTarget(player, candidates);
+    if (blockingTarget) {
+      return blockingTarget;
+    }
+
+    if (options.allowGroundFallback) {
+      return this.findGroundFallbackHarvestTarget(candidates, options.allowSelfSupport ?? false);
     }
 
     return null;

@@ -53,6 +53,35 @@ const getHorizontalDistance = (
   right: { position: { x: number; z: number } }
 ) => Math.hypot(left.position.x - right.position.x, left.position.z - right.position.z);
 
+const getSpawnQuadrant = (
+  worldSize: { x: number; z: number },
+  position: { x: number; z: number }
+) => {
+  const east = position.x >= worldSize.x / 2;
+  const south = position.z >= worldSize.z / 2;
+  if (!east && !south) {
+    return "nw" as const;
+  }
+
+  if (east && !south) {
+    return "ne" as const;
+  }
+
+  if (!east && south) {
+    return "sw" as const;
+  }
+
+  return "se" as const;
+};
+
+const getDiagonalOppositeQuadrant = (quadrant: "nw" | "ne" | "sw" | "se") =>
+  ({
+    nw: "se",
+    ne: "sw",
+    sw: "ne",
+    se: "nw"
+  })[quadrant];
+
 const normalizeAngle = (angle: number) => Math.atan2(Math.sin(angle), Math.cos(angle));
 
 const getYaw = (facing: { x: number; z: number }) => Math.atan2(facing.x, facing.z);
@@ -124,6 +153,25 @@ describe("OutOfBoundsSimulation", () => {
         expect(distance).toBeGreaterThan(1.6);
       }
     }
+  });
+
+  it("starts the human on one seeded side and keeps NPCs on the opposite quadrants", () => {
+    const simulation = new OutOfBoundsSimulation();
+    simulation.reset("playNpc", createArenaDocument(), {
+      npcCount: 9,
+      localPlayerName: "You",
+      initialSpawnSeed: 17
+    });
+
+    const snapshot = simulation.getSnapshot();
+    const localPlayer = snapshot.players.find((player) => player.id === simulation.getLocalPlayerId())!;
+    const npcPlayers = snapshot.players.filter((player) => player.kind === "npc");
+    const humanQuadrant = getSpawnQuadrant(simulation.getWorld().size, localPlayer.position);
+    const oppositeQuadrant = getDiagonalOppositeQuadrant(humanQuadrant);
+
+    expect(npcPlayers).toHaveLength(9);
+    expect(npcPlayers.every((player) => getSpawnQuadrant(simulation.getWorld().size, player.position) !== humanQuadrant)).toBe(true);
+    expect(npcPlayers.some((player) => getSpawnQuadrant(simulation.getWorld().size, player.position) === oppositeQuadrant)).toBe(true);
   });
 
   it("supports sky-drop entry without changing the default grounded spawn flow", () => {
@@ -678,6 +726,131 @@ describe("OutOfBoundsSimulation", () => {
 
     expect(after.mass).toBe(before.mass);
     expect(simulation.consumeDirtyChunkKeys()).toEqual([]);
+  });
+
+  it("reports runtime interaction focus for harvestable targets", () => {
+    const simulation = createTestSimulation("explore", (world) => {
+      world.setVoxel(7, DEFAULT_SURFACE_Y, 6, "boundary");
+    });
+    const localPlayerId = simulation.getLocalPlayerId()!;
+    advanceUntilGrounded(simulation, localPlayerId);
+
+    const localPlayer = getInternalPlayer(simulation, localPlayerId);
+    localPlayer.position = { x: 6.5, y: PLAYER_GROUND_Y, z: 6.5 };
+    localPlayer.grounded = true;
+
+    expect(
+      simulation.getRuntimeInteractionFocusState(
+        { x: 7, y: DEFAULT_SURFACE_Y, z: 6 },
+        { x: 0, y: 1, z: 0 },
+        localPlayerId
+      )
+    ).toEqual({
+      focusedVoxel: { x: 7, y: DEFAULT_SURFACE_Y, z: 6 },
+      targetNormal: { x: 0, y: 1, z: 0 },
+      placeVoxel: { x: 7, y: DEFAULT_SURFACE_Y + 1, z: 6 },
+      destroyValid: true,
+      placeValid: true,
+      invalidReason: null
+    });
+  });
+
+  it("reports out-of-range and hazard focus states truthfully", () => {
+    const simulation = createTestSimulation("explore", (world) => {
+      world.setVoxel(7, DEFAULT_SURFACE_Y, 6, "hazard");
+      world.setVoxel(15, DEFAULT_SURFACE_Y, 6, "ground");
+    });
+    const localPlayerId = simulation.getLocalPlayerId()!;
+    advanceUntilGrounded(simulation, localPlayerId);
+
+    const localPlayer = getInternalPlayer(simulation, localPlayerId);
+    localPlayer.position = { x: 6.5, y: PLAYER_GROUND_Y, z: 6.5 };
+    localPlayer.grounded = true;
+
+    expect(
+      simulation.getRuntimeInteractionFocusState(
+        { x: 15, y: DEFAULT_SURFACE_Y, z: 6 },
+        { x: 0, y: 1, z: 0 },
+        localPlayerId
+      )
+    ).toEqual({
+      focusedVoxel: { x: 15, y: DEFAULT_SURFACE_Y, z: 6 },
+      targetNormal: { x: 0, y: 1, z: 0 },
+      placeVoxel: { x: 15, y: DEFAULT_SURFACE_Y + 1, z: 6 },
+      destroyValid: false,
+      placeValid: false,
+      invalidReason: "outOfRange"
+    });
+
+    expect(
+      simulation.getRuntimeInteractionFocusState(
+        { x: 7, y: DEFAULT_SURFACE_Y, z: 6 },
+        { x: 0, y: 1, z: 0 },
+        localPlayerId
+      )
+    ).toEqual({
+      focusedVoxel: { x: 7, y: DEFAULT_SURFACE_Y, z: 6 },
+      targetNormal: { x: 0, y: 1, z: 0 },
+      placeVoxel: { x: 7, y: DEFAULT_SURFACE_Y + 1, z: 6 },
+      destroyValid: false,
+      placeValid: true,
+      invalidReason: null
+    });
+  });
+
+  it("reports player and debris placement blockers in runtime interaction focus", () => {
+    const simulation = createTestSimulation("playNpc");
+    const localPlayerId = simulation.getLocalPlayerId()!;
+    const npcId = getNpcId(simulation)!;
+    advanceUntilGrounded(simulation, localPlayerId);
+
+    const localPlayer = getInternalPlayer(simulation, localPlayerId);
+    const npcPlayer = getInternalPlayer(simulation, npcId);
+    localPlayer.position = { x: 6.5, y: PLAYER_GROUND_Y, z: 6.5 };
+    localPlayer.grounded = true;
+    npcPlayer.position = { x: 8.5, y: PLAYER_GROUND_Y, z: 6.5 };
+    npcPlayer.grounded = true;
+
+    expect(
+      simulation.getRuntimeInteractionFocusState(
+        { x: 8, y: SURFACE_TOP_Y, z: 6 },
+        { x: 0, y: 1, z: 0 },
+        localPlayerId
+      )
+    ).toEqual({
+      focusedVoxel: { x: 8, y: SURFACE_TOP_Y, z: 6 },
+      targetNormal: { x: 0, y: 1, z: 0 },
+      placeVoxel: { x: 8, y: DEFAULT_SURFACE_Y, z: 6 },
+      destroyValid: true,
+      placeValid: false,
+      invalidReason: "blockedByPlayer"
+    });
+
+    const fallingClusters = (simulation as unknown as { fallingClusters: Map<string, any> }).fallingClusters;
+    fallingClusters.set("manual-cluster", {
+      id: "manual-cluster",
+      phase: "falling",
+      warningRemaining: 0,
+      voxels: [{ x: 9, y: DEFAULT_SURFACE_Y, z: 6, kind: "ground" }],
+      offsetY: 0.4,
+      velocityY: 0,
+      damagedPlayerIds: new Set<string>()
+    });
+
+    expect(
+      simulation.getRuntimeInteractionFocusState(
+        { x: 9, y: SURFACE_TOP_Y, z: 6 },
+        { x: 0, y: 1, z: 0 },
+        localPlayerId
+      )
+    ).toEqual({
+      focusedVoxel: { x: 9, y: SURFACE_TOP_Y, z: 6 },
+      targetNormal: { x: 0, y: 1, z: 0 },
+      placeVoxel: { x: 9, y: DEFAULT_SURFACE_Y, z: 6 },
+      destroyValid: true,
+      placeValid: false,
+      invalidReason: "blockedByDebris"
+    });
   });
 
   it("uses explicit destroy targeting instead of facing inference", () => {
@@ -2004,6 +2177,38 @@ describe("OutOfBoundsSimulation", () => {
     expect(respawned.invulnerableRemaining).toBeGreaterThan(0);
   });
 
+  it("keeps respawns on the safest spread instead of reusing the seeded initial start", () => {
+    const simulation = new OutOfBoundsSimulation();
+    simulation.reset("playNpc", createArenaDocument(), {
+      npcCount: 4,
+      localPlayerName: "You",
+      initialSpawnSeed: 5
+    });
+
+    const localPlayerId = simulation.getLocalPlayerId()!;
+    const localPlayer = getInternalPlayer(simulation, localPlayerId);
+    const originalSpawn = { ...localPlayer.position };
+    const npcIds = getNpcIds(simulation);
+
+    npcIds.forEach((npcId, index) => {
+      const npcPlayer = getInternalPlayer(simulation, npcId);
+      npcPlayer.position =
+        index === 0
+          ? { ...originalSpawn }
+          : { x: 34.5 + index, y: PLAYER_GROUND_Y, z: 36.5 };
+      npcPlayer.velocity = { x: 0, y: 0, z: 0 };
+      npcPlayer.grounded = true;
+    });
+
+    (simulation as unknown as { respawnPlayer: (player: typeof localPlayer) => void }).respawnPlayer(localPlayer);
+
+    const respawned = simulation.getPlayerState(localPlayerId)!;
+    expect(getHorizontalDistance(respawned, { position: originalSpawn })).toBeGreaterThan(0.25);
+    expect(getHorizontalDistance(respawned, getInternalPlayer(simulation, npcIds[0]!))).toBeGreaterThanOrEqual(
+      simulation.config.playerRadius * 2 + simulation.config.playerHitSeparationDistance - 0.01
+    );
+  });
+
   it("ignores hit damage during respawn invulnerability", () => {
     const simulation = new OutOfBoundsSimulation({
       skyDropIntervalMin: 999,
@@ -2141,13 +2346,15 @@ describe("OutOfBoundsSimulation", () => {
     const simulationA = new OutOfBoundsSimulation();
     simulationA.reset("playNpc", map, {
       npcCount: 2,
-      localPlayerName: "You"
+      localPlayerName: "You",
+      initialSpawnSeed: 11
     });
 
     const simulationB = new OutOfBoundsSimulation();
     simulationB.reset("playNpc", map, {
       npcCount: 2,
-      localPlayerName: "You"
+      localPlayerName: "You",
+      initialSpawnSeed: 11
     });
 
     const localPlayerId = simulationA.getLocalPlayerId()!;
@@ -2289,6 +2496,63 @@ describe("OutOfBoundsSimulation", () => {
     expect(command.targetNormal).toEqual({ x: 1, y: 0, z: 0 });
   });
 
+  it("prefers exposed elevated harvest blocks over ground surface", () => {
+    const simulation = createTestSimulation("playNpc");
+    const npcId = getNpcId(simulation)!;
+    const npcPlayer = getInternalPlayer(simulation, npcId);
+    const localPlayer = getInternalPlayer(simulation, simulation.getLocalPlayerId()!);
+    const otherNpcIds = getNpcIds(simulation).filter((candidateNpcId) => candidateNpcId !== npcId);
+    const generateNpcCommand = (simulation as unknown as { generateNpcCommand: (player: unknown) => PlayerCommand })
+      .generateNpcCommand
+      .bind(simulation);
+
+    npcPlayer.position = { x: 10.5, y: PLAYER_GROUND_Y, z: 10.5 };
+    npcPlayer.facing = { x: 1, z: 0 };
+    npcPlayer.grounded = true;
+    npcPlayer.mass = 6;
+    localPlayer.position = { x: 34.5, y: PLAYER_GROUND_Y, z: 34.5 };
+    localPlayer.grounded = true;
+    otherNpcIds.forEach((otherNpcId, index) => {
+      const otherNpc = getInternalPlayer(simulation, otherNpcId);
+      otherNpc.position = { x: 30.5 + index, y: PLAYER_GROUND_Y, z: 39.5 };
+      otherNpc.grounded = true;
+    });
+    simulation.getWorld().setVoxel(11, DEFAULT_SURFACE_Y, 10, "boundary");
+
+    const command = generateNpcCommand(npcPlayer);
+    expect(command.destroy).toBe(true);
+    expect(command.targetVoxel).toEqual({ x: 11, y: DEFAULT_SURFACE_Y, z: 10 });
+  });
+
+  it("falls back to ground harvest when no elevated block is available", () => {
+    const simulation = createTestSimulation("playNpc");
+    const npcId = getNpcId(simulation)!;
+    const npcPlayer = getInternalPlayer(simulation, npcId);
+    const localPlayer = getInternalPlayer(simulation, simulation.getLocalPlayerId()!);
+    const otherNpcIds = getNpcIds(simulation).filter((candidateNpcId) => candidateNpcId !== npcId);
+    const generateNpcCommand = (simulation as unknown as { generateNpcCommand: (player: unknown) => PlayerCommand })
+      .generateNpcCommand
+      .bind(simulation);
+
+    npcPlayer.position = { x: 10.5, y: PLAYER_GROUND_Y, z: 10.5 };
+    npcPlayer.facing = { x: 1, z: 0 };
+    npcPlayer.grounded = true;
+    npcPlayer.mass = 6;
+    localPlayer.position = { x: 34.5, y: PLAYER_GROUND_Y, z: 34.5 };
+    localPlayer.grounded = true;
+    otherNpcIds.forEach((otherNpcId, index) => {
+      const otherNpc = getInternalPlayer(simulation, otherNpcId);
+      otherNpc.position = { x: 30.5 + index, y: PLAYER_GROUND_Y, z: 39.5 };
+      otherNpc.grounded = true;
+    });
+
+    const command = generateNpcCommand(npcPlayer);
+    expect(command.destroy).toBe(true);
+    expect(command.targetVoxel?.y).toBe(SURFACE_TOP_Y);
+    expect(Math.abs((command.targetVoxel?.x ?? 0) - 10)).toBeLessThanOrEqual(1);
+    expect(Math.abs((command.targetVoxel?.z ?? 0) - 10)).toBeLessThanOrEqual(1);
+  });
+
   it("holds jump after takeoff when a gap needs jetpack follow-through", () => {
     const simulation = createTestSimulation("playNpc");
     const npcId = getNpcId(simulation)!;
@@ -2347,5 +2611,47 @@ describe("OutOfBoundsSimulation", () => {
     const command = generateNpcCommand(npcPlayer);
     expect(command.layEgg).toBe(true);
     expect(command.eggCharge).toBeGreaterThan(0.35);
+  });
+
+  it("switches buried NPCs into recovery and climbs back up after clearing overhead terrain", () => {
+    const simulation = createTestSimulation("playNpc");
+    const npcId = getNpcId(simulation)!;
+    const npcPlayer = getInternalPlayer(simulation, npcId);
+    const npcMemory = getNpcMemory(simulation, npcId);
+    const localPlayer = getInternalPlayer(simulation, simulation.getLocalPlayerId()!);
+    const otherNpcIds = getNpcIds(simulation).filter((candidateNpcId) => candidateNpcId !== npcId);
+    const generateNpcCommand = (simulation as unknown as { generateNpcCommand: (player: unknown) => PlayerCommand })
+      .generateNpcCommand
+      .bind(simulation);
+
+    localPlayer.position = { x: 34.5, y: PLAYER_GROUND_Y, z: 34.5 };
+    localPlayer.grounded = true;
+    otherNpcIds.forEach((otherNpcId, index) => {
+      const otherNpc = getInternalPlayer(simulation, otherNpcId);
+      otherNpc.position = { x: 30.5 + index, y: PLAYER_GROUND_Y, z: 39.5 };
+      otherNpc.grounded = true;
+    });
+
+    simulation.getWorld().removeVoxel(10, SURFACE_TOP_Y, 10);
+    simulation.getWorld().setVoxel(10, DEFAULT_SURFACE_Y, 10, "boundary");
+    npcPlayer.position = { x: 10.5, y: PLAYER_GROUND_Y - 1, z: 10.5 };
+    npcPlayer.facing = { x: 1, z: 0 };
+    npcPlayer.grounded = true;
+    npcPlayer.mass = simulation.config.maxMass;
+
+    const clearCommand = generateNpcCommand(npcPlayer);
+    expect(clearCommand.destroy).toBe(true);
+    expect(clearCommand.targetVoxel).toEqual({ x: 10, y: DEFAULT_SURFACE_Y, z: 10 });
+    expect(npcMemory.targetLockRemaining).toBe(0);
+
+    simulation.getWorld().removeVoxel(10, DEFAULT_SURFACE_Y, 10);
+    const climbCommand = generateNpcCommand(npcPlayer);
+    expect(climbCommand.jumpPressed).toBe(true);
+    expect(climbCommand.jump).toBe(true);
+
+    npcPlayer.grounded = false;
+    const jetpackCommand = generateNpcCommand(npcPlayer);
+    expect(jetpackCommand.jump).toBe(true);
+    expect(jetpackCommand.jumpPressed).toBe(false);
   });
 });

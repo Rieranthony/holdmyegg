@@ -44,6 +44,7 @@ import { createChickenAvatarRig, type ChickenAvatarRig } from "../game/chickenMo
 import { getChickenPalette, type ChickenPaletteName } from "../game/colors";
 import { getEggVisualState } from "../game/eggs";
 import { isEggLaunchKeyCode } from "../game/eggLaunchControls";
+import { eggBaseGeometry, eggCapGeometry, eggMiddleGeometry } from "../game/eggVisualRecipe";
 import { getFallingClusterVisualState } from "../game/fallingClusters";
 import { buildPlayerCommand, initialKeyboardInputState, type KeyboardInputState } from "../game/input";
 import { configureDynamicInstancedMesh, finalizeDynamicInstancedMesh, finalizeStaticInstancedMesh } from "../game/instancedMeshes";
@@ -170,12 +171,19 @@ interface ClusterVisual {
   group: THREE.Group;
 }
 
+interface RuntimeFocusedTarget {
+  voxel: { x: number; y: number; z: number };
+  normal: { x: number; y: number; z: number };
+}
+
 interface DynamicOpacityMeshResource {
   geometry: THREE.BufferGeometry;
   materials: THREE.Material[];
   mesh: THREE.InstancedMesh;
   opacityAttribute: THREE.InstancedBufferAttribute;
 }
+
+type EggChargeInputSource = "key";
 
 interface EggChargeState {
   active: boolean;
@@ -185,6 +193,13 @@ interface EggChargeState {
   pendingThrowCharge: number;
   pendingThrowPitch: number;
   releaseRemaining: number;
+  source: EggChargeInputSource | null;
+}
+
+interface HoldActionState {
+  pressed: boolean;
+  startedAt: number;
+  holdTriggered: boolean;
 }
 
 interface EggTrajectoryPreviewResource {
@@ -214,9 +229,6 @@ const backgroundColor = "#8fc6e0";
 const runtimeGroundMaterial = new THREE.MeshStandardMaterial({ color: "#050505" });
 const menuGroundMaterial = new THREE.MeshBasicMaterial({ color: backgroundColor });
 const cloudGeometry = new THREE.BoxGeometry(1.6, 0.9, 1.6);
-const eggBaseGeometry = new THREE.BoxGeometry(0.34, 0.18, 0.34);
-const eggMiddleGeometry = new THREE.BoxGeometry(0.46, 0.2, 0.46);
-const eggCapGeometry = new THREE.BoxGeometry(0.26, 0.16, 0.26);
 const skyDropRingGeometry = new THREE.RingGeometry(0.48, 0.72, 24);
 const skyDropBeamGeometry = new THREE.CylinderGeometry(0.16, 0.16, 2, 12, 1, true);
 const speedTraceGeometry = new THREE.PlaneGeometry(0.16, 1.5).translate(0, 0.75, 0);
@@ -251,6 +263,8 @@ const SPEED_TRACE_MIN_AIR_SPEED = 3.6;
 const SPACE_BLEND_DAMPING = 4.4;
 const SPACE_STAR_COUNT = 220;
 const POINTER_CAPTURE_TIMEOUT_MS = 1_000;
+const INPUT_HOLD_THRESHOLD = 0.16;
+const DOUBLE_TAP_WINDOW_MS = 220;
 const MATTER_PULSE_DURATION = 0.72;
 const MATTER_BUBBLE_DURATION = 1.1;
 const MATTER_FEEDBACK_COOLDOWN = 0.5;
@@ -263,7 +277,6 @@ const modifierSensitiveRuntimeKeyCodes = new Set([
   "ArrowDown",
   "ArrowLeft",
   "ArrowRight",
-  "KeyQ",
   "KeyR",
   "KeyE",
   "KeyF",
@@ -529,6 +542,8 @@ const getWorldNormalFromIntersection = (intersection: THREE.Intersection<THREE.O
   return faceNormal;
 };
 
+const isRuntimeDestroyPointerButton = (button: number) => button === 0 || button === 2;
+
 const isFormElement = (target: EventTarget | null) =>
   target instanceof HTMLInputElement ||
   target instanceof HTMLTextAreaElement ||
@@ -715,9 +730,17 @@ export class GameClient {
     pendingThrow: false,
     pendingThrowCharge: 0,
     pendingThrowPitch: 0,
-    releaseRemaining: 0
+    releaseRemaining: 0,
+    source: null
   };
   private readonly activeEggKeyCodes = new Set<string>();
+  private readonly eggKeyAction: HoldActionState = {
+    pressed: false,
+    startedAt: 0,
+    holdTriggered: false
+  };
+  private lastForwardTapAtMs = Number.NEGATIVE_INFINITY;
+  private forwardTapReleased = true;
 
   private animationFrameId: number | null = null;
   private mode: ActiveShellMode;
@@ -725,10 +748,10 @@ export class GameClient {
   private latestFrame: RuntimeRenderFrame | null = null;
   private matchColorSeed: number;
   private cameraForward = { x: 1, z: 0 };
-  private previousBuildPressed = false;
-  private previousEggPressed = false;
   private inputSequence = 0;
   private destroyQueued = false;
+  private quickEggQueued = false;
+  private quickEggPitch = 0;
   private pointerLocked = false;
   private pointerCapturePending = false;
   private pointerCaptureFailureReason: PointerCaptureFailureReason | null = null;
@@ -752,7 +775,7 @@ export class GameClient {
   private runtimeControlSettings: RuntimeControlSettings;
   private eggExplosionBurstMesh: DynamicOpacityMeshResource | null = null;
   private eggExplosionShockwaveMesh: DynamicOpacityMeshResource | null = null;
-  private focusedTarget: { normal: { x: number; y: number; z: number }; voxel: { x: number; y: number; z: number } } | null = null;
+  private focusedTarget: RuntimeFocusedTarget | null = null;
   private pendingReadyToDisplay = false;
   private baseFogNear = 36;
   private baseFogFar = 120;
@@ -880,10 +903,60 @@ export class GameClient {
     this.callbacks.onRuntimeOverlayChange?.(nextState);
   }
 
+  private resetHoldAction(action: HoldActionState) {
+    action.pressed = false;
+    action.startedAt = 0;
+    action.holdTriggered = false;
+  }
+
+  private resetForwardDoubleTapState() {
+    this.lastForwardTapAtMs = Number.NEGATIVE_INFINITY;
+    this.forwardTapReleased = true;
+  }
+
   private clearEggInputState() {
     this.activeEggKeyCodes.clear();
     this.keyboardState.egg = false;
-    this.previousEggPressed = false;
+    this.quickEggQueued = false;
+    this.quickEggPitch = 0;
+    this.resetHoldAction(this.eggKeyAction);
+  }
+
+  private clearPointerActionState() {
+    this.destroyQueued = false;
+    this.keyboardState.placePressed = false;
+    this.keyboardState.pushPressed = false;
+    this.resetForwardDoubleTapState();
+  }
+
+  private queueQuickEgg(pitch = 0) {
+    this.quickEggQueued = true;
+    this.quickEggPitch = pitch;
+  }
+
+  private maybeQueueForwardPush(event: KeyboardEvent) {
+    if (
+      event.code !== "KeyW" ||
+      event.repeat ||
+      !isRuntimeMode(this.mode) ||
+      !this.pointerLocked ||
+      this.runtimePaused ||
+      event.metaKey ||
+      event.ctrlKey
+    ) {
+      return;
+    }
+
+    const currentTimeMs = performance.now();
+    if (
+      this.forwardTapReleased &&
+      currentTimeMs - this.lastForwardTapAtMs <= DOUBLE_TAP_WINDOW_MS
+    ) {
+      this.keyboardState.pushPressed = true;
+    }
+
+    this.lastForwardTapAtMs = currentTimeMs;
+    this.forwardTapReleased = false;
   }
 
   private resetRuntimeFeedback() {
@@ -985,6 +1058,7 @@ export class GameClient {
     this.hasInitializedRuntimeCamera = false;
     this.resetPointerCaptureState();
     this.pendingResumeAfterPointerLock = false;
+    this.clearPointerActionState();
     this.cancelEggCharge();
     this.setRuntimePaused(true);
     this.worker.postMessage({
@@ -1325,6 +1399,7 @@ export class GameClient {
           return;
         case "frame":
           this.latestFrame = message.frame;
+          this.updateFocusedTargetVisuals();
           this.callbacks.onHudStateChange?.(message.frame.hudState);
           return;
         case "hud_state":
@@ -1736,13 +1811,51 @@ export class GameClient {
     return localPlayer !== null && eggStatus?.canChargedThrow === true;
   }
 
-  private beginEggCharge() {
+  private isEggChargeInputHeld() {
+    return this.eggChargeState.source === "key" && this.eggKeyAction.pressed;
+  }
+
+  private updateHoldToThrowAction(
+    action: HoldActionState,
+    source: EggChargeInputSource,
+    localPlayer: RuntimePlayerState | null,
+    elapsedTime: number
+  ) {
+    if (
+      !action.pressed ||
+      action.holdTriggered ||
+      elapsedTime - action.startedAt < INPUT_HOLD_THRESHOLD
+    ) {
+      return;
+    }
+
+    action.holdTriggered = true;
+    if (!this.pointerLocked || this.runtimePaused) {
+      return;
+    }
+
+    const eggStatus = this.getLocalEggStatus();
+    if (eggStatus?.reason === "notEnoughMatter") {
+      this.triggerNotEnoughMatterFeedback();
+    }
+
+    if (!this.eggChargeState.active && this.canStartGroundEggCharge(localPlayer, eggStatus)) {
+      this.beginEggCharge(source);
+    }
+  }
+
+  private updateHoldToThrowState(localPlayer: RuntimePlayerState | null, elapsedTime: number) {
+    this.updateHoldToThrowAction(this.eggKeyAction, "key", localPlayer, elapsedTime);
+  }
+
+  private beginEggCharge(source: EggChargeInputSource) {
     this.eggChargeState.active = true;
     this.eggChargeState.startedAt = this.clock.elapsedTime;
     this.eggChargeState.chargeAlpha = 0;
     this.eggChargeState.pendingThrow = false;
     this.eggChargeState.pendingThrowCharge = 0;
     this.eggChargeState.pendingThrowPitch = 0;
+    this.eggChargeState.source = source;
   }
 
   private queueGroundEggThrow() {
@@ -1752,6 +1865,7 @@ export class GameClient {
     this.eggChargeState.pendingThrowPitch = this.lookPitch;
     this.eggChargeState.chargeAlpha = 0;
     this.eggChargeState.releaseRemaining = chickenPoseVisualDefaults.eggLaunchReleaseDuration;
+    this.eggChargeState.source = null;
     this.hideEggTrajectoryPreview();
   }
 
@@ -1761,6 +1875,7 @@ export class GameClient {
     this.eggChargeState.pendingThrow = false;
     this.eggChargeState.pendingThrowCharge = 0;
     this.eggChargeState.pendingThrowPitch = 0;
+    this.eggChargeState.source = null;
     if (clearRelease) {
       this.eggChargeState.releaseRemaining = 0;
     }
@@ -1775,7 +1890,7 @@ export class GameClient {
     }
 
     if (
-      !this.keyboardState.egg ||
+      !this.isEggChargeInputHeld() ||
       this.runtimePaused ||
       !this.pointerLocked ||
       !this.canStartGroundEggCharge(localPlayer)
@@ -1933,6 +2048,9 @@ export class GameClient {
 
     if (isEggLaunchKeyCode(event.code)) {
       event.preventDefault();
+      if (!isRuntimeMode(this.mode)) {
+        return;
+      }
       if (event.metaKey || event.ctrlKey) {
         return;
       }
@@ -1942,21 +2060,14 @@ export class GameClient {
 
       this.activeEggKeyCodes.add(event.code);
       this.keyboardState.egg = true;
-      const localPlayer = this.getLocalRuntimePlayer();
-      const eggStatus = this.getLocalEggStatus();
+      this.eggKeyAction.pressed = true;
+      this.eggKeyAction.startedAt = this.clock.elapsedTime;
+      this.eggKeyAction.holdTriggered = false;
 
-      if (
-        isRuntimeMode(this.mode) &&
-        this.pointerLocked &&
-        !this.runtimePaused &&
-        this.activeEggKeyCodes.size === 1
-      ) {
+      if (isRuntimeMode(this.mode) && this.pointerLocked && !this.runtimePaused) {
+        const eggStatus = this.getLocalEggStatus();
         if (eggStatus?.reason === "notEnoughMatter") {
           this.triggerNotEnoughMatterFeedback();
-        }
-
-        if (this.canStartGroundEggCharge(localPlayer, eggStatus)) {
-          this.beginEggCharge();
         }
       }
       return;
@@ -1964,6 +2075,9 @@ export class GameClient {
 
     switch (event.code) {
       case "KeyW":
+        this.maybeQueueForwardPush(event);
+        this.keyboardState.forward = true;
+        break;
       case "ArrowUp":
         this.keyboardState.forward = true;
         break;
@@ -1986,11 +2100,18 @@ export class GameClient {
         }
         this.keyboardState.jump = true;
         break;
-      case "KeyE":
-        this.keyboardState.build = true;
-        break;
       case "KeyF":
-        this.keyboardState.push = true;
+        event.preventDefault();
+        if (!isRuntimeMode(this.mode)) {
+          return;
+        }
+        if (event.metaKey || event.ctrlKey) {
+          return;
+        }
+        if (event.repeat || !this.pointerLocked || this.runtimePaused) {
+          return;
+        }
+        this.keyboardState.placePressed = true;
         break;
     }
   };
@@ -1998,16 +2119,36 @@ export class GameClient {
   private readonly handleKeyUp = (event: KeyboardEvent) => {
     if (isEggLaunchKeyCode(event.code)) {
       event.preventDefault();
+      if (!isRuntimeMode(this.mode)) {
+        return;
+      }
       this.activeEggKeyCodes.delete(event.code);
       this.keyboardState.egg = this.activeEggKeyCodes.size > 0;
-      if (!this.keyboardState.egg && this.eggChargeState.active) {
-        this.queueGroundEggThrow();
+      if (this.activeEggKeyCodes.size === 0) {
+        const localPlayer = this.getLocalRuntimePlayer();
+        const eggStatus = this.getLocalEggStatus();
+        const tappedQuickEgg = !this.eggKeyAction.holdTriggered && isRuntimeMode(this.mode) && this.pointerLocked && !this.runtimePaused;
+
+        if (this.eggChargeState.active && this.eggChargeState.source === "key") {
+          this.queueGroundEggThrow();
+        } else if (tappedQuickEgg) {
+          if (eggStatus?.reason === "notEnoughMatter") {
+            this.triggerNotEnoughMatterFeedback();
+          } else if (eggStatus?.canQuickEgg) {
+            this.queueQuickEgg(localPlayer?.grounded ? this.lookPitch : 0);
+          }
+        }
+
+        this.resetHoldAction(this.eggKeyAction);
       }
       return;
     }
 
     switch (event.code) {
       case "KeyW":
+        this.keyboardState.forward = false;
+        this.forwardTapReleased = true;
+        break;
       case "ArrowUp":
         this.keyboardState.forward = false;
         break;
@@ -2029,12 +2170,6 @@ export class GameClient {
         }
         this.keyboardState.jump = false;
         break;
-      case "KeyE":
-        this.keyboardState.build = false;
-        break;
-      case "KeyF":
-        this.keyboardState.push = false;
-        break;
     }
   };
 
@@ -2047,6 +2182,7 @@ export class GameClient {
         this.resetPointerCaptureState();
         this.pendingResumeAfterPointerLock = false;
         this.clearEggInputState();
+        this.clearPointerActionState();
         this.cancelEggCharge();
         this.setRuntimePaused(true);
         return;
@@ -2091,6 +2227,7 @@ export class GameClient {
     this.runtimePaused = paused;
     if (paused) {
       this.clearEggInputState();
+      this.clearPointerActionState();
       this.cancelEggCharge();
       this.resetRuntimeFeedback();
     }
@@ -2125,8 +2262,10 @@ export class GameClient {
         return;
       }
 
-      if (event.button === 0) {
-        this.destroyQueued = true;
+      if (isRuntimeDestroyPointerButton(event.button)) {
+        event.preventDefault();
+        this.updateFocusedTarget();
+        this.destroyQueued = this.focusedTarget !== null;
       }
       return;
     }
@@ -2183,6 +2322,7 @@ export class GameClient {
       this.updateRuntimeCamera(delta);
       this.updateFocusedTarget();
       const localPlayer = this.getLocalRuntimePlayer();
+      this.updateHoldToThrowState(localPlayer, elapsedTime);
       this.updateEggChargeState(localPlayer, delta, elapsedTime);
       this.sendRuntimeInput(localPlayer);
       this.applyRuntimeFrame(delta, elapsedTime);
@@ -2285,12 +2425,11 @@ export class GameClient {
 
   private updateFocusedTarget() {
     this.focusRaycaster.setFromCamera(this.centerRay, this.camera);
-    const intersections = this.focusRaycaster.intersectObjects([this.terrainGroup, this.propsGroup], true);
+    const intersections = this.focusRaycaster.intersectObjects([this.terrainGroup], true);
     const firstHit = intersections[0];
     if (!firstHit) {
       this.focusedTarget = null;
-      this.focusOutline.visible = false;
-      this.focusGhost.visible = false;
+      this.updateFocusedTargetVisuals();
       return;
     }
 
@@ -2298,23 +2437,54 @@ export class GameClient {
     const terrainHit = resolveTerrainRaycastHit(firstHit.point, worldNormal);
     if (!terrainHit) {
       this.focusedTarget = null;
-      this.focusOutline.visible = false;
-      this.focusGhost.visible = false;
+      this.updateFocusedTargetVisuals();
       return;
     }
 
-    this.focusedTarget = terrainHit;
-    this.focusOutline.visible = true;
+    this.focusedTarget = {
+      voxel: terrainHit.voxel,
+      normal: terrainHit.normal
+    };
+    this.updateFocusedTargetVisuals();
+  }
+
+  private getAuthoritativeFocusedTargetState(frame: RuntimeRenderFrame | null = this.latestFrame) {
+    if (!this.focusedTarget || !frame?.focusState) {
+      return null;
+    }
+
+    const { focusState } = frame;
+    return this.focusedTarget.voxel.x === focusState.focusedVoxel.x &&
+      this.focusedTarget.voxel.y === focusState.focusedVoxel.y &&
+      this.focusedTarget.voxel.z === focusState.focusedVoxel.z &&
+      this.focusedTarget.normal.x === focusState.targetNormal.x &&
+      this.focusedTarget.normal.y === focusState.targetNormal.y &&
+      this.focusedTarget.normal.z === focusState.targetNormal.z
+      ? focusState
+      : null;
+  }
+
+  private updateFocusedTargetVisuals() {
+    const showRuntimeFocus = this.pointerLocked && isRuntimeMode(this.mode);
+    const focusState = this.getAuthoritativeFocusedTargetState();
+    const actionable = focusState !== null && (focusState.destroyValid || focusState.placeValid);
+
+    this.focusOutline.visible = showRuntimeFocus && actionable;
+    this.focusGhost.visible = showRuntimeFocus && focusState?.placeValid === true;
+
+    if (!showRuntimeFocus || !focusState || !actionable) {
+      return;
+    }
+
     this.focusOutline.position.set(
-      terrainHit.voxel.x + 0.5,
-      terrainHit.voxel.y + 0.5,
-      terrainHit.voxel.z + 0.5
+      focusState.focusedVoxel.x + 0.5,
+      focusState.focusedVoxel.y + 0.5,
+      focusState.focusedVoxel.z + 0.5
     );
-    this.focusGhost.visible = true;
     this.focusGhost.position.set(
-      terrainHit.voxel.x + terrainHit.normal.x + 0.5,
-      terrainHit.voxel.y + terrainHit.normal.y + 0.5,
-      terrainHit.voxel.z + terrainHit.normal.z + 0.5
+      focusState.placeVoxel.x + 0.5,
+      focusState.placeVoxel.y + 0.5,
+      focusState.placeVoxel.z + 0.5
     );
   }
 
@@ -2402,25 +2572,22 @@ export class GameClient {
       return;
     }
 
-    const eggStatus = this.getLocalEggStatus();
     const nextCommand = buildPlayerCommand(this.keyboardState, this.cameraForward);
-    nextCommand.destroy = this.destroyQueued;
-    nextCommand.place = this.keyboardState.build && !this.previousBuildPressed;
-    const immediateEggPress =
-      eggStatus?.canQuickEgg === true &&
-      this.keyboardState.egg &&
-      !this.previousEggPressed &&
-      !this.eggChargeState.active &&
-      eggStatus.canChargedThrow !== true;
-    nextCommand.layEgg = this.eggChargeState.pendingThrow || immediateEggPress;
+    nextCommand.destroy = this.destroyQueued && this.focusedTarget !== null;
+    nextCommand.place = nextCommand.place && this.focusedTarget !== null;
+    nextCommand.layEgg = this.eggChargeState.pendingThrow || this.quickEggQueued;
     nextCommand.eggCharge = this.eggChargeState.pendingThrow ? this.eggChargeState.pendingThrowCharge : 0;
-    nextCommand.eggPitch = this.eggChargeState.pendingThrow ? this.eggChargeState.pendingThrowPitch : 0;
+    nextCommand.eggPitch = this.eggChargeState.pendingThrow
+      ? this.eggChargeState.pendingThrowPitch
+      : this.quickEggQueued
+        ? this.quickEggPitch
+        : 0;
     nextCommand.targetVoxel = this.focusedTarget?.voxel ?? null;
     nextCommand.targetNormal = this.focusedTarget?.normal ?? null;
 
-    this.previousBuildPressed = this.keyboardState.build;
-    this.previousEggPressed = this.keyboardState.egg;
     this.destroyQueued = false;
+    this.quickEggQueued = false;
+    this.quickEggPitch = 0;
     this.eggChargeState.pendingThrow = false;
     this.eggChargeState.pendingThrowCharge = 0;
     this.eggChargeState.pendingThrowPitch = 0;
@@ -2440,6 +2607,8 @@ export class GameClient {
 
     this.keyboardState.jumpPressed = false;
     this.keyboardState.jumpReleased = false;
+    this.keyboardState.placePressed = false;
+    this.keyboardState.pushPressed = false;
   }
 
   private applyRuntimeFrame(delta: number, elapsedTime: number) {

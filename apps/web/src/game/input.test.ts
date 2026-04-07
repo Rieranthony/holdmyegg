@@ -11,9 +11,9 @@ describe("initialKeyboardInputState", () => {
       jump: false,
       jumpPressed: false,
       jumpReleased: false,
-      build: false,
-      push: false,
-      egg: false
+      egg: false,
+      placePressed: false,
+      pushPressed: false
     });
   });
 });
@@ -27,7 +27,7 @@ describe("buildPlayerCommand", () => {
         right: true,
         jump: true,
         jumpPressed: true,
-        push: true
+        pushPressed: true
       },
       { x: 1, z: 0 }
     );
@@ -46,7 +46,7 @@ describe("buildPlayerCommand", () => {
       {
         ...initialKeyboardInputState,
         forward: true,
-        build: true,
+        placePressed: true,
         egg: true
       },
       { x: 3, z: 4 }
@@ -56,7 +56,7 @@ describe("buildPlayerCommand", () => {
     expect(command.moveZ).toBeCloseTo(0.8, 5);
     expect(command.lookX).toBeCloseTo(0.6, 5);
     expect(command.lookZ).toBeCloseTo(0.8, 5);
-    expect(command.place).toBe(false);
+    expect(command.place).toBe(true);
     expect(command.layEgg).toBe(false);
     expect(command.targetVoxel).toBeNull();
     expect(command.targetNormal).toBeNull();

@@ -218,6 +218,23 @@ export type RuntimeEggScatterDebrisState = EggScatterDebrisViewState;
 export type RuntimeVoxelBurstState = VoxelBurstViewState;
 export type RuntimeSkyDropState = SkyDropViewState;
 
+export type RuntimeInteractionInvalidReason =
+  | "outOfRange"
+  | "hazard"
+  | "outOfBounds"
+  | "occupied"
+  | "blockedByPlayer"
+  | "blockedByDebris";
+
+export interface RuntimeInteractionFocusState {
+  focusedVoxel: Vec3i;
+  targetNormal: Vec3i;
+  placeVoxel: Vec3i;
+  destroyValid: boolean;
+  placeValid: boolean;
+  invalidReason: RuntimeInteractionInvalidReason | null;
+}
+
 export interface MatchPlayerState {
   id: string;
   name: string;
@@ -318,4 +335,5 @@ export interface SimulationResetOptions {
   npcCount?: number;
   localPlayerName?: string;
   initialSpawnStyle?: SimulationInitialSpawnStyle;
+  initialSpawnSeed?: number;
 }

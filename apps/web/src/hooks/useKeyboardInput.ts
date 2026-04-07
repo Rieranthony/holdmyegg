@@ -10,9 +10,9 @@ export interface KeyboardInputState {
   jump: boolean;
   jumpPressed: boolean;
   jumpReleased: boolean;
-  build: boolean;
-  push: boolean;
   egg: boolean;
+  placePressed: boolean;
+  pushPressed: boolean;
 }
 
 const initialState: KeyboardInputState = {
@@ -23,10 +23,12 @@ const initialState: KeyboardInputState = {
   jump: false,
   jumpPressed: false,
   jumpReleased: false,
-  build: false,
-  push: false,
-  egg: false
+  egg: false,
+  placePressed: false,
+  pushPressed: false
 };
+
+const DOUBLE_TAP_WINDOW_MS = 220;
 
 const isFormElement = (target: EventTarget | null) =>
   target instanceof HTMLInputElement ||
@@ -35,6 +37,8 @@ const isFormElement = (target: EventTarget | null) =>
 
 export const useKeyboardInput = () => {
   const inputRef = useRef<KeyboardInputState>({ ...initialState });
+  const lastForwardTapAtRef = useRef<number>(Number.NEGATIVE_INFINITY);
+  const forwardTapReleasedRef = useRef(true);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -49,7 +53,23 @@ export const useKeyboardInput = () => {
       }
 
       switch (event.code) {
-        case "KeyW":
+        case "KeyW": {
+          if (event.repeat) {
+            inputRef.current.forward = true;
+            break;
+          }
+          const currentTimeMs = performance.now();
+          if (
+            forwardTapReleasedRef.current &&
+            currentTimeMs - lastForwardTapAtRef.current <= DOUBLE_TAP_WINDOW_MS
+          ) {
+            inputRef.current.pushPressed = true;
+          }
+          lastForwardTapAtRef.current = currentTimeMs;
+          forwardTapReleasedRef.current = false;
+          inputRef.current.forward = true;
+          break;
+        }
         case "ArrowUp":
           inputRef.current.forward = true;
           break;
@@ -72,11 +92,10 @@ export const useKeyboardInput = () => {
           }
           inputRef.current.jump = true;
           break;
-        case "KeyE":
-          inputRef.current.build = true;
-          break;
         case "KeyF":
-          inputRef.current.push = true;
+          if (!event.repeat) {
+            inputRef.current.placePressed = true;
+          }
           break;
       }
     };
@@ -90,6 +109,9 @@ export const useKeyboardInput = () => {
 
       switch (event.code) {
         case "KeyW":
+          inputRef.current.forward = false;
+          forwardTapReleasedRef.current = true;
+          break;
         case "ArrowUp":
           inputRef.current.forward = false;
           break;
@@ -110,12 +132,6 @@ export const useKeyboardInput = () => {
             inputRef.current.jumpReleased = true;
           }
           inputRef.current.jump = false;
-          break;
-        case "KeyE":
-          inputRef.current.build = false;
-          break;
-        case "KeyF":
-          inputRef.current.push = false;
           break;
       }
     };
@@ -169,8 +185,8 @@ export const buildPlayerCommand = (
     jumpPressed: input.jumpPressed,
     jumpReleased: input.jumpReleased,
     destroy: false,
-    place: input.build,
-    push: input.push,
+    place: input.placePressed,
+    push: input.pushPressed,
     layEgg: false,
     targetVoxel: null,
     targetNormal: null

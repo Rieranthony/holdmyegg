@@ -2,6 +2,7 @@ import type {
   FallingClusterViewState,
   GameMode,
   HudState,
+  RuntimeInteractionFocusState,
   RuntimeEggScatterDebrisState,
   RuntimeEggState,
   RuntimePlayerState,
@@ -82,6 +83,7 @@ export interface RuntimeRenderFrame {
   mode: GameMode;
   localPlayerId: string | null;
   hudState: HudState | null;
+  focusState: RuntimeInteractionFocusState | null;
   players: RuntimePlayerState[];
   eggs: RuntimeEggState[];
   eggScatterDebris: RuntimeEggScatterDebrisState[];
