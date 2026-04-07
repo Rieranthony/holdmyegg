@@ -27,10 +27,10 @@
 - The arena should feel layered: grassy surface, dirt-only subsoil, dark kill void below, and light stylized clouds above
 
 ## Modes
-- `Menu`: HoldMyEgg launch screen with a live overhead map background, required player name and color setup, `Explore`, `Brawl`, `Build`, and `Map Workshop`
+- `Menu`: HoldMyEgg launch screen with a live overhead map background, required player name and color setup, `Explore`, `PLAY NPC`, `Build`, and `Map Workshop`
 - `Editor`: paint cubes, erase cubes, place spawns, save/load maps
 - `Explore`: solo sandbox for movement, jump, harvesting, and building
-- `Brawl`: solo plus NPCs
+- `PLAY NPC`: solo plus nine NPCs
 - `Build`: future mode with unlimited blocks, new-map creation, local save, and JSON export
 - `Multiplayer`: later phase
 
@@ -49,5 +49,5 @@
 - Both sky drops and collapse debris can launch and stun players, and stunned characters should read as visibly smashed
 - Runtime movement is over-the-shoulder: `W/S` move forward-back, `A/D` strafe, and the player faces look direction for pushing
 - Runtime play fills the whole app viewport, while the editor keeps a tool-heavy split layout
-- Entering `Explore` or `Brawl` should begin with a sky-drop fall onto the arena
+- Entering `Explore` or `PLAY NPC` should begin with a sky-drop fall onto the arena
 - Ring-out decides eliminations

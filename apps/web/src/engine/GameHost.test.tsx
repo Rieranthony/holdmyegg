@@ -108,14 +108,14 @@ describe("GameHost", () => {
       <GameHost
         initialDocument={initialDocument}
         matchColorSeed={9}
-        mode="skirmish"
+        mode="playNpc"
       />
     );
 
     await waitFor(() => {
       expect(gameClientState.mockClient.setShellState).toHaveBeenCalledWith(
         expect.objectContaining({
-          mode: "skirmish",
+          mode: "playNpc",
           presentation: "default"
         })
       );

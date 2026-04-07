@@ -152,6 +152,45 @@ interface SimSkyDrop {
   damagedPlayerIds: Set<string>;
 }
 
+type NpcArchetype = "hunter" | "opportunist" | "forager";
+type NpcIntent = "pressure" | "harvest" | "build" | "recover" | "egg";
+
+interface NpcMemory {
+  archetype: NpcArchetype;
+  intent: NpcIntent;
+  intentRemaining: number;
+  targetPlayerId: string | null;
+  targetLockRemaining: number;
+  jumpHoldRemaining: number;
+}
+
+interface NpcTargetPlan {
+  target: SimPlayer | null;
+  score: number;
+  edgeDirection: Vector2;
+  edgeDistance: number;
+}
+
+interface NpcPathProbe {
+  move: Vector2;
+  cardinal: Vec3i;
+  frontCellX: number;
+  frontCellZ: number;
+  supportY: number;
+  frontTopSolidY: number;
+  heightDelta: number;
+  gapDepth: number;
+  obstacleAhead: boolean;
+  blockedAhead: boolean;
+  shortGapAhead: boolean;
+  tallStepAhead: boolean;
+}
+
+interface NpcPlacementPlan {
+  targetVoxel: Vec3i;
+  targetNormal: Vec3i;
+}
+
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 const lerp = (start: number, end: number, alpha: number) => start + (end - start) * alpha;
 const length2 = (x: number, z: number) => Math.hypot(x, z);
@@ -224,6 +263,7 @@ export class OutOfBoundsSimulation {
   private readonly eggScatterDebris = new Map<string, SimEggScatterDebris>();
   private readonly voxelBursts = new Map<string, SimVoxelBurst>();
   private readonly skyDrops = new Map<string, SimSkyDrop>();
+  private readonly npcMemories = new Map<string, NpcMemory>();
   private playerCollectionVersion = 0;
   private fallingClusterCollectionVersion = 0;
   private eggCollectionVersion = 0;
@@ -247,6 +287,7 @@ export class OutOfBoundsSimulation {
   private nextSkyDropId = 1;
   private skyDropCooldown = 0;
   private rngState = 1;
+  private spawnCandidates: Vector3[] = [];
   private readonly performanceDiagnostics: SimulationPerformanceDiagnostics = {
     skyDropUpdateMs: 0,
     skyDropLandingMs: 0,
@@ -268,12 +309,14 @@ export class OutOfBoundsSimulation {
     this.mode = mode;
     this.tick = 0;
     this.time = 0;
+    this.localPlayerId = null;
     this.players.clear();
     this.fallingClusters.clear();
     this.eggs.clear();
     this.eggScatterDebris.clear();
     this.voxelBursts.clear();
     this.skyDrops.clear();
+    this.npcMemories.clear();
     this.dirtyChunkKeys.clear();
     this.nextFallingClusterId = 1;
     this.nextEggId = 1;
@@ -297,11 +340,12 @@ export class OutOfBoundsSimulation {
     this.invalidateSkyDropCollection();
 
     const initialSpawnStyle = options.initialSpawnStyle ?? "ground";
+    const npcCount = mode === "playNpc" ? clamp(options.npcCount ?? 9, 1, this.config.maxNpcCount) : 0;
+    this.spawnCandidates = this.buildSpawnCandidates(npcCount + 1);
     const local = this.spawnPlayer("human", options.localPlayerName ?? "You", 0, initialSpawnStyle);
     this.localPlayerId = local.id;
 
-    if (mode === "skirmish") {
-      const npcCount = clamp(options.npcCount ?? 4, 1, this.config.maxNpcCount);
+    if (mode === "playNpc") {
       for (let index = 0; index < npcCount; index += 1) {
         this.spawnPlayer("npc", `NPC ${index + 1}`, index + 1, initialSpawnStyle);
       }
@@ -549,6 +593,7 @@ export class OutOfBoundsSimulation {
     this.time += dt;
 
     const effectiveCommands = new Map<string, PlayerCommand>();
+    const targetCommitments = new Map<string, number>();
     for (const [playerId, player] of this.players) {
       if (!player.alive || player.respawning) {
         effectiveCommands.set(playerId, cloneCommand());
@@ -556,7 +601,12 @@ export class OutOfBoundsSimulation {
       }
 
       if (player.kind === "npc") {
-        effectiveCommands.set(playerId, this.generateNpcCommand(player));
+        const npcCommand = this.generateNpcCommand(player, dt, targetCommitments);
+        effectiveCommands.set(playerId, npcCommand);
+        const targetPlayerId = this.npcMemories.get(playerId)?.targetPlayerId;
+        if (targetPlayerId) {
+          targetCommitments.set(targetPlayerId, (targetCommitments.get(targetPlayerId) ?? 0) + 1);
+        }
       } else {
         effectiveCommands.set(playerId, cloneCommand(commands[playerId]));
       }
@@ -651,6 +701,16 @@ export class OutOfBoundsSimulation {
     };
 
     this.players.set(id, player);
+    if (kind === "npc") {
+      this.npcMemories.set(id, {
+        archetype: this.getNpcArchetype(spawnIndex - 1),
+        intent: "pressure",
+        intentRemaining: 0,
+        targetPlayerId: null,
+        targetLockRemaining: 0,
+        jumpHoldRemaining: 0
+      });
+    }
     this.invalidatePlayerCollection();
     return player;
   }
@@ -674,18 +734,160 @@ export class OutOfBoundsSimulation {
   }
 
   private getSpawnPosition(spawnIndex: number): Vector3 {
-    const spawns = this.world.listSpawns();
     const fallback = {
       x: this.world.size.x / 2 + 0.5,
       y: this.world.getTopSolidY(Math.floor(this.world.size.x / 2), Math.floor(this.world.size.z / 2)) + 1.05,
       z: this.world.size.z / 2 + 0.5
     };
-    const spawn = spawns[spawnIndex % Math.max(1, spawns.length)] ?? { id: "fallback", ...fallback };
+    const spawn = this.spawnCandidates[spawnIndex] ?? this.spawnCandidates[spawnIndex % Math.max(1, this.spawnCandidates.length)] ?? fallback;
     return {
       x: spawn.x,
       y: spawn.y,
       z: spawn.z
     };
+  }
+
+  private buildSpawnCandidates(requiredCount: number): Vector3[] {
+    const candidates: Vector3[] = [];
+    const minimumSeparation = Math.max(this.config.playerRadius * 3.5, 1.7);
+    const authoredSpawns = this.world.listSpawns().map((spawn) => ({
+      x: spawn.x,
+      y: spawn.y,
+      z: spawn.z
+    }));
+    const fallback = {
+      x: this.world.size.x / 2 + 0.5,
+      y: this.world.getTopSolidY(Math.floor(this.world.size.x / 2), Math.floor(this.world.size.z / 2)) + 1.05,
+      z: this.world.size.z / 2 + 0.5
+    };
+    const anchors = authoredSpawns.length > 0 ? authoredSpawns : [fallback];
+
+    for (const spawn of anchors) {
+      if (this.isSpawnCandidateSeparated(spawn, candidates, minimumSeparation)) {
+        candidates.push({ ...spawn });
+      }
+    }
+
+    const cardinalOffsets = [
+      [1, 0],
+      [0, 1],
+      [-1, 0],
+      [0, -1],
+      [1, 1],
+      [-1, 1],
+      [-1, -1],
+      [1, -1]
+    ] as const;
+
+    for (let radius = 2; candidates.length < requiredCount && radius <= 9; radius += 1) {
+      for (const anchor of anchors) {
+        for (const [offsetX, offsetZ] of cardinalOffsets) {
+          const candidate = this.createOverflowSpawnCandidate(anchor, offsetX * radius, offsetZ * radius);
+          if (
+            candidate &&
+            this.isSpawnCandidateSeparated(candidate, candidates, minimumSeparation)
+          ) {
+            candidates.push(candidate);
+            if (candidates.length >= requiredCount) {
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    if (candidates.length < requiredCount) {
+      for (let x = 2; candidates.length < requiredCount && x < this.world.size.x - 2; x += 3) {
+        for (let z = 2; candidates.length < requiredCount && z < this.world.size.z - 2; z += 3) {
+          const candidate = this.createOverflowSpawnCandidate(
+            { x: x + 0.5, y: 0, z: z + 0.5 },
+            0,
+            0
+          );
+          if (
+            candidate &&
+            this.isSpawnCandidateSeparated(candidate, candidates, minimumSeparation)
+          ) {
+            candidates.push(candidate);
+          }
+        }
+      }
+    }
+
+    return candidates.length > 0 ? candidates : [fallback];
+  }
+
+  private createOverflowSpawnCandidate(anchor: Vector3, offsetX: number, offsetZ: number): Vector3 | null {
+    const snappedX = clamp(Math.round(anchor.x + offsetX - 0.5) + 0.5, 0.5, this.world.size.x - 0.5);
+    const snappedZ = clamp(Math.round(anchor.z + offsetZ - 0.5) + 0.5, 0.5, this.world.size.z - 0.5);
+    const cellX = Math.floor(snappedX);
+    const cellZ = Math.floor(snappedZ);
+    const supportY = this.world.getTopSolidY(cellX, cellZ);
+    if (supportY < 0) {
+      return null;
+    }
+
+    const supportKind = this.world.getSolidKind(cellX, supportY, cellZ);
+    if (supportKind !== "ground") {
+      return null;
+    }
+
+    const candidate = {
+      x: snappedX,
+      y: supportY + 1.05,
+      z: snappedZ
+    };
+
+    return this.canPlayerFitAt(candidate) ? candidate : null;
+  }
+
+  private isSpawnCandidateSeparated(candidate: Vector3, existing: Vector3[], minimumSeparation: number) {
+    return existing.every(
+      (entry) => Math.hypot(entry.x - candidate.x, entry.z - candidate.z) >= minimumSeparation
+    );
+  }
+
+  private canPlayerFitAt(position: Vector3) {
+    const supportY = Math.floor(position.y - 0.1);
+    if (!this.world.hasSolid(Math.floor(position.x), supportY, Math.floor(position.z))) {
+      return false;
+    }
+
+    if (position.y + this.config.playerHeight >= this.world.size.y - EPSILON) {
+      return false;
+    }
+
+    const minX = Math.floor(position.x - this.config.playerRadius + EPSILON);
+    const maxX = Math.floor(position.x + this.config.playerRadius - EPSILON);
+    const minY = Math.floor(position.y + EPSILON);
+    const maxY = Math.floor(position.y + this.config.playerHeight - EPSILON);
+    const minZ = Math.floor(position.z - this.config.playerRadius + EPSILON);
+    const maxZ = Math.floor(position.z + this.config.playerRadius - EPSILON);
+
+    for (let x = minX; x <= maxX; x += 1) {
+      for (let y = minY; y <= maxY; y += 1) {
+        for (let z = minZ; z <= maxZ; z += 1) {
+          if (this.world.hasSolid(x, y, z)) {
+            return false;
+          }
+        }
+      }
+    }
+
+    return true;
+  }
+
+  private getNpcArchetype(index: number): NpcArchetype {
+    const cycle = index % 3;
+    if (cycle === 0) {
+      return "hunter";
+    }
+
+    if (cycle === 1) {
+      return "opportunist";
+    }
+
+    return "forager";
   }
 
   private invalidatePlayerCollection() {
@@ -2116,12 +2318,12 @@ export class OutOfBoundsSimulation {
   }
 
   private selectRespawnPosition(playerId: string): Vector3 {
-    const spawns = this.world.listSpawns();
     const fallback = {
       x: this.world.size.x / 2 + 0.5,
       y: this.world.getTopSolidY(Math.floor(this.world.size.x / 2), Math.floor(this.world.size.z / 2)) + 1.05,
       z: this.world.size.z / 2 + 0.5
     };
+    const spawns = this.spawnCandidates.length > 0 ? this.spawnCandidates : [fallback];
     if (spawns.length === 0) {
       return fallback;
     }
@@ -2132,6 +2334,10 @@ export class OutOfBoundsSimulation {
     let bestScore = Number.NEGATIVE_INFINITY;
 
     for (const spawn of spawns) {
+      if (!this.canPlayerFitAt(spawn)) {
+        continue;
+      }
+
       const overlapsOpponent = opponents.some((opponent) =>
         Math.hypot(opponent.position.x - spawn.x, opponent.position.z - spawn.z) < minimumSeparation
       );
@@ -2143,8 +2349,10 @@ export class OutOfBoundsSimulation {
         opponents.length === 0
           ? Number.POSITIVE_INFINITY
           : Math.min(...opponents.map((opponent) => Math.hypot(opponent.position.x - spawn.x, opponent.position.z - spawn.z)));
-      if (nearestOpponentDistance > bestScore) {
-        bestScore = nearestOpponentDistance;
+      const edgeDistance = this.getEdgePressure(spawn).distance;
+      const spawnScore = nearestOpponentDistance + edgeDistance * 0.4;
+      if (spawnScore > bestScore) {
+        bestScore = spawnScore;
         bestSpawn = {
           x: spawn.x,
           y: spawn.y,
@@ -2191,7 +2399,7 @@ export class OutOfBoundsSimulation {
 
   private updateSkyDrops(dt: number) {
     const updateStart = now();
-    if (this.mode !== "explore" && this.mode !== "skirmish") {
+    if (this.mode !== "explore" && this.mode !== "playNpc") {
       return;
     }
 
@@ -2712,78 +2920,531 @@ export class OutOfBoundsSimulation {
     return true;
   }
 
-  private generateNpcCommand(player: SimPlayer): PlayerCommand {
+  private generateNpcCommand(
+    player: SimPlayer,
+    dt = 1 / this.config.tickRate,
+    targetCommitments: Map<string, number> = new Map()
+  ): PlayerCommand {
+    const memory = this.npcMemories.get(player.id);
+    if (!memory) {
+      return cloneCommand();
+    }
+
+    memory.intentRemaining = Math.max(0, memory.intentRemaining - dt);
+    memory.targetLockRemaining = Math.max(0, memory.targetLockRemaining - dt);
+    memory.jumpHoldRemaining = Math.max(0, memory.jumpHoldRemaining - dt);
+
     const center = {
       x: this.world.size.x / 2,
       z: this.world.size.z / 2
     };
-    const nearestOpponent = [...this.players.values()]
-      .filter((other) => other.alive && !other.respawning && other.id !== player.id)
-      .sort((left, right) => horizontalDistance(player, left) - horizontalDistance(player, right))[0];
+    const selfEdge = this.getEdgePressure(player.position);
+    const targetPlan = this.selectNpcTarget(player, memory, targetCommitments);
+    const target = targetPlan.target;
+    const lowMatterThreshold =
+      memory.archetype === "forager"
+        ? this.config.placeCost + 8
+        : this.config.pushCost + 8;
+    const lowMatter = player.mass < lowMatterThreshold;
+    const needRecovery = selfEdge.distance < 2.4;
+    const desiredCenterMove = normalize2(center.x - player.position.x, center.z - player.position.z);
 
-    const distanceToEdge = Math.min(
-      player.position.x,
-      player.position.z,
-      this.world.size.x - player.position.x,
-      this.world.size.z - player.position.z
-    );
+    let moveGoalX = center.x;
+    let moveGoalZ = center.z;
+    let desiredLook = desiredCenterMove;
+    let desiredIntent: NpcIntent = needRecovery ? "recover" : "pressure";
 
-    let targetX = center.x;
-    let targetZ = center.z;
-    let shouldPush = false;
-    let destroyTarget: Vec3i | null = null;
-    let shouldDestroy = player.mass < this.config.maxMass * 0.55;
-
-    if (distanceToEdge < 4) {
-      targetX = center.x;
-      targetZ = center.z;
-    } else if (nearestOpponent) {
-      targetX = nearestOpponent.position.x;
-      targetZ = nearestOpponent.position.z;
-      shouldPush = horizontalDistance(player, nearestOpponent) < this.config.pushRange * 1.1 && player.mass > this.config.pushCost;
+    if (target) {
+      const pushAnchorDistance = Math.max(0.9, this.config.pushRange * 0.75);
+      const pressureAnchor =
+        targetPlan.edgeDistance < 5
+          ? {
+              x: target.position.x - targetPlan.edgeDirection.x * pushAnchorDistance,
+              z: target.position.z - targetPlan.edgeDirection.z * pushAnchorDistance
+            }
+          : {
+              x: target.position.x,
+              z: target.position.z
+            };
+      moveGoalX = pressureAnchor.x;
+      moveGoalZ = pressureAnchor.z;
+      desiredLook =
+        targetPlan.edgeDistance < 4
+          ? targetPlan.edgeDirection
+          : normalize2(target.position.x - player.position.x, target.position.z - player.position.z);
     }
 
-    const move = normalize2(targetX - player.position.x, targetZ - player.position.z);
-    const probeX = Math.floor(player.position.x + move.x * 0.9);
-    const probeZ = Math.floor(player.position.z + move.z * 0.9);
-    const frontY = Math.floor(player.position.y + 0.2);
-
-    const obstacleAhead =
-      this.world.hasSolid(probeX, frontY, probeZ) &&
-      !this.world.hasSolid(probeX, frontY + 1, probeZ);
-
-    if (player.mass < this.config.maxMass * 0.8) {
-      destroyTarget = this.findDestroyTarget(player);
-      shouldDestroy = destroyTarget !== null;
+    if (needRecovery) {
+      moveGoalX = center.x;
+      moveGoalZ = center.z;
+      desiredLook = desiredCenterMove;
     }
+
+    let move = normalize2(moveGoalX - player.position.x, moveGoalZ - player.position.z);
+    if (length2(move.x, move.z) <= EPSILON) {
+      move = target
+        ? normalize2(target.position.x - player.position.x, target.position.z - player.position.z)
+        : desiredCenterMove;
+    }
+
+    const probe = this.createNpcPathProbe(player, move, needRecovery ? desiredCenterMove : desiredLook);
+    const buildPlan =
+      player.mass >= this.config.placeCost + Math.min(this.config.pushCost, this.config.eggCost) * 0.75
+        ? this.findNpcPlacementPlan(player, probe)
+        : null;
+    const supportDestroyTarget = target ? this.findSupportCollapseTarget(player, target) : null;
+    const harvestTarget =
+      supportDestroyTarget ??
+      this.findDestroyTarget(
+        player,
+        target ? normalize2(target.position.x - player.position.x, target.position.z - player.position.z) : move
+      );
+    const eggPlan = target
+      ? this.getNpcEggPlan(player, target, targetPlan.edgeDistance)
+      : null;
+    const pushReady = target
+      ? this.isNpcPushReady(player, target, targetPlan.edgeDirection, targetPlan.edgeDistance)
+      : false;
+    const shouldBridge =
+      buildPlan !== null &&
+      (needRecovery || probe.shortGapAhead || (probe.frontTopSolidY < 0 && player.mass >= this.config.placeCost + 4));
+    const shouldHarvest =
+      harvestTarget !== null &&
+      (
+        supportDestroyTarget !== null ||
+        lowMatter ||
+        probe.blockedAhead ||
+        (memory.intent === "harvest" && memory.intentRemaining > EPSILON)
+      );
+
+    let jump = memory.jumpHoldRemaining > EPSILON && !player.grounded;
+    let jumpPressed = false;
+    let place = false;
+    let destroy = false;
+    let push = false;
+    let layEgg = false;
+    let targetVoxel: Vec3i | null = null;
+    let targetNormal: Vec3i | null = null;
+    let eggCharge = 0;
+    let eggPitch = 0;
+
+    if (
+      player.grounded &&
+      (probe.obstacleAhead || probe.shortGapAhead || probe.tallStepAhead) &&
+      !shouldBridge
+    ) {
+      jump = true;
+      jumpPressed = true;
+      if (probe.shortGapAhead || probe.tallStepAhead) {
+        memory.jumpHoldRemaining = 0.22;
+      }
+    }
+
+    if (shouldBridge && buildPlan) {
+      desiredIntent = needRecovery ? "recover" : "build";
+      place = true;
+      targetVoxel = buildPlan.targetVoxel;
+      targetNormal = buildPlan.targetNormal;
+    } else if (shouldHarvest) {
+      desiredIntent = "harvest";
+      destroy = true;
+      targetVoxel = harvestTarget;
+      if (supportDestroyTarget && target) {
+        move = normalize2(target.position.x - player.position.x, target.position.z - player.position.z);
+      }
+    } else if (pushReady && target) {
+      desiredIntent = "pressure";
+      move =
+        horizontalDistance(player, target) <= this.config.pushRange * 0.9
+          ? { x: 0, z: 0 }
+          : normalize2(moveGoalX - player.position.x, moveGoalZ - player.position.z);
+      desiredLook = targetPlan.edgeDirection;
+      push = true;
+    } else if (eggPlan) {
+      desiredIntent = "egg";
+      desiredLook = normalize2(target!.position.x - player.position.x, target!.position.z - player.position.z);
+      layEgg = true;
+      eggCharge = eggPlan.charge;
+      eggPitch = eggPlan.pitch;
+    } else if (needRecovery) {
+      desiredIntent = "recover";
+      move = desiredCenterMove;
+      desiredLook = desiredCenterMove;
+    }
+
+    if (
+      memory.intent === "build" &&
+      memory.intentRemaining > EPSILON &&
+      buildPlan &&
+      !place &&
+      !destroy &&
+      !push &&
+      !layEgg
+    ) {
+      place = true;
+      desiredIntent = "build";
+      targetVoxel = buildPlan.targetVoxel;
+      targetNormal = buildPlan.targetNormal;
+    }
+
+    if (length2(move.x, move.z) <= EPSILON) {
+      move = desiredLook;
+    }
+
+    if (length2(desiredLook.x, desiredLook.z) <= EPSILON) {
+      desiredLook = move;
+    }
+
+    memory.intent = desiredIntent;
+    memory.intentRemaining =
+      desiredIntent === "pressure"
+        ? 0.18
+        : desiredIntent === "egg"
+          ? 0.24
+          : 0.3;
 
     return {
       moveX: move.x,
       moveZ: move.z,
-      lookX: move.x !== 0 || move.z !== 0 ? move.x : player.facing.x,
-      lookZ: move.x !== 0 || move.z !== 0 ? move.z : player.facing.z,
-      eggCharge: 0,
-      eggPitch: 0,
-      jump: obstacleAhead && player.grounded,
-      jumpPressed: false,
+      lookX: desiredLook.x !== 0 || desiredLook.z !== 0 ? desiredLook.x : player.facing.x,
+      lookZ: desiredLook.x !== 0 || desiredLook.z !== 0 ? desiredLook.z : player.facing.z,
+      eggCharge,
+      eggPitch,
+      jump,
+      jumpPressed,
       jumpReleased: false,
-      destroy: shouldDestroy,
-      place: false,
-      push: shouldPush,
-      layEgg: false,
-      targetVoxel: destroyTarget,
-      targetNormal: null
+      destroy,
+      place,
+      push,
+      layEgg,
+      targetVoxel,
+      targetNormal
     };
   }
 
-  private findDestroyTarget(player: SimPlayer): Vec3i | null {
+  private getEdgePressure(position: Vector3) {
+    const distances = [
+      { distance: position.x, direction: { x: -1, z: 0 } },
+      { distance: this.world.size.x - position.x, direction: { x: 1, z: 0 } },
+      { distance: position.z, direction: { x: 0, z: -1 } },
+      { distance: this.world.size.z - position.z, direction: { x: 0, z: 1 } }
+    ];
+
+    distances.sort((left, right) => left.distance - right.distance);
+    return distances[0]!;
+  }
+
+  private selectNpcTarget(
+    player: SimPlayer,
+    memory: NpcMemory,
+    targetCommitments: Map<string, number>
+  ): NpcTargetPlan {
+    const currentTarget =
+      memory.targetPlayerId !== null ? this.players.get(memory.targetPlayerId) ?? null : null;
+    const currentTargetValid =
+      currentTarget &&
+      currentTarget.alive &&
+      !currentTarget.respawning &&
+      currentTarget.id !== player.id;
+
+    if (currentTargetValid && memory.targetLockRemaining > EPSILON) {
+      const currentEdge = this.getEdgePressure(currentTarget.position);
+      const currentCommitments = targetCommitments.get(currentTarget.id) ?? 0;
+      const shouldBreakFocus =
+        currentTarget.id === this.localPlayerId &&
+        currentCommitments >= 3 &&
+        currentEdge.distance > 2.2 &&
+        horizontalDistance(player, currentTarget) > this.config.pushRange * 0.95;
+
+      if (!shouldBreakFocus) {
+        return {
+          target: currentTarget,
+          score: Number.POSITIVE_INFINITY,
+          edgeDirection: currentEdge.direction,
+          edgeDistance: currentEdge.distance
+        };
+      }
+    }
+
+    let bestPlan: NpcTargetPlan = {
+      target: null,
+      score: Number.NEGATIVE_INFINITY,
+      edgeDirection: { x: 0, z: 0 },
+      edgeDistance: Number.POSITIVE_INFINITY
+    };
+
+    for (const candidate of this.players.values()) {
+      if (!candidate.alive || candidate.respawning || candidate.id === player.id) {
+        continue;
+      }
+
+      const edge = this.getEdgePressure(candidate.position);
+      const distance = horizontalDistance(player, candidate);
+      const targetAlignment = normalize2(
+        candidate.position.x - player.position.x,
+        candidate.position.z - player.position.z
+      );
+      const canPressureWithPush =
+        distance <= this.config.pushRange * 1.25 && edge.distance < 5;
+      const canPressureWithEgg =
+        distance >= 4.5 &&
+        distance <= 12 &&
+        player.mass >= this.config.eggCost &&
+        this.getActiveEggCountForOwner(player.id) < this.config.maxActiveEggsPerPlayer;
+
+      let score = -distance * 1.8;
+      score += Math.max(0, 6 - edge.distance) * 2.4;
+      score += candidate.stunRemaining > EPSILON ? 3.4 : 0;
+      score += player.position.y - candidate.position.y > 1 ? 1.25 : 0;
+      score += canPressureWithPush ? 3.5 : 0;
+      score += canPressureWithEgg ? 1.5 : 0;
+
+      if (candidate.id === this.localPlayerId) {
+        score += memory.archetype === "hunter" ? 3.75 : memory.archetype === "opportunist" ? 1.4 : 0.8;
+      } else if (memory.archetype === "opportunist" && edge.distance < 4) {
+        score += 1.2;
+      }
+
+      if (memory.archetype === "forager" && player.mass < this.config.placeCost + 6) {
+        score -= distance * 0.25;
+      }
+
+      score -= (targetCommitments.get(candidate.id) ?? 0) * (candidate.id === this.localPlayerId ? 4.8 : 2.35);
+      if (candidate.id === memory.targetPlayerId) {
+        score += 2.2;
+      }
+      if (candidate.id === this.localPlayerId && (targetCommitments.get(candidate.id) ?? 0) >= 3 && edge.distance > 2.2) {
+        score -= 18;
+      }
+      if (length2(targetAlignment.x, targetAlignment.z) <= EPSILON) {
+        score -= 3;
+      }
+
+      if (score <= bestPlan.score) {
+        continue;
+      }
+
+      bestPlan = {
+        target: candidate,
+        score,
+        edgeDirection: edge.direction,
+        edgeDistance: edge.distance
+      };
+    }
+
+    memory.targetPlayerId = bestPlan.target?.id ?? null;
+    memory.targetLockRemaining = bestPlan.target ? (bestPlan.target.id === this.localPlayerId ? 0.45 : 0.65) : 0;
+    return bestPlan;
+  }
+
+  private createNpcPathProbe(player: SimPlayer, move: Vector2, fallbackLook: Vector2): NpcPathProbe {
+    const probeDirection =
+      length2(move.x, move.z) > EPSILON ? move : length2(fallbackLook.x, fallbackLook.z) > EPSILON ? fallbackLook : player.facing;
+    const cardinal = this.toCardinalDirection(probeDirection);
+    const frontCellX = Math.floor(player.position.x + cardinal.x);
+    const frontCellZ = Math.floor(player.position.z + cardinal.z);
+    const secondCellX = frontCellX + cardinal.x;
+    const secondCellZ = frontCellZ + cardinal.z;
+    const supportY = Math.floor(player.position.y - 0.1);
+    const frontTopSolidY = this.world.getTopSolidY(frontCellX, frontCellZ);
+    const secondTopSolidY = this.world.getTopSolidY(secondCellX, secondCellZ);
+    const frontFloorY = frontTopSolidY + 1.05;
+    const heightDelta = frontFloorY - player.position.y;
+    const gapDepth = frontTopSolidY < 0 ? Number.POSITIVE_INFINITY : player.position.y - frontFloorY;
+    const footProbeY = Math.floor(player.position.y + 0.2);
+    const headProbeY = Math.floor(player.position.y + 1.15);
+    const obstacleAhead =
+      this.world.hasSolid(frontCellX, footProbeY, frontCellZ) &&
+      !this.world.hasSolid(frontCellX, footProbeY + 1, frontCellZ);
+
+    return {
+      move: probeDirection,
+      cardinal,
+      frontCellX,
+      frontCellZ,
+      supportY,
+      frontTopSolidY,
+      heightDelta,
+      gapDepth,
+      obstacleAhead,
+      blockedAhead: this.world.hasSolid(frontCellX, headProbeY, frontCellZ),
+      shortGapAhead:
+        player.grounded &&
+        (frontTopSolidY < 0 || gapDepth > 0.85) &&
+        gapDepth <= 3.35 &&
+        secondTopSolidY >= supportY - 1,
+      tallStepAhead: player.grounded && heightDelta > 0.75
+    };
+  }
+
+  private toCardinalDirection(direction: Vector2): Vec3i {
+    if (Math.abs(direction.x) >= Math.abs(direction.z)) {
+      return {
+        x: direction.x >= 0 ? 1 : -1,
+        y: 0,
+        z: 0
+      };
+    }
+
+    return {
+      x: 0,
+      y: 0,
+      z: direction.z >= 0 ? 1 : -1
+    };
+  }
+
+  private findNpcPlacementPlan(player: SimPlayer, probe: NpcPathProbe): NpcPlacementPlan | null {
+    if (!player.grounded) {
+      return null;
+    }
+
+    const currentSupportVoxel = {
+      x: Math.floor(player.position.x),
+      y: probe.supportY,
+      z: Math.floor(player.position.z)
+    };
+
+    if (!this.world.hasSolid(currentSupportVoxel.x, currentSupportVoxel.y, currentSupportVoxel.z)) {
+      return null;
+    }
+
+    if (
+      this.canPlaceFromTarget(player, currentSupportVoxel, probe.cardinal) &&
+      (probe.shortGapAhead || probe.frontTopSolidY < 0 || probe.heightDelta > 0.6)
+    ) {
+      return {
+        targetVoxel: currentSupportVoxel,
+        targetNormal: probe.cardinal
+      };
+    }
+
+    return null;
+  }
+
+  private canPlaceFromTarget(player: SimPlayer, targetVoxel: Vec3i, targetNormal: Vec3i) {
+    const placement = {
+      x: targetVoxel.x + targetNormal.x,
+      y: targetVoxel.y + targetNormal.y,
+      z: targetVoxel.z + targetNormal.z
+    };
+
+    if (!isInBounds(this.world.size, placement.x, placement.y, placement.z)) {
+      return false;
+    }
+
+    if (!this.isTargetInInteractRange(player, targetVoxel)) {
+      return false;
+    }
+
+    if (this.world.hasSolid(placement.x, placement.y, placement.z)) {
+      return false;
+    }
+
+    if (this.isVoxelBlockedByAnyPlayer(placement)) {
+      return false;
+    }
+
+    if (this.isVoxelBlockedByFallingCluster(placement) || this.isVoxelBlockedBySkyDrop(placement)) {
+      return false;
+    }
+
+    return !this.isVoxelBlockedByEgg(placement) && !this.isVoxelBlockedByEggScatterDebris(placement);
+  }
+
+  private findSupportCollapseTarget(player: SimPlayer, target: SimPlayer): Vec3i | null {
+    const edge = this.getEdgePressure(target.position);
+    if (edge.distance > 4.25 && target.stunRemaining <= EPSILON) {
+      return null;
+    }
+
+    const targetSupportY = Math.floor(target.position.y - 0.1);
+    const candidateColumns = [
+      { x: Math.floor(target.position.x), z: Math.floor(target.position.z) },
+      {
+        x: Math.floor(target.position.x - edge.direction.x * 0.75),
+        z: Math.floor(target.position.z - edge.direction.z * 0.75)
+      }
+    ];
+
+    for (const column of candidateColumns) {
+      for (let y = targetSupportY; y >= Math.max(0, targetSupportY - 2); y -= 1) {
+        const candidate = { x: column.x, y, z: column.z };
+        const kind = this.world.getVoxelKind(candidate.x, candidate.y, candidate.z);
+        if (
+          kind &&
+          this.isHarvestable(kind) &&
+          this.isTargetInInteractRange(player, candidate) &&
+          Math.hypot(player.position.x - (candidate.x + 0.5), player.position.z - (candidate.z + 0.5)) > this.config.playerRadius * 1.6
+        ) {
+          return candidate;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  private getNpcEggPlan(player: SimPlayer, target: SimPlayer, targetEdgeDistance: number) {
+    if (
+      player.mass < this.config.eggCost + 6 ||
+      this.getActiveEggCountForOwner(player.id) >= this.config.maxActiveEggsPerPlayer
+    ) {
+      return null;
+    }
+
+    const deltaX = target.position.x - player.position.x;
+    const deltaY = target.position.y + this.config.playerHeight * 0.45 - (player.position.y + this.config.eggDropOffsetUp);
+    const deltaZ = target.position.z - player.position.z;
+    const horizontal = Math.hypot(deltaX, deltaZ);
+    if (horizontal < 4.5 || horizontal > 12) {
+      return null;
+    }
+
+    const aim = normalize2(deltaX, deltaZ);
+    const facingDot = aim.x * player.facing.x + aim.z * player.facing.z;
+    if (facingDot < 0.65 && target.stunRemaining <= EPSILON && targetEdgeDistance > 3.5) {
+      return null;
+    }
+
+    return {
+      charge: clamp((horizontal - 3.5) / 5.5, 0.35, 1),
+      pitch: clamp(
+        Math.atan2(deltaY, Math.max(horizontal, EPSILON)),
+        -this.config.eggThrowPitchLiftMin,
+        this.config.eggThrowPitchLiftBias
+      )
+    };
+  }
+
+  private isNpcPushReady(player: SimPlayer, target: SimPlayer, edgeDirection: Vector2, edgeDistance: number) {
+    if (
+      player.mass < this.config.pushCost ||
+      player.pushCooldownRemaining > EPSILON ||
+      edgeDistance > 5
+    ) {
+      return false;
+    }
+
+    const distance = horizontalDistance(player, target);
+    if (distance > this.config.pushRange * 1.05) {
+      return false;
+    }
+
+    const targetDirection = normalize2(target.position.x - player.position.x, target.position.z - player.position.z);
+    const outwardDot = targetDirection.x * edgeDirection.x + targetDirection.z * edgeDirection.z;
+    const facingDot = player.facing.x * edgeDirection.x + player.facing.z * edgeDirection.z;
+    return outwardDot > 0.15 && (facingDot > 0.78 || target.stunRemaining > EPSILON);
+  }
+
+  private findDestroyTarget(player: SimPlayer, direction = player.facing): Vec3i | null {
     const sampleHeights = [-0.25, 0.15, 0.6, 1.1];
+    const normalizedDirection = normalize2(direction.x, direction.z);
 
     for (const height of sampleHeights) {
       for (let distance = 0.65; distance <= this.config.interactRange; distance += 0.25) {
-        const sampleX = player.position.x + player.facing.x * distance;
+        const sampleX = player.position.x + normalizedDirection.x * distance;
         const sampleY = player.position.y + height;
-        const sampleZ = player.position.z + player.facing.z * distance;
+        const sampleZ = player.position.z + normalizedDirection.z * distance;
         const targetVoxel = {
           x: Math.floor(sampleX),
           y: Math.floor(sampleY),

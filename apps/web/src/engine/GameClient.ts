@@ -289,7 +289,7 @@ const spacePlanetDescriptors = [
   }
 ] as const;
 
-const isRuntimeMode = (mode: ActiveShellMode) => mode === "explore" || mode === "skirmish";
+const isRuntimeMode = (mode: ActiveShellMode) => mode === "explore" || mode === "playNpc";
 
 const configureStaticInstancedMesh = (mesh: THREE.InstancedMesh, matrices: readonly THREE.Matrix4[]) => {
   mesh.count = matrices.length;

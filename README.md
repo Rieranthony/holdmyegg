@@ -6,7 +6,7 @@ The current build is focused on the core loop:
 - shape a cubic arena
 - save, load, import, and export maps
 - run `Explore` to test movement, jump, Matter flow, harvesting, and live building
-- run `Brawl` to fight lightweight NPCs and push them out of bounds
+- run `PLAY NPC` to fight smarter NPCs and push them out of bounds
 
 Multiplayer is intentionally not built yet. The map and simulation packages are already structured so we can reuse the same contracts later on a server.
 
@@ -14,10 +14,10 @@ Multiplayer is intentionally not built yet. The map and simulation packages are 
 - Bun workspace is set up
 - shared map package is working
 - shared simulation package is working
-- web editor, HUD, explore mode, and brawl mode are working
-- the app now opens on a minimalist HoldMyEgg start menu with a live overhead arena background, `Explore`, `Brawl`, `Build`, and `Map Workshop`
+- web editor, HUD, explore mode, and PLAY NPC mode are working
+- the app now opens on a minimalist HoldMyEgg start menu with a live overhead arena background, `Explore`, `PLAY NPC`, `Build`, and `Map Workshop`
 - the UI now uses Geist Pixel Square globally, with hard-edged pixel controls and zero rounded corners
-- entering `Explore` or `Brawl` now starts with a sky-drop fall into the map
+- entering `Explore` or `PLAY NPC` now starts with a sky-drop fall into the map
 - indexed dirty-chunk rebuilds are in place for terrain updates
 - greedy-meshed terrain chunks now replace one-cube-per-voxel terrain rendering
 - lightweight sim selectors keep HUD and runtime reads off the full snapshot path
@@ -62,7 +62,7 @@ Inside `apps/web`, the main controller logic now lives in:
 2. Open the Vite URL, usually `http://localhost:5173`.
 3. Start from the main menu.
 4. Type a player name and choose a chicken color.
-5. Choose `Explore` or `Brawl` to sky-drop into runtime play, or use `Map Workshop` to open the editor.
+5. Choose `Explore` or `PLAY NPC` to sky-drop into runtime play, or use `Map Workshop` to open the editor.
 6. `Build` is visible on the menu as a future mode, but it is not implemented yet.
 7. Click once in runtime play to capture the mouse with pointer lock.
 8. Press `Esc` any time during runtime play to unlock the mouse and open the pause overlay.

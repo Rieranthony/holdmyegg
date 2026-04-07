@@ -15,7 +15,7 @@ export const createTestSimulation = (
   const world = createTestWorld(mutate);
   const simulation = new OutOfBoundsSimulation();
   simulation.reset(mode, world.toDocument(), {
-    npcCount: mode === "skirmish" ? 4 : 0,
+    npcCount: mode === "playNpc" ? 9 : 0,
     localPlayerName: "You"
   });
   return simulation;

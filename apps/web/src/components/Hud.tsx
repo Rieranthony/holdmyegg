@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { HudState, OutOfBoundsSimulation } from "@out-of-bounds/sim";
 import type { ActiveMode } from "./GameCanvas";
 
-const getModeLabel = (mode: ActiveMode) => (mode === "skirmish" ? "BRAWL" : mode.toUpperCase());
+const getModeLabel = (mode: ActiveMode) => (mode === "playNpc" ? "PLAY NPC" : mode.toUpperCase());
 
 const areHudStatesEqual = (left: HudState, right: HudState) => {
   if (left.mode !== right.mode || left.localPlayerId !== right.localPlayerId) {

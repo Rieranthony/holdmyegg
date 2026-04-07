@@ -18,7 +18,7 @@
 - Status: complete
 
 ## Milestone 4
-- Brawl mode spawns NPCs
+- PLAY NPC mode spawns NPCs
 - Push can knock players out of bounds
 - Arena terrain updates without full scene rebuilds
 - Status: complete for the prototype foundation
@@ -79,9 +79,9 @@
 - Status: complete
 
 ## Milestone 13
-- The app opens on a HoldMyEgg menu with `Explore`, `Brawl`, `Build`, and `Map Workshop`
-- `Explore` and `Brawl` enter a full-view play layout, while the editor keeps the split tool layout
-- Starting `Explore` or `Brawl` begins with a sky-drop entry onto the arena
+- The app opens on a HoldMyEgg menu with `Explore`, `PLAY NPC`, `Build`, and `Map Workshop`
+- `Explore` and `PLAY NPC` enter a full-view play layout, while the editor keeps the split tool layout
+- Starting `Explore` or `PLAY NPC` begins with a sky-drop entry onto the arena
 - The runtime camera uses an over-the-shoulder aim rig, so looking up moves the reticle ray upward and allows higher block targeting
 - The in-game `Menu` button and `Esc` both return runtime play to the main menu
 - Status: complete
@@ -97,7 +97,7 @@
 ## Milestone 15
 - The start menu renders a live overhead arena background plus a separate animated chicken preview stage
 - The menu uses HoldMyEgg branding, a minimalist overlay, and a disabled `Build` slot with future unlimited-block and JSON-export scope
-- `Explore` and `Brawl` stay locked until the player enters a name and picks a chicken color
+- `Explore` and `PLAY NPC` stay locked until the player enters a name and picks a chicken color
 - The selected player name replaces the default runtime name, and the chosen palette applies to the local chicken only
 - Geist Pixel Square is used across the UI, and shared interface surfaces keep zero border radius
 - Status: complete

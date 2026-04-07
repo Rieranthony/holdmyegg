@@ -84,7 +84,7 @@ const getModeStatusMessage = (mode: ActiveShellMode) => {
 
   return mode === "explore"
     ? "Explore mode ready."
-    : "Brawl mode ready. Be the last chicken standing.";
+    : "PLAY NPC mode ready. Outlast the flock.";
 };
 
 const getModeLabel = (mode: ActiveShellMode) => {
@@ -92,7 +92,7 @@ const getModeLabel = (mode: ActiveShellMode) => {
     return "WORKSHOP";
   }
 
-  return mode === "explore" ? "EXPLORE" : "BRAWL";
+  return mode === "explore" ? "EXPLORE" : "PLAY NPC";
 };
 
 interface AppProps {
@@ -182,7 +182,7 @@ export function App({
   }, [menuLoadToken]);
 
   const activePlayMode =
-    mode === "explore" || mode === "skirmish"
+    mode === "explore" || mode === "playNpc"
       ? mode
       : mode === "rules" && rulesOrigin === "pause"
         ? runtimeModeRef.current
@@ -285,7 +285,7 @@ export function App({
 
   const enterMode = useCallback(
     (nextMode: ActiveShellMode) => {
-      if (nextMode === "explore" || nextMode === "skirmish") {
+      if (nextMode === "explore" || nextMode === "playNpc") {
         runtimeModeRef.current = nextMode;
       }
       setRulesOrigin(null);
@@ -298,7 +298,7 @@ export function App({
       setHudState(null);
       setPauseState({
         hasStarted: false,
-        paused: nextMode === "explore" || nextMode === "skirmish",
+        paused: nextMode === "explore" || nextMode === "playNpc",
         pointerLocked: false,
       });
       updateStatus(getModeStatusMessage(nextMode));
@@ -555,10 +555,10 @@ export function App({
                 <button
                   className="menu-action menu-action--full menu-action--hero-secondary"
                   disabled={!canStartMatch}
-                  onClick={() => beginMode("skirmish")}
+                  onClick={() => beginMode("playNpc")}
                   type="button"
                 >
-                  Brawl
+                  PLAY NPC
                 </button>
               </div>
               <div className="menu-utility">
@@ -698,10 +698,10 @@ export function App({
             </button>
             <button
               disabled={!canStartMatch}
-              onClick={() => beginMode("skirmish")}
+              onClick={() => beginMode("playNpc")}
               type="button"
             >
-              Brawl
+              PLAY NPC
             </button>
           </div>
         </section>
@@ -985,7 +985,7 @@ function RulesAndControlsScreen({ onBack }: { onBack: () => void }) {
         <section className="rules-screen__section rules-screen__section--controls">
           <div className="rules-screen__section-copy">
             <h2>Controls</h2>
-            <p>Shortcuts are the same in Explore and Brawl.</p>
+            <p>Shortcuts are the same in Explore and PLAY NPC.</p>
           </div>
           <ShortcutLegend bindings={getRuntimeShortcutBindings()} />
         </section>
@@ -1005,9 +1005,10 @@ function RulesAndControlsScreen({ onBack }: { onBack: () => void }) {
                 </p>
               </article>
               <article className="rules-screen__mini-card">
-                <h3>Brawl</h3>
+                <h3>PLAY NPC</h3>
                 <p>
-                  Use that same toolkit to outlast everyone else on the arena.
+                  Fight nine smarter chickens that pressure you, each other, and
+                  the arena itself.
                 </p>
               </article>
             </div>
@@ -1066,7 +1067,7 @@ function LaunchOverlay({
         {needsCapture && (
           <div className="launch-overlay__copy">
             <p className="panel-kicker">
-              {mode === "explore" ? "Explore" : "Brawl"}
+              {mode === "explore" ? "Explore" : "PLAY NPC"}
             </p>
             <h2>Capture Mouse</h2>
             <p>One more click and the camera is yours.</p>

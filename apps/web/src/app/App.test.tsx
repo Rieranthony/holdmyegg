@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDefaultArenaMap, serializeMapDocument } from "@out-of-bounds/map";
 import type { HudState } from "@out-of-bounds/sim";
 
-const createHudState = (mode: "explore" | "skirmish", playerName = "You"): HudState => ({
+const createHudState = (mode: "explore" | "playNpc", playerName = "You"): HudState => ({
   mode,
   localPlayerId: "human-1",
   localPlayer: {
@@ -21,7 +21,7 @@ const createHudState = (mode: "explore" | "skirmish", playerName = "You"): HudSt
     stunRemaining: 0
   },
   ranking:
-    mode === "skirmish"
+    mode === "playNpc"
       ? [
           { id: "human-1", name: playerName, alive: true },
           { id: "npc-1", name: "NPC 1", alive: true }
@@ -130,7 +130,7 @@ vi.mock("../engine/GameHost", () => ({
           return;
         }
 
-        onHudStateChange?.(createHudState(mode as "explore" | "skirmish", playerProfile?.name || "You"));
+        onHudStateChange?.(createHudState(mode as "explore" | "playNpc", playerProfile?.name || "You"));
         onPauseStateChange?.({ hasStarted: false, paused: true, pointerLocked: false });
       }, [mode, onHudStateChange, onPauseStateChange, playerProfile?.name]);
 
@@ -302,7 +302,7 @@ describe("App", () => {
 
     expect(await screen.findByRole("heading", { name: "HoldMyEgg" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Explore/i })).toBeDisabled();
-    expect(screen.getByRole("button", { name: /Brawl/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /PLAY NPC/i })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Rules and Controls" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Feedback / bug" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Build/i })).not.toBeInTheDocument();
@@ -326,7 +326,7 @@ describe("App", () => {
     });
 
     expect(screen.getByRole("button", { name: /Explore/i })).toBeEnabled();
-    expect(screen.getByRole("button", { name: /Brawl/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /PLAY NPC/i })).toBeEnabled();
   });
 
   it(
@@ -386,10 +386,10 @@ describe("App", () => {
     });
     expect(screen.getByTestId("boot-splash")).toBeInTheDocument();
     await signalMenuReady();
-    expect(screen.getByRole("button", { name: /Brawl/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /PLAY NPC/i })).toBeInTheDocument();
     expect(screen.getByTestId("chicken-preview")).toHaveTextContent("cream");
 
-    fireEvent.click(screen.getByRole("button", { name: /Brawl/i }));
+    fireEvent.click(screen.getByRole("button", { name: /PLAY NPC/i }));
     expect(screen.getByTestId("launch-overlay")).toBeInTheDocument();
     await advanceLaunchIntro();
     expect(screen.getByText("Anthony")).toBeInTheDocument();

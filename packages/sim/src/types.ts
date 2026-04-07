@@ -1,6 +1,6 @@
 import type { BlockKind, MapDocumentV1, Vec3i } from "@out-of-bounds/map";
 
-export type GameMode = "explore" | "skirmish" | "multiplayer";
+export type GameMode = "explore" | "playNpc" | "multiplayer";
 export type PlayerKind = "human" | "npc";
 
 export interface Vector2 {

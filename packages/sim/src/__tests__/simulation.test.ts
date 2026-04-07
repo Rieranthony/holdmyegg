@@ -35,6 +35,19 @@ const getInternalPlayer = (simulation: OutOfBoundsSimulation, playerId: string) 
 const getNpcId = (simulation: OutOfBoundsSimulation) =>
   simulation.getSnapshot().players.find((player) => player.kind === "npc")?.id ?? null;
 
+const getNpcIds = (simulation: OutOfBoundsSimulation) =>
+  simulation
+    .getSnapshot()
+    .players.filter((player) => player.kind === "npc")
+    .map((player) => player.id);
+
+const getNpcMemory = (simulation: OutOfBoundsSimulation, playerId: string) =>
+  ((simulation as unknown as { npcMemories: Map<string, any> }).npcMemories.get(playerId) as {
+    intentRemaining: number;
+    targetPlayerId: string | null;
+    targetLockRemaining: number;
+  });
+
 const getHorizontalDistance = (
   left: { position: { x: number; z: number } },
   right: { position: { x: number; z: number } }
@@ -85,16 +98,32 @@ const createCollapseSimulation = () => {
 
 describe("OutOfBoundsSimulation", () => {
   it("resets into predictable snapshots and spawns players", () => {
-    const simulation = createTestSimulation("skirmish");
+    const simulation = createTestSimulation("playNpc");
     const snapshot = simulation.getSnapshot();
     const localPlayerId = simulation.getLocalPlayerId();
 
-    expect(snapshot.mode).toBe("skirmish");
+    expect(snapshot.mode).toBe("playNpc");
     expect(localPlayerId).toBe("human-1");
-    expect(snapshot.players.length).toBe(5);
+    expect(snapshot.players.length).toBe(10);
     expect(snapshot.localPlayerId).toBe(localPlayerId);
     advanceSimulation(simulation, 30);
     expect(simulation.getPlayerState(localPlayerId!)?.alive).toBe(true);
+  });
+
+  it("auto-spreads overflow spawn positions in playNpc matches", () => {
+    const simulation = createTestSimulation("playNpc");
+    const players = simulation.getSnapshot().players;
+
+    expect(players).toHaveLength(10);
+    for (let index = 0; index < players.length; index += 1) {
+      for (let otherIndex = index + 1; otherIndex < players.length; otherIndex += 1) {
+        const distance = Math.hypot(
+          players[index]!.position.x - players[otherIndex]!.position.x,
+          players[index]!.position.z - players[otherIndex]!.position.z
+        );
+        expect(distance).toBeGreaterThan(1.6);
+      }
+    }
   });
 
   it("supports sky-drop entry without changing the default grounded spawn flow", () => {
@@ -133,7 +162,7 @@ describe("OutOfBoundsSimulation", () => {
   });
 
   it("exposes lightweight match, hud, and player selectors", () => {
-    const simulation = createTestSimulation("skirmish");
+    const simulation = createTestSimulation("playNpc");
     const localPlayerId = simulation.getLocalPlayerId()!;
     advanceUntilGrounded(simulation, localPlayerId);
 
@@ -243,7 +272,7 @@ describe("OutOfBoundsSimulation", () => {
   });
 
   it("uses look direction for push alignment when the player is standing still", () => {
-    const simulation = createTestSimulation("skirmish");
+    const simulation = createTestSimulation("playNpc");
     const simulationInternals = simulation as unknown as { generateNpcCommand: (player: unknown) => PlayerCommand };
     simulationInternals.generateNpcCommand = () => idle();
     const localPlayerId = simulation.getLocalPlayerId()!;
@@ -694,7 +723,7 @@ describe("OutOfBoundsSimulation", () => {
   });
 
   it("rejects placement inside player bodies and active falling debris", () => {
-    const simulation = createTestSimulation("skirmish");
+    const simulation = createTestSimulation("playNpc");
     const localPlayerId = simulation.getLocalPlayerId()!;
     const npcId = getNpcId(simulation)!;
     advanceUntilGrounded(simulation, localPlayerId);
@@ -1260,8 +1289,8 @@ describe("OutOfBoundsSimulation", () => {
     const map = createArenaDocument((world) => {
       world.setVoxel(20, DEFAULT_SURFACE_Y, 19, "ground");
     });
-    const simulation = createTestSimulation("skirmish");
-    simulation.reset("skirmish", map, {
+    const simulation = createTestSimulation("playNpc");
+    simulation.reset("playNpc", map, {
       npcCount: 4,
       localPlayerName: "You"
     });
@@ -1325,7 +1354,7 @@ describe("OutOfBoundsSimulation", () => {
   });
 
   it("pushes valid targets and respects cooldown", () => {
-    const simulation = createTestSimulation("skirmish");
+    const simulation = createTestSimulation("playNpc");
     const simulationInternals = simulation as unknown as { generateNpcCommand: (player: unknown) => PlayerCommand };
     simulationInternals.generateNpcCommand = () => idle();
     const localPlayerId = simulation.getLocalPlayerId()!;
@@ -1374,7 +1403,7 @@ describe("OutOfBoundsSimulation", () => {
 
   it("scales push impulse upward with current mass", () => {
     const createPushSimulation = (mass: number) => {
-      const simulation = createTestSimulation("skirmish");
+      const simulation = createTestSimulation("playNpc");
       const simulationInternals = simulation as unknown as { generateNpcCommand: (player: unknown) => PlayerCommand };
       simulationInternals.generateNpcCommand = () => idle();
       const localPlayerId = simulation.getLocalPlayerId()!;
@@ -1415,7 +1444,7 @@ describe("OutOfBoundsSimulation", () => {
   });
 
   it("refuses invalid pushes when targets are out of range or behind the player", () => {
-    const simulation = createTestSimulation("skirmish");
+    const simulation = createTestSimulation("playNpc");
     const simulationInternals = simulation as unknown as { generateNpcCommand: (player: unknown) => PlayerCommand };
     simulationInternals.generateNpcCommand = () => idle();
     const localPlayerId = simulation.getLocalPlayerId()!;
@@ -1454,7 +1483,7 @@ describe("OutOfBoundsSimulation", () => {
   });
 
   it("does not start the push visual when the attempt is blocked by cooldown or insufficient mass", () => {
-    const simulation = createTestSimulation("skirmish");
+    const simulation = createTestSimulation("playNpc");
     const simulationInternals = simulation as unknown as { generateNpcCommand: (player: unknown) => PlayerCommand };
     simulationInternals.generateNpcCommand = () => idle();
     const localPlayerId = simulation.getLocalPlayerId()!;
@@ -1516,7 +1545,7 @@ describe("OutOfBoundsSimulation", () => {
   });
 
   it("allows light drift and orbital egg drops during the float window while keeping push locked", () => {
-    const simulation = createTestSimulation("skirmish");
+    const simulation = createTestSimulation("playNpc");
     const simulationInternals = simulation as unknown as { generateNpcCommand: (player: unknown) => PlayerCommand };
     simulationInternals.generateNpcCommand = () => idle();
     const localPlayerId = simulation.getLocalPlayerId()!;
@@ -1613,7 +1642,7 @@ describe("OutOfBoundsSimulation", () => {
 
   it("gives orbital eggs a stronger blast without increasing life loss per hit", () => {
     const createBlastOutcome = (orbital: boolean) => {
-      const simulation = createTestSimulation("skirmish");
+      const simulation = createTestSimulation("playNpc");
       const simulationInternals = simulation as unknown as { generateNpcCommand: (player: unknown) => PlayerCommand };
       simulationInternals.generateNpcCommand = () => idle();
       const localPlayerId = simulation.getLocalPlayerId()!;
@@ -1765,7 +1794,7 @@ describe("OutOfBoundsSimulation", () => {
     });
 
     const simulation = new OutOfBoundsSimulation();
-    simulation.reset("skirmish", map, {
+    simulation.reset("playNpc", map, {
       npcCount: 2,
       localPlayerName: "You"
     });
@@ -1781,7 +1810,7 @@ describe("OutOfBoundsSimulation", () => {
   });
 
   it("prevents overlap during normal movement and still allows sliding past another player", () => {
-    const simulation = createTestSimulation("skirmish");
+    const simulation = createTestSimulation("playNpc");
     const localPlayerId = simulation.getLocalPlayerId()!;
     const npcId = getNpcId(simulation)!;
 
@@ -1812,7 +1841,7 @@ describe("OutOfBoundsSimulation", () => {
       startingLives: 1,
       maxLives: 1
     });
-    simulation.reset("skirmish", createArenaDocument(), {
+    simulation.reset("playNpc", createArenaDocument(), {
       npcCount: 4,
       localPlayerName: "You"
     });
@@ -1997,13 +2026,13 @@ describe("OutOfBoundsSimulation", () => {
     });
 
     const simulationA = new OutOfBoundsSimulation();
-    simulationA.reset("skirmish", map, {
+    simulationA.reset("playNpc", map, {
       npcCount: 2,
       localPlayerName: "You"
     });
 
     const simulationB = new OutOfBoundsSimulation();
-    simulationB.reset("skirmish", map, {
+    simulationB.reset("playNpc", map, {
       npcCount: 2,
       localPlayerName: "You"
     });
@@ -2015,18 +2044,30 @@ describe("OutOfBoundsSimulation", () => {
     expect(normalizeSnapshot(simulationA.getSnapshot())).toEqual(normalizeSnapshot(simulationB.getSnapshot()));
   });
 
-  it("covers npc command branches for centering, harvesting, pushing, and jumping", () => {
-    const simulation = createTestSimulation("skirmish");
+  it("covers npc command branches for centering, harvesting, edge pushing, and jumping", () => {
+    const simulation = createTestSimulation("playNpc");
     const localPlayerId = simulation.getLocalPlayerId()!;
     const npcId = getNpcId(simulation)!;
+    const otherNpcIds = getNpcIds(simulation).filter((candidateNpcId) => candidateNpcId !== npcId);
     const npcPlayer = getInternalPlayer(simulation, npcId);
     const localPlayer = getInternalPlayer(simulation, localPlayerId);
+    const npcMemory = getNpcMemory(simulation, npcId);
     const generateNpcCommand = (simulation as unknown as { generateNpcCommand: (player: unknown) => PlayerCommand })
       .generateNpcCommand
       .bind(simulation);
 
+    otherNpcIds.forEach((otherNpcId, index) => {
+      const otherNpc = getInternalPlayer(simulation, otherNpcId);
+      otherNpc.position = { x: 30 + index, y: PLAYER_GROUND_Y, z: 38 };
+      otherNpc.grounded = true;
+      otherNpc.mass = simulation.config.maxMass;
+    });
+
     npcPlayer.position = { x: 1.2, y: PLAYER_GROUND_Y, z: 1.2 };
     npcPlayer.mass = simulation.config.maxMass;
+    npcMemory.targetPlayerId = null;
+    npcMemory.targetLockRemaining = 0;
+    npcMemory.intentRemaining = 0;
     let command = generateNpcCommand(npcPlayer);
     expect(command.moveX).toBeGreaterThan(0);
     expect(command.moveZ).toBeGreaterThan(0);
@@ -2035,13 +2076,20 @@ describe("OutOfBoundsSimulation", () => {
     npcPlayer.position = { x: 6.5, y: PLAYER_GROUND_Y, z: 6.5 };
     npcPlayer.facing = { x: 1, z: 0 };
     npcPlayer.mass = 10;
+    npcMemory.targetPlayerId = null;
+    npcMemory.targetLockRemaining = 0;
+    npcMemory.intentRemaining = 0;
     command = generateNpcCommand(npcPlayer);
     expect(command.destroy).toBe(true);
     expect(command.targetVoxel).not.toBeNull();
 
-    npcPlayer.position = { x: 20.5, y: PLAYER_GROUND_Y, z: 20.5 };
+    npcPlayer.position = { x: 42.5, y: PLAYER_GROUND_Y, z: 20.5 };
+    npcPlayer.facing = { x: 1, z: 0 };
     npcPlayer.mass = simulation.config.maxMass;
-    localPlayer.position = { x: 21.2, y: PLAYER_GROUND_Y, z: 20.5 };
+    localPlayer.position = { x: 43.4, y: PLAYER_GROUND_Y, z: 20.5 };
+    npcMemory.targetPlayerId = null;
+    npcMemory.targetLockRemaining = 0;
+    npcMemory.intentRemaining = 0;
     command = generateNpcCommand(npcPlayer);
     expect(command.push).toBe(true);
 
@@ -2050,7 +2098,141 @@ describe("OutOfBoundsSimulation", () => {
     localPlayer.position = { x: 26.5, y: PLAYER_GROUND_Y, z: 24.5 };
     simulation.getWorld().setVoxel(25, DEFAULT_SURFACE_Y, 24, "boundary");
     simulation.getWorld().removeVoxel(25, DEFAULT_SURFACE_Y + 1, 24);
+    npcMemory.targetPlayerId = null;
+    npcMemory.targetLockRemaining = 0;
+    npcMemory.intentRemaining = 0;
     command = generateNpcCommand(npcPlayer);
     expect(command.jump).toBe(true);
+  });
+
+  it("splits npc aggro instead of sending the full flock at the human", () => {
+    const simulation = createTestSimulation("playNpc");
+    const localPlayerId = simulation.getLocalPlayerId()!;
+    const npcIds = getNpcIds(simulation);
+    const generateNpcCommand = (
+      simulation as unknown as {
+        generateNpcCommand: (player: unknown, dt?: number, targetCommitments?: Map<string, number>) => PlayerCommand;
+      }
+    ).generateNpcCommand.bind(simulation);
+    const commitments = new Map<string, number>();
+
+    const localPlayer = getInternalPlayer(simulation, localPlayerId);
+    localPlayer.position = { x: 24.5, y: PLAYER_GROUND_Y, z: 24.5 };
+    localPlayer.grounded = true;
+
+    const edgeBait = getInternalPlayer(simulation, npcIds[0]!);
+    edgeBait.position = { x: 46.1, y: PLAYER_GROUND_Y, z: 24.5 };
+    edgeBait.grounded = true;
+    edgeBait.stunRemaining = 1;
+
+    npcIds.slice(1, 5).forEach((npcId, index) => {
+      const npcPlayer = getInternalPlayer(simulation, npcId);
+      npcPlayer.position = { x: 20.5 + index, y: PLAYER_GROUND_Y, z: 24.5 + (index % 2 === 0 ? 0 : 1.2) };
+      npcPlayer.grounded = true;
+      npcPlayer.mass = simulation.config.maxMass;
+    });
+
+    npcIds.slice(5).forEach((npcId, index) => {
+      const npcPlayer = getInternalPlayer(simulation, npcId);
+      npcPlayer.position = { x: 39.5 + index, y: PLAYER_GROUND_Y, z: 24.5 + (index % 2 === 0 ? 0 : 1.1) };
+      npcPlayer.grounded = true;
+      npcPlayer.mass = simulation.config.maxMass;
+    });
+
+    const chosenTargets = npcIds.map((npcId) => {
+      const npcPlayer = getInternalPlayer(simulation, npcId);
+      generateNpcCommand(npcPlayer, 1 / 60, commitments);
+      const targetPlayerId = getNpcMemory(simulation, npcId).targetPlayerId;
+      if (targetPlayerId) {
+        commitments.set(targetPlayerId, (commitments.get(targetPlayerId) ?? 0) + 1);
+      }
+      return targetPlayerId;
+    });
+
+    const humanFocusCount = chosenTargets.filter((targetPlayerId) => targetPlayerId === localPlayerId).length;
+    expect(humanFocusCount).toBeGreaterThan(0);
+    expect(humanFocusCount).toBeLessThan(npcIds.length);
+    expect(new Set(chosenTargets.filter((targetPlayerId): targetPlayerId is string => targetPlayerId !== null)).size).toBeGreaterThan(1);
+  });
+
+  it("builds short bridges when the path opens into a gap", () => {
+    const simulation = createTestSimulation("playNpc");
+    const npcId = getNpcId(simulation)!;
+    const npcPlayer = getInternalPlayer(simulation, npcId);
+    const localPlayer = getInternalPlayer(simulation, simulation.getLocalPlayerId()!);
+    const generateNpcCommand = (simulation as unknown as { generateNpcCommand: (player: unknown) => PlayerCommand })
+      .generateNpcCommand
+      .bind(simulation);
+
+    npcPlayer.position = { x: 10.5, y: PLAYER_GROUND_Y, z: 10.5 };
+    npcPlayer.facing = { x: 1, z: 0 };
+    npcPlayer.grounded = true;
+    npcPlayer.mass = simulation.config.maxMass;
+    localPlayer.position = { x: 16.5, y: PLAYER_GROUND_Y, z: 10.5 };
+    simulation.getWorld().removeVoxel(11, SURFACE_TOP_Y, 10);
+
+    const command = generateNpcCommand(npcPlayer);
+    expect(command.place).toBe(true);
+    expect(command.targetNormal).toEqual({ x: 1, y: 0, z: 0 });
+  });
+
+  it("holds jump after takeoff when a gap needs jetpack follow-through", () => {
+    const simulation = createTestSimulation("playNpc");
+    const npcId = getNpcId(simulation)!;
+    const localPlayer = getInternalPlayer(simulation, simulation.getLocalPlayerId()!);
+    const npcPlayer = getInternalPlayer(simulation, npcId);
+    const otherNpcIds = getNpcIds(simulation).filter((candidateNpcId) => candidateNpcId !== npcId);
+    const generateNpcCommand = (simulation as unknown as { generateNpcCommand: (player: unknown) => PlayerCommand })
+      .generateNpcCommand
+      .bind(simulation);
+
+    npcPlayer.position = { x: 24.5, y: PLAYER_GROUND_Y, z: 24.5 };
+    npcPlayer.facing = { x: 1, z: 0 };
+    npcPlayer.grounded = true;
+    npcPlayer.mass = 12;
+    localPlayer.position = { x: 32.5, y: PLAYER_GROUND_Y, z: 24.5 };
+    otherNpcIds.forEach((otherNpcId, index) => {
+      const otherNpc = getInternalPlayer(simulation, otherNpcId);
+      otherNpc.position = { x: 10.5 + index, y: PLAYER_GROUND_Y, z: 37.5 };
+      otherNpc.grounded = true;
+    });
+    simulation.getWorld().setVoxel(25, DEFAULT_SURFACE_Y, 24, "boundary");
+    simulation.getWorld().removeVoxel(25, DEFAULT_SURFACE_Y + 1, 24);
+
+    const takeoffCommand = generateNpcCommand(npcPlayer);
+    expect(takeoffCommand.jumpPressed).toBe(true);
+    expect(takeoffCommand.jump).toBe(true);
+
+    npcPlayer.grounded = false;
+    const followThroughCommand = generateNpcCommand(npcPlayer);
+    expect(followThroughCommand.jump).toBe(true);
+    expect(followThroughCommand.jumpPressed).toBe(false);
+  });
+
+  it("throws eggs at good mid-range targets", () => {
+    const simulation = createTestSimulation("playNpc");
+    const npcId = getNpcId(simulation)!;
+    const npcPlayer = getInternalPlayer(simulation, npcId);
+    const localPlayer = getInternalPlayer(simulation, simulation.getLocalPlayerId()!);
+    const otherNpcIds = getNpcIds(simulation).filter((candidateNpcId) => candidateNpcId !== npcId);
+    const generateNpcCommand = (simulation as unknown as { generateNpcCommand: (player: unknown) => PlayerCommand })
+      .generateNpcCommand
+      .bind(simulation);
+
+    npcPlayer.position = { x: 10.5, y: PLAYER_GROUND_Y, z: 10.5 };
+    npcPlayer.facing = { x: 1, z: 0 };
+    npcPlayer.grounded = true;
+    npcPlayer.mass = simulation.config.maxMass;
+    localPlayer.position = { x: 17.5, y: PLAYER_GROUND_Y, z: 10.5 };
+    localPlayer.grounded = true;
+    otherNpcIds.forEach((otherNpcId, index) => {
+      const otherNpc = getInternalPlayer(simulation, otherNpcId);
+      otherNpc.position = { x: 34.5 + index, y: PLAYER_GROUND_Y, z: 36.5 };
+      otherNpc.grounded = true;
+    });
+
+    const command = generateNpcCommand(npcPlayer);
+    expect(command.layEgg).toBe(true);
+    expect(command.eggCharge).toBeGreaterThan(0.35);
   });
 });

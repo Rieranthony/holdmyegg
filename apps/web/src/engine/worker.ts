@@ -245,7 +245,7 @@ const switchToMode = (nextMode: ActiveShellMode) => {
   }
 
   runtime.reset(nextMode as GameMode, editorWorld.toDocument(), {
-    npcCount: nextMode === "skirmish" ? 4 : 0,
+    npcCount: nextMode === "playNpc" ? 9 : 0,
     localPlayerName,
     initialSpawnStyle
   });
