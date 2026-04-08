@@ -39,6 +39,16 @@ describe("voxelFx", () => {
         duration: 0.42
       })
     ).toBeNull();
+    expect(
+      getVoxelBurstMaterialProfile({
+        id: "super-boom",
+        style: "superBoomExplosion",
+        kind: null,
+        position: { x: 4.5, y: 10.5, z: 6.5 },
+        elapsed: 0.05,
+        duration: 0.56
+      })
+    ).toBeNull();
   });
 
   it("drives tighter harvest particles and wider egg explosion particles with shrinking opacity", () => {
@@ -74,6 +84,36 @@ describe("voxelFx", () => {
     expect(eggParticle.opacity).toBeLessThan(1);
   });
 
+  it("renders super boom bursts wider and denser than regular egg explosions", () => {
+    const eggBurst = {
+      id: "egg-1",
+      style: "eggExplosion" as const,
+      kind: null,
+      position: { x: 10, y: 6, z: 8 },
+      elapsed: 0.24,
+      duration: 0.42
+    };
+    const superBoomBurst = {
+      id: "boom-1",
+      style: "superBoomExplosion" as const,
+      kind: null,
+      position: { x: 10, y: 6, z: 8 },
+      elapsed: 0.28,
+      duration: 0.56
+    };
+
+    const eggParticle = getVoxelBurstParticleState(eggBurst, 0);
+    const superBoomParticle = getVoxelBurstParticleState(superBoomBurst, 0);
+    const eggDistance = Math.hypot(eggParticle.position.x - 10, eggParticle.position.z - 8);
+    const superBoomDistance = Math.hypot(superBoomParticle.position.x - 10, superBoomParticle.position.z - 8);
+
+    expect(getVoxelBurstParticleCount(superBoomBurst)).toBeGreaterThan(getVoxelBurstParticleCount(eggBurst));
+    expect(superBoomDistance).toBeGreaterThan(eggDistance);
+    expect(superBoomParticle.scale).toBeGreaterThan(eggParticle.scale);
+    expect(superBoomParticle.opacity).toBeGreaterThan(0);
+    expect(superBoomParticle.opacity).toBeLessThanOrEqual(1);
+  });
+
   it("adds a fast shockwave ring for egg explosions only", () => {
     const eggShockwave = getVoxelBurstShockwaveState({
       id: "egg-1",
@@ -87,6 +127,18 @@ describe("voxelFx", () => {
     expect(eggShockwave).not.toBeNull();
     expect(eggShockwave?.scale).toBeGreaterThan(0.7);
     expect(eggShockwave?.opacity).toBeGreaterThan(0);
+    const superBoomShockwave = getVoxelBurstShockwaveState({
+      id: "boom-1",
+      style: "superBoomExplosion",
+      kind: null,
+      position: { x: 10, y: 6, z: 8 },
+      elapsed: 0.12,
+      duration: 0.56
+    });
+
+    expect(superBoomShockwave).not.toBeNull();
+    expect(superBoomShockwave?.scale).toBeGreaterThan(eggShockwave?.scale ?? 0);
+    expect(superBoomShockwave?.opacity).toBeGreaterThan(0);
     expect(
       getVoxelBurstShockwaveState({
         id: "harvest-1",

@@ -164,6 +164,7 @@ const createReadyRuntimeFrame = (overrides: Record<string, unknown> = {}) => ({
       canQuickEgg: true,
       canChargedThrow: true
     },
+    spaceChallenge: null,
     ranking: [{ id: "human-1", name: "You", alive: true }]
   },
   focusState: {
@@ -191,6 +192,8 @@ const createReadyRuntimeFrame = (overrides: Record<string, unknown> = {}) => ({
       pushVisualRemaining: 0,
       spacePhase: "none" as const,
       spacePhaseRemaining: 0,
+      eggTauntSequence: 0,
+      eggTauntRemaining: 0,
       position: { x: 4, y: 2, z: 5 },
       velocity: { x: 0, y: 0, z: 0 },
       facing: { x: 1, z: 0 },
@@ -310,6 +313,91 @@ describe("GameClient", () => {
     client.dispose();
   });
 
+  it("applies authoritative frame payloads to the local replica without changing render ownership", () => {
+    const canvas = createCanvas();
+    const client = GameClient.mount({
+      canvas,
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 9
+    });
+    const worker = MockWorker.instances[0]!;
+    const frame = createReadyRuntimeFrame({
+      authoritative: {
+        state: {
+          tick: 1,
+          time: 0,
+          mode: "multiplayer" as const,
+          localPlayerId: "human-1",
+          players: [
+            {
+              entityId: "human-1",
+              spawnTick: 0,
+              visualSeed: 111,
+              ...(createReadyRuntimeFrame().players[0] as object)
+            }
+          ],
+          projectiles: [],
+          hazards: {
+            fallingClusters: [],
+            skyDrops: [],
+            eggScatterDebris: []
+          },
+          stats: {
+            terrainRevision: 4
+          },
+          ranking: ["human-1"]
+        },
+        terrainDeltaBatch: {
+          tick: 1,
+          terrainRevision: 4,
+          changes: [
+            {
+              voxel: { x: 2, y: 3, z: 4 },
+              kind: null,
+              operation: "remove" as const,
+              source: "projectile_explosion" as const
+            }
+          ]
+        },
+        gameplayEventBatch: {
+          tick: 1,
+          events: [
+            {
+              type: "terrain_changed" as const,
+              entityId: "terrain-1",
+              terrainRevision: 4,
+              source: "projectile_explosion" as const,
+              changeCount: 1
+            }
+          ]
+        }
+      }
+    });
+
+    worker.emit({
+      type: "frame",
+      frame
+    });
+
+    expect((client as any).authoritativeReplica.getState()).toMatchObject({
+      mode: "multiplayer",
+      stats: {
+        terrainRevision: 4
+      }
+    });
+    expect((client as any).authoritativeReplica.peekTerrainDeltaBatch()).toMatchObject({
+      terrainRevision: 4
+    });
+    expect(
+      (client as any).authoritativeReplica.peekGameplayEventBatch()?.events[0]
+    ).toMatchObject({
+      type: "terrain_changed"
+    });
+
+    client.dispose();
+  });
+
   it("forwards the requested sky-drop spawn style when runtime play boots", () => {
     const documentMap = createDefaultArenaMap();
     const canvas = createCanvas();
@@ -405,7 +493,7 @@ describe("GameClient", () => {
     const visual = (client as any).playerVisuals.get("human-1");
 
     expect(visual).toBeDefined();
-    expect(visual.group.children).toHaveLength(3);
+    expect(visual.group.children).toHaveLength(4);
     expect(visual.highDetail.visible).toBe(true);
     expect(visual.lowDetail.visible).toBe(false);
     expect(visual.headFeathers).toHaveLength(3);
@@ -1850,7 +1938,11 @@ describe("GameClient", () => {
     });
 
     expect(onRuntimeOverlayChange).toHaveBeenLastCalledWith({
-      matterPulseActive: true
+      matterPulseActive: true,
+      spaceMistakePulseActive: false,
+      spaceSuccessPulseActive: false,
+      spaceLocalPhrase: null,
+      spaceLocalTypedLength: 0
     });
     expect((client as any).eggChargeState.active).toBe(false);
     expect(
@@ -1859,7 +1951,11 @@ describe("GameClient", () => {
 
     (client as any).applyRuntimeFrame(1 / 60, 2);
     expect(onRuntimeOverlayChange).toHaveBeenLastCalledWith({
-      matterPulseActive: false
+      matterPulseActive: false,
+      spaceMistakePulseActive: false,
+      spaceSuccessPulseActive: false,
+      spaceLocalPhrase: null,
+      spaceLocalTypedLength: 0
     });
 
     client.dispose();
@@ -2023,6 +2119,267 @@ describe("GameClient", () => {
 
     expect(Math.abs(localVisual.rightWing.rotation.z)).toBeGreaterThan(Math.abs(npcVisual.rightWing.rotation.z));
     expect(localVisual.shell.rotation.z).toBeLessThan(npcVisual.shell.rotation.z);
+
+    client.dispose();
+  });
+
+  it("routes typing-challenge letters and spaces into typedText instead of movement or jump", () => {
+    const client = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 41
+    });
+
+    const worker = MockWorker.instances[0]!;
+    (client as any).pointerLocked = true;
+    (client as any).runtimePaused = false;
+    (client as any).latestFrame = createReadyRuntimeFrame({
+      hudState: {
+        ...createReadyRuntimeFrame().hudState,
+        spaceChallenge: {
+          phrase: "wow",
+          typedLength: 0,
+          phase: "typing" as const
+        }
+      }
+    });
+
+    (client as any).handleKeyDown({
+      code: "KeyW",
+      key: "w",
+      repeat: false,
+      altKey: false,
+      metaKey: false,
+      ctrlKey: false,
+      preventDefault: vi.fn(),
+      target: window
+    });
+
+    expect((client as any).keyboardState.forward).toBe(false);
+    (client as any).sendRuntimeInput((client as any).getLocalRuntimePlayer());
+
+    let lastMessage = worker.postMessage.mock.calls.at(-1)?.[0];
+    expect(unpackRuntimeInputCommand(lastMessage.buffer).typedText).toBe("w");
+
+    (client as any).latestFrame = createReadyRuntimeFrame({
+      hudState: {
+        ...createReadyRuntimeFrame().hudState,
+        spaceChallenge: {
+          phrase: "go go",
+          typedLength: 2,
+          phase: "typing" as const
+        }
+      }
+    });
+
+    (client as any).handleKeyDown({
+      code: "Space",
+      key: " ",
+      repeat: false,
+      altKey: false,
+      metaKey: false,
+      ctrlKey: false,
+      preventDefault: vi.fn(),
+      target: window
+    });
+
+    expect((client as any).keyboardState.jump).toBe(false);
+    (client as any).sendRuntimeInput((client as any).getLocalRuntimePlayer());
+
+    lastMessage = worker.postMessage.mock.calls.at(-1)?.[0];
+    const spaceCommand = unpackRuntimeInputCommand(lastMessage.buffer);
+    expect(spaceCommand.typedText).toBe(" ");
+    expect(spaceCommand.jump).toBe(false);
+
+    client.dispose();
+  });
+
+  it("fires local typing mistake and success pulses without waiting for a frame round-trip", () => {
+    const onRuntimeOverlayChange = vi.fn();
+    const client = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 43,
+      onRuntimeOverlayChange
+    });
+
+    (client as any).pointerLocked = true;
+    (client as any).runtimePaused = false;
+    (client as any).latestFrame = createReadyRuntimeFrame({
+      hudState: {
+        ...createReadyRuntimeFrame().hudState,
+        spaceChallenge: {
+          phrase: "wow",
+          typedLength: 0,
+          phase: "typing" as const
+        }
+      }
+    });
+
+    (client as any).handleKeyDown({
+      code: "KeyE",
+      key: "e",
+      repeat: false,
+      altKey: false,
+      metaKey: false,
+      ctrlKey: false,
+      preventDefault: vi.fn(),
+      target: window
+    });
+
+    expect(onRuntimeOverlayChange).toHaveBeenLastCalledWith({
+      matterPulseActive: false,
+      spaceMistakePulseActive: true,
+      spaceSuccessPulseActive: false,
+      spaceLocalPhrase: "wow",
+      spaceLocalTypedLength: 0
+    });
+
+    for (const key of ["w", "o", "w"]) {
+      (client as any).handleKeyDown({
+        code: `Key${key.toUpperCase()}`,
+        key,
+        repeat: false,
+        altKey: false,
+        metaKey: false,
+        ctrlKey: false,
+        preventDefault: vi.fn(),
+        target: window
+      });
+    }
+
+    expect(onRuntimeOverlayChange).toHaveBeenLastCalledWith({
+      matterPulseActive: false,
+      spaceMistakePulseActive: true,
+      spaceSuccessPulseActive: true,
+      spaceLocalPhrase: "wow",
+      spaceLocalTypedLength: 3
+    });
+
+    client.dispose();
+  });
+
+  it("leans the local chicken into a priming pose while typing in space", () => {
+    const client = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 37
+    });
+
+    const player = {
+      id: "human-1",
+      name: "You",
+      kind: "human" as const,
+      alive: true,
+      fallingOut: false,
+      grounded: false,
+      mass: 84,
+      livesRemaining: 3,
+      maxLives: 3,
+      respawning: false,
+      invulnerableRemaining: 0,
+      stunRemaining: 0,
+      pushVisualRemaining: 0,
+      spacePhase: "float" as const,
+      spacePhaseRemaining: 2.4,
+      position: { x: 4, y: 22, z: 5 },
+      velocity: { x: 0.8, y: 0.2, z: 0 },
+      facing: { x: 0, z: 1 },
+      jetpackActive: false,
+      eliminatedAt: null
+    };
+
+    (client as any).syncPlayers([player], "human-1", 1 / 60, 1.25);
+    const visual = (client as any).playerVisuals.get("human-1");
+    const baselinePitch = visual.shell.rotation.x;
+    const baselineYaw = visual.body.rotation.y;
+    const baselineForwardOffset = visual.avatar.position.z;
+
+    (client as any).localSpaceChallengePhrase = "go go";
+    (client as any).localSpaceChallengeTypedLength = 3;
+    (client as any).spaceTypePrimeUntil = 1.45;
+    (client as any).spaceTypeMisfireUntil = 1.35;
+    (client as any).syncPlayers([player], "human-1", 1 / 60, 1.25);
+
+    expect(visual.shell.rotation.x).toBeGreaterThan(baselinePitch);
+    expect(visual.body.rotation.y).toBeGreaterThan(baselineYaw);
+    expect(visual.avatar.position.z).toBeLessThan(baselineForwardOffset);
+
+    client.dispose();
+  });
+
+  it("keeps the bomb shell visible through dive and impact phases and starts the impact jolt", () => {
+    const client = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 33
+    });
+
+    (client as any).syncPlayers(
+      [
+        {
+          id: "human-1",
+          name: "You",
+          kind: "human",
+          alive: true,
+          fallingOut: false,
+          grounded: false,
+          mass: 84,
+          livesRemaining: 3,
+          maxLives: 3,
+          respawning: false,
+          invulnerableRemaining: 0,
+          stunRemaining: 0,
+          pushVisualRemaining: 0,
+          spacePhase: "superBoomDive",
+          spacePhaseRemaining: 0,
+          position: { x: 4, y: 12, z: 5 },
+          velocity: { x: 0, y: -28, z: 0 },
+          facing: { x: 0, z: 1 },
+          jetpackActive: false,
+          eliminatedAt: null
+        }
+      ],
+      "human-1",
+      1 / 60,
+      1.25
+    );
+
+    const visual = (client as any).playerVisuals.get("human-1");
+
+    expect(visual.root.visible).toBe(false);
+    expect(visual.bomb.visible).toBe(true);
+    expect(visual.bomb.scale.x).toBeGreaterThan(1.9);
+
+    (client as any).latestFrame = createReadyRuntimeFrame({
+      players: [
+        {
+          ...(createReadyRuntimeFrame().players[0] as object),
+          spacePhase: "superBoomImpact" as const,
+          position: { x: 4, y: 2.05, z: 5 },
+          velocity: { x: 0, y: 0, z: 0 }
+        }
+      ],
+      hudState: {
+        ...createReadyRuntimeFrame().hudState,
+        spaceChallenge: {
+          phrase: "go go",
+          typedLength: 5,
+          phase: "dive" as const
+        }
+      }
+    });
+
+    (client as any).applyRuntimeFrame(1 / 60, 1.4);
+
+    expect((client as any).superBoomImpactJoltUntil).toBeGreaterThan(1.4);
+    expect(visual.root.visible).toBe(false);
+    expect(visual.bomb.visible).toBe(true);
+    expect(visual.bomb.position.y).toBeLessThan(0.82);
 
     client.dispose();
   });

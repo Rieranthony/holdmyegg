@@ -14,6 +14,7 @@ describe("buildPlayerCommand", () => {
         jumpPressed: true,
         jumpReleased: false,
         egg: false,
+        typedText: "",
         placePressed: false,
         pushPressed: false
       },
@@ -40,6 +41,7 @@ describe("buildPlayerCommand", () => {
         jumpPressed: false,
         jumpReleased: false,
         egg: false,
+        typedText: "",
         placePressed: true,
         pushPressed: true
       },
@@ -68,6 +70,7 @@ describe("buildPlayerCommand", () => {
           jumpPressed: false,
           jumpReleased: false,
           egg: false,
+          typedText: "",
           placePressed: false,
           pushPressed: false
         },

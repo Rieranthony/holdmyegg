@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   clearTransientRuntimeInputFlags,
+  MAX_TYPED_TEXT_BYTES,
   packRuntimeInputCommand,
   unpackRuntimeInputCommand,
   type RuntimeInputCommand
@@ -16,6 +17,7 @@ describe("packRuntimeInputCommand", () => {
       lookZ: -1,
       eggCharge: 0.65,
       eggPitch: -0.22,
+      typedText: "Kiss My Toes!!!",
       jump: true,
       jumpPressed: true,
       jumpReleased: true,
@@ -30,9 +32,10 @@ describe("packRuntimeInputCommand", () => {
     const buffer = packRuntimeInputCommand(command);
     const unpacked = unpackRuntimeInputCommand(buffer);
 
-    expect(buffer.byteLength).toBe(42);
+    expect(buffer.byteLength).toBe(67);
     expect(unpacked).toMatchObject({
       ...command,
+      typedText: "kiss my toes",
       eggCharge: expect.any(Number),
       eggPitch: expect.any(Number)
     });
@@ -49,6 +52,7 @@ describe("packRuntimeInputCommand", () => {
       lookZ: 0,
       eggCharge: 0,
       eggPitch: 0,
+      typedText: "",
       jump: false,
       jumpPressed: false,
       jumpReleased: false,
@@ -68,6 +72,33 @@ describe("packRuntimeInputCommand", () => {
     expect(unpacked.place).toBe(false);
     expect(unpacked.layEgg).toBe(false);
   });
+
+  it("truncates typed text to the packed ASCII budget", () => {
+    const command: RuntimeInputCommand = {
+      seq: 4,
+      moveX: 0,
+      moveZ: 0,
+      lookX: 0,
+      lookZ: 1,
+      eggCharge: 0,
+      eggPitch: 0,
+      typedText: "ABCDEFGHIJKLMNOPQRSTUVWXYZ!!!",
+      jump: false,
+      jumpPressed: false,
+      jumpReleased: false,
+      destroy: false,
+      place: false,
+      push: false,
+      layEgg: false,
+      targetVoxel: null,
+      targetNormal: null
+    };
+
+    const unpacked = unpackRuntimeInputCommand(packRuntimeInputCommand(command));
+
+    expect(unpacked.typedText).toBe("abcdefghijklmnopqrstuvwx".slice(0, MAX_TYPED_TEXT_BYTES));
+    expect(unpacked.typedText).toHaveLength(MAX_TYPED_TEXT_BYTES);
+  });
 });
 
 describe("clearTransientRuntimeInputFlags", () => {
@@ -80,6 +111,7 @@ describe("clearTransientRuntimeInputFlags", () => {
       lookZ: 1,
       eggCharge: 0.9,
       eggPitch: 0.14,
+      typedText: "go go go",
       jump: true,
       jumpPressed: true,
       jumpReleased: true,
@@ -100,6 +132,7 @@ describe("clearTransientRuntimeInputFlags", () => {
       destroy: false,
       place: false,
       layEgg: false,
+      typedText: "",
       eggCharge: 0,
       eggPitch: 0
     });

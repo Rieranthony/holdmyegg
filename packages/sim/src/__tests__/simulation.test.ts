@@ -1,10 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
-import { defaultSimulationConfig, type PlayerCommand, OutOfBoundsSimulation } from "@out-of-bounds/sim";
+import {
+  defaultSimulationConfig,
+  type PlayerCommand,
+  OutOfBoundsSimulation
+} from "@out-of-bounds/sim";
 import { DEFAULT_SURFACE_Y } from "@out-of-bounds/map";
 import { createArenaDocument } from "@test/fixtures/maps";
 import { destroy, idle, jump, layEgg, move, place, push } from "@test/helpers/commands";
 import { advanceSimulation, advanceUntilGrounded, createTestSimulation } from "@test/helpers/simulation";
-import { normalizeSnapshot } from "@test/helpers/snapshot";
+import {
+  normalizeAuthoritativeMatchState,
+  normalizeGameplayEventBatch,
+  normalizeSnapshot,
+  normalizeTerrainDeltaBatch
+} from "@test/helpers/snapshot";
 
 const getInternalPlayer = (simulation: OutOfBoundsSimulation, playerId: string) =>
   ((simulation as unknown as { players: Map<string, any> }).players.get(playerId) as {
@@ -27,9 +36,12 @@ const getInternalPlayer = (simulation: OutOfBoundsSimulation, playerId: string) 
     jetpackHoldActivationRemaining: number;
     pushCooldownRemaining: number;
     pushVisualRemaining: number;
-    spacePhase: "none" | "float" | "reentry";
+    spacePhase: "none" | "float" | "reentry" | "superBoomDive" | "superBoomImpact";
     spacePhaseRemaining: number;
     spaceTriggerArmed: boolean;
+    spaceChallengePhrase: string | null;
+    spaceChallengeTypedLength: number;
+    spaceChallengePreviousPhrase: string | null;
   });
 
 const getNpcId = (simulation: OutOfBoundsSimulation) =>
@@ -125,6 +137,35 @@ const createCollapseSimulation = () => {
   };
 };
 
+const createMultiplayerSlots = (count: number) =>
+  Array.from({ length: count }, (_, index) => ({
+    id: `human-${String(index + 1).padStart(2, "0")}`,
+    name: `Player ${index + 1}`
+  }));
+
+const createMultiplayerSimulation = (
+  playerCount: number,
+  overrides: ConstructorParameters<typeof OutOfBoundsSimulation>[0] = {}
+) => {
+  const simulation = new OutOfBoundsSimulation({
+    skyDropIntervalMin: 999,
+    skyDropIntervalMax: 999,
+    ...overrides
+  });
+  const humanPlayers = createMultiplayerSlots(playerCount);
+  simulation.reset("multiplayer", createArenaDocument(), {
+    humanPlayers,
+    localPlayerId: humanPlayers[0]!.id,
+    localPlayerName: humanPlayers[0]!.name,
+    initialSpawnSeed: 11
+  });
+
+  return {
+    simulation,
+    humanPlayers
+  };
+};
+
 describe("OutOfBoundsSimulation", () => {
   it("resets into predictable snapshots and spawns players", () => {
     const simulation = createTestSimulation("playNpc");
@@ -209,6 +250,43 @@ describe("OutOfBoundsSimulation", () => {
     expect(respawnedPlayer.velocity.y).toBe(0);
   });
 
+  it("supports multiplayer reset with stable human slots from 2 to 24 players", () => {
+    for (const playerCount of [2, 8, 16, 24]) {
+      const humanPlayers = createMultiplayerSlots(playerCount);
+      const simulation = new OutOfBoundsSimulation();
+      simulation.reset("multiplayer", createArenaDocument(), {
+        humanPlayers,
+        localPlayerId: humanPlayers[Math.min(2, humanPlayers.length - 1)]!.id,
+        initialSpawnSeed: 17
+      });
+
+      const authoritativeState = simulation.getAuthoritativeMatchState(
+        humanPlayers[Math.min(2, humanPlayers.length - 1)]!.id
+      );
+
+      expect(authoritativeState.mode).toBe("multiplayer");
+      expect(authoritativeState.localPlayerId).toBe(
+        humanPlayers[Math.min(2, humanPlayers.length - 1)]!.id
+      );
+      expect(authoritativeState.players).toHaveLength(playerCount);
+      expect(authoritativeState.players.every((player) => player.kind === "human")).toBe(
+        true
+      );
+      expect(new Set(authoritativeState.players.map((player) => player.id)).size).toBe(
+        playerCount
+      );
+      expect(
+        authoritativeState.players.every(
+          (player) =>
+            player.entityId === player.id &&
+            player.spawnTick === 0 &&
+            Number.isInteger(player.visualSeed)
+        )
+      ).toBe(true);
+      expect(authoritativeState.ranking).toHaveLength(playerCount);
+    }
+  });
+
   it("exposes lightweight match, hud, and player selectors", () => {
     const simulation = createTestSimulation("playNpc");
     const localPlayerId = simulation.getLocalPlayerId()!;
@@ -237,6 +315,199 @@ describe("OutOfBoundsSimulation", () => {
     });
     expect(hudState.ranking.length).toBe(matchState.ranking.length);
     expect(playerState?.id).toBe(localPlayerId);
+  });
+
+  it("produces deterministic authoritative state, terrain deltas, and gameplay events for the same multiplayer command stream", () => {
+    const createPreparedSimulation = () => {
+      const { simulation, humanPlayers } = createMultiplayerSimulation(2, {
+        eggFuseDuration: 0.2
+      });
+      const attacker = getInternalPlayer(simulation, humanPlayers[0]!.id);
+      const defender = getInternalPlayer(simulation, humanPlayers[1]!.id);
+      attacker.position = { x: 20.5, y: PLAYER_GROUND_Y, z: 20.5 };
+      attacker.velocity = { x: 0, y: 0, z: 0 };
+      attacker.facing = { x: 1, z: 0 };
+      attacker.grounded = true;
+      attacker.mass = 220;
+      defender.position = { x: 23.1, y: PLAYER_GROUND_Y, z: 20.5 };
+      defender.velocity = { x: 0, y: 0, z: 0 };
+      defender.facing = { x: -1, z: 0 };
+      defender.grounded = true;
+      defender.mass = 220;
+      return {
+        simulation,
+        humanPlayers
+      };
+    };
+    const first = createPreparedSimulation();
+    const second = createPreparedSimulation();
+    const attackerId = first.humanPlayers[0]!.id;
+    const defenderId = first.humanPlayers[1]!.id;
+
+    const commandStream = (frame: number): Record<string, PlayerCommand> => {
+      if (frame === 0) {
+        return {
+          [attackerId]: layEgg({
+            lookX: 1,
+            lookZ: 0
+          }),
+          [defenderId]: idle()
+        };
+      }
+
+      return {
+        [attackerId]: idle({
+          lookX: 1,
+          lookZ: 0
+        }),
+        [defenderId]: idle({
+          lookX: -1,
+          lookZ: 0
+        })
+      };
+    };
+
+    advanceSimulation(first.simulation, 32, commandStream);
+    advanceSimulation(second.simulation, 32, commandStream);
+
+    expect(
+      normalizeAuthoritativeMatchState(first.simulation.getAuthoritativeMatchState(attackerId))
+    ).toEqual(
+      normalizeAuthoritativeMatchState(second.simulation.getAuthoritativeMatchState(attackerId))
+    );
+    expect(
+      normalizeTerrainDeltaBatch(first.simulation.consumeTerrainDeltaBatch())
+    ).toEqual(normalizeTerrainDeltaBatch(second.simulation.consumeTerrainDeltaBatch()));
+    expect(
+      normalizeGameplayEventBatch(first.simulation.consumeGameplayEventBatch())
+    ).toEqual(normalizeGameplayEventBatch(second.simulation.consumeGameplayEventBatch()));
+  });
+
+  it("keeps projectile hits server-authored and resolves them after spawn, not at launch input time", () => {
+    const { simulation, humanPlayers } = createMultiplayerSimulation(2, {
+      eggFuseDuration: 0.2
+    });
+    const attackerId = humanPlayers[0]!.id;
+    const defenderId = humanPlayers[1]!.id;
+    const attacker = getInternalPlayer(simulation, attackerId);
+    const defender = getInternalPlayer(simulation, defenderId);
+    attacker.position = { x: 24.5, y: PLAYER_GROUND_Y, z: 24.5 };
+    attacker.velocity = { x: 0, y: 0, z: 0 };
+    attacker.facing = { x: 1, z: 0 };
+    attacker.grounded = true;
+    attacker.mass = 220;
+    defender.position = { x: 26.4, y: PLAYER_GROUND_Y, z: 24.5 };
+    defender.velocity = { x: 0, y: 0, z: 0 };
+    defender.grounded = true;
+
+    simulation.step({
+      [attackerId]: layEgg({
+        lookX: 1,
+        lookZ: 0
+      }),
+      [defenderId]: idle()
+    });
+
+    const spawnBatch = simulation.consumeGameplayEventBatch();
+    expect(spawnBatch?.events.map((event) => event.type)).toContain("projectile_spawned");
+    expect(
+      spawnBatch?.events.some(
+        (event) =>
+          event.type === "projectile_hit_resolved" ||
+          event.type === "explosion_resolved"
+      )
+    ).toBe(false);
+
+    advanceSimulation(simulation, 24, {
+      [attackerId]: idle({
+        lookX: 1,
+        lookZ: 0
+      }),
+      [defenderId]: idle()
+    });
+
+    const resolutionBatch = simulation.consumeGameplayEventBatch();
+    expect(
+      resolutionBatch?.events.some(
+        (event) => event.type === "projectile_hit_resolved"
+      )
+    ).toBe(true);
+    expect(
+      resolutionBatch?.events.some((event) => event.type === "explosion_resolved")
+    ).toBe(true);
+  });
+
+  it("emits authoritative explosion damage, elimination, terrain deltas, and ranking updates", () => {
+    const { simulation, humanPlayers } = createMultiplayerSimulation(2, {
+      eggFuseDuration: 0.2,
+      startingLives: 1,
+      maxLives: 1,
+      eggBlastHitRadius: 4.2
+    });
+    const attackerId = humanPlayers[0]!.id;
+    const defenderId = humanPlayers[1]!.id;
+    const attacker = getInternalPlayer(simulation, attackerId);
+    const defender = getInternalPlayer(simulation, defenderId);
+    attacker.position = { x: 28.5, y: PLAYER_GROUND_Y, z: 28.5 };
+    attacker.velocity = { x: 0, y: 0, z: 0 };
+    attacker.facing = { x: 1, z: 0 };
+    attacker.grounded = true;
+    attacker.mass = 220;
+    defender.position = { x: 30.2, y: PLAYER_GROUND_Y, z: 28.5 };
+    defender.velocity = { x: 0, y: 0, z: 0 };
+    defender.grounded = true;
+
+    simulation.step({
+      [attackerId]: layEgg({
+        lookX: 1,
+        lookZ: 0
+      }),
+      [defenderId]: idle()
+    });
+    simulation.consumeGameplayEventBatch();
+    const spawnedEgg = (
+      simulation as unknown as { eggs: Map<string, { fuseRemaining: number; position: { x: number; y: number; z: number }; velocity: { x: number; y: number; z: number } }> }
+    ).eggs.values().next().value;
+    if (!spawnedEgg) {
+      throw new Error("Expected spawned egg to exist");
+    }
+    spawnedEgg.fuseRemaining = 0;
+    spawnedEgg.position = {
+      x: 29.3,
+      y: PLAYER_GROUND_Y + 0.3,
+      z: 28.5
+    };
+    spawnedEgg.velocity = { x: 0, y: 0, z: 0 };
+
+    advanceSimulation(simulation, 1, {
+      [attackerId]: idle({
+        lookX: 1,
+        lookZ: 0
+      }),
+      [defenderId]: idle()
+    });
+
+    const gameplayBatch = simulation.consumeGameplayEventBatch();
+    const terrainBatch = simulation.consumeTerrainDeltaBatch();
+    const authoritativeState = simulation.getAuthoritativeMatchState(attackerId);
+    const damagedEvent = gameplayBatch?.events.find(
+      (event) => event.type === "player_damaged" && event.playerId === defenderId
+    );
+    const eliminatedEvent = gameplayBatch?.events.find(
+      (event) => event.type === "player_eliminated" && event.playerId === defenderId
+    );
+
+    expect(damagedEvent).toBeDefined();
+    expect(eliminatedEvent).toBeDefined();
+    expect(
+      gameplayBatch?.events.some((event) => event.type === "explosion_resolved")
+    ).toBe(true);
+    expect(terrainBatch).not.toBeNull();
+    expect((terrainBatch?.changes.length ?? 0) > 0).toBe(true);
+    expect(authoritativeState.players.find((player) => player.id === defenderId)?.alive).toBe(
+      false
+    );
+    expect(authoritativeState.ranking.at(-1)).toBe(defenderId);
   });
 
   it("reports egg hud status as unavailable when the player lacks matter", () => {
@@ -1915,6 +2186,79 @@ describe("OutOfBoundsSimulation", () => {
     expect(runtimePlayer.position.y).toBeGreaterThan(60);
   });
 
+  it("assigns a fresh phrase when space float starts without immediately repeating the previous trip", () => {
+    const simulation = createTestSimulation("explore");
+    const localPlayerId = simulation.getLocalPlayerId()!;
+    const localPlayer = getInternalPlayer(simulation, localPlayerId);
+
+    localPlayer.spaceChallengePreviousPhrase = "i love feet";
+    localPlayer.position = { x: 10.5, y: 59.9, z: 10.5 };
+    localPlayer.velocity = { x: 0, y: 12, z: 0 };
+    localPlayer.grounded = false;
+    localPlayer.jetpackActive = true;
+    localPlayer.spacePhase = "none";
+    localPlayer.spacePhaseRemaining = 0;
+    localPlayer.spaceTriggerArmed = true;
+
+    simulation.step({
+      [localPlayerId]: idle()
+    }, 0.16);
+
+    expect(localPlayer.spacePhase).toBe("float");
+    expect(localPlayer.spaceChallengePhrase).not.toBeNull();
+    expect(localPlayer.spaceChallengePhrase).not.toBe("i love feet");
+    expect(localPlayer.spaceChallengeTypedLength).toBe(0);
+    expect(simulation.getHudState().spaceChallenge).toEqual({
+      phrase: localPlayer.spaceChallengePhrase,
+      typedLength: 0,
+      phase: "typing"
+    });
+  });
+
+  it("advances only correct in-order challenge typing and flips into super boom dive on completion", () => {
+    const simulation = createTestSimulation("explore");
+    const localPlayerId = simulation.getLocalPlayerId()!;
+    const localPlayer = getInternalPlayer(simulation, localPlayerId);
+
+    localPlayer.position = { x: 10.5, y: 76, z: 10.5 };
+    localPlayer.velocity = { x: 0, y: 0.8, z: 0 };
+    localPlayer.grounded = false;
+    localPlayer.spacePhase = "float";
+    localPlayer.spacePhaseRemaining = 5;
+    localPlayer.spaceTriggerArmed = false;
+    localPlayer.spaceChallengePhrase = "go go";
+    localPlayer.spaceChallengeTypedLength = 0;
+
+    simulation.step({
+      [localPlayerId]: idle({ typedText: "x" })
+    });
+    expect(localPlayer.spaceChallengeTypedLength).toBe(0);
+
+    simulation.step({
+      [localPlayerId]: idle({ typedText: "g" })
+    });
+    expect(localPlayer.spaceChallengeTypedLength).toBe(1);
+
+    simulation.step({
+      [localPlayerId]: idle({ typedText: "o " })
+    });
+    expect(localPlayer.spaceChallengeTypedLength).toBe(3);
+    expect(localPlayer.spacePhase).toBe("float");
+
+    simulation.step({
+      [localPlayerId]: idle({ typedText: "xgo" })
+    });
+
+    expect(localPlayer.spaceChallengeTypedLength).toBe("go go".length);
+    expect(localPlayer.spacePhase).toBe("superBoomDive");
+    expect(localPlayer.velocity.y).toBeLessThanOrEqual(-44);
+    expect(simulation.getHudState().spaceChallenge).toEqual({
+      phrase: "go go",
+      typedLength: "go go".length,
+      phase: "dive"
+    });
+  });
+
   it("allows light drift and orbital egg drops during the float window while keeping push locked", () => {
     const simulation = createTestSimulation("playNpc");
     const simulationInternals = simulation as unknown as { generateNpcCommand: (player: unknown) => PlayerCommand };
@@ -2100,6 +2444,81 @@ describe("OutOfBoundsSimulation", () => {
     expect(reentryPlayer.spacePhase).toBe("none");
     expect(reentryPlayer.position.y).toBeLessThanOrEqual(48.5);
     expect(reentryPlayer.spaceTriggerArmed).toBe(true);
+  });
+
+  it("resolves super boom impacts with a visible impact hold before the rebound", () => {
+    const simulation = createTestSimulation("playNpc");
+    const simulationInternals = simulation as unknown as { generateNpcCommand: (player: unknown) => PlayerCommand };
+    simulationInternals.generateNpcCommand = () => idle();
+    const localPlayerId = simulation.getLocalPlayerId()!;
+    const npcId = getNpcId(simulation)!;
+    const localPlayer = getInternalPlayer(simulation, localPlayerId);
+    const npcPlayer = getInternalPlayer(simulation, npcId);
+    const otherNpcIds = simulation
+      .getSnapshot()
+      .players.filter((player) => player.kind === "npc" && player.id !== npcId)
+      .map((player) => player.id);
+
+    localPlayer.position = { x: 18.5, y: PLAYER_GROUND_Y + 1.5, z: 18.5 };
+    localPlayer.velocity = { x: 0, y: -48, z: 0 };
+    localPlayer.grounded = false;
+    localPlayer.spacePhase = "superBoomDive";
+    localPlayer.spacePhaseRemaining = 0;
+    localPlayer.spaceTriggerArmed = false;
+    localPlayer.spaceChallengePhrase = "go go";
+    localPlayer.spaceChallengeTypedLength = 5;
+
+    npcPlayer.position = { x: 20.4, y: PLAYER_GROUND_Y, z: 18.5 };
+    npcPlayer.velocity = { x: 0, y: 0, z: 0 };
+    npcPlayer.grounded = true;
+    otherNpcIds.forEach((otherNpcId, index) => {
+      const otherNpc = getInternalPlayer(simulation, otherNpcId);
+      otherNpc.position = { x: 32 + index * 3, y: PLAYER_GROUND_Y, z: 32 };
+      otherNpc.velocity = { x: 0, y: 0, z: 0 };
+      otherNpc.grounded = true;
+    });
+
+    const impactOrigin = { ...localPlayer.position };
+
+    simulation.step({
+      [localPlayerId]: idle()
+    }, 0.08);
+
+    const impactTerrainBatch = simulation.consumeTerrainDeltaBatch();
+    const impactGameplayBatch = simulation.consumeGameplayEventBatch();
+    const impactPlayer = getInternalPlayer(simulation, localPlayerId);
+    const damagedNpc = simulation.getPlayerState(npcId)!;
+
+    expect(impactTerrainBatch?.changes.some((change) => change.source === "super_boom_explosion")).toBe(true);
+    expect(impactGameplayBatch?.events.some((event) => event.type === "explosion_resolved")).toBe(true);
+    expect(simulation.getSnapshot().voxelBursts.some((burst) => burst.style === "superBoomExplosion")).toBe(true);
+    expect(damagedNpc.livesRemaining).toBe(damagedNpc.maxLives - 1);
+    expect(damagedNpc.velocity.y).toBeGreaterThan(simulation.config.eggBlastLift);
+    expect(damagedNpc.stunRemaining).toBeGreaterThan(simulation.config.eggBlastStunDuration);
+    expect(impactPlayer.spacePhase).toBe("superBoomImpact");
+    expect(impactPlayer.spacePhaseRemaining).toBeGreaterThan(0);
+    expect(impactPlayer.velocity).toEqual({ x: 0, y: 0, z: 0 });
+
+    simulation.step({
+      [localPlayerId]: idle()
+    }, 0.17);
+
+    const reboundPlayer = getInternalPlayer(simulation, localPlayerId);
+    const reboundTerrainBatch = simulation.consumeTerrainDeltaBatch();
+    const reboundGameplayBatch = simulation.consumeGameplayEventBatch();
+    const reboundDistance = Math.hypot(
+      reboundPlayer.position.x - impactOrigin.x,
+      reboundPlayer.position.z - impactOrigin.z
+    );
+
+    expect(reboundTerrainBatch).toBeNull();
+    expect(reboundGameplayBatch).toBeNull();
+    expect(simulation.getPlayerState(npcId)!.livesRemaining).toBe(damagedNpc.maxLives - 1);
+    expect(reboundPlayer.spacePhase).toBe("none");
+    expect(reboundPlayer.spaceTriggerArmed).toBe(false);
+    expect(reboundPlayer.position.y).toBeGreaterThanOrEqual(PLAYER_GROUND_Y);
+    expect(reboundDistance).toBeGreaterThanOrEqual(4);
+    expect(reboundDistance).toBeLessThanOrEqual(10.5);
   });
 
   it("lets a fresh Space press recover from reentry into jetpack before ground contact", () => {

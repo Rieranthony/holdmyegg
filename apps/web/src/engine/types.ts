@@ -1,6 +1,8 @@
 import type {
+  AuthoritativeMatchState,
   FallingClusterViewState,
   GameMode,
+  GameplayEventBatch,
   HudState,
   RuntimeInteractionFocusState,
   RuntimeEggScatterDebrisState,
@@ -8,7 +10,8 @@ import type {
   RuntimePlayerState,
   RuntimeSkyDropState,
   RuntimeVoxelBurstState,
-  SimulationPerformanceDiagnostics
+  SimulationPerformanceDiagnostics,
+  TerrainDeltaBatch
 } from "@out-of-bounds/sim";
 import type { BlockKind, MapDocumentV1, MapPropKind } from "@out-of-bounds/map";
 import type { ChickenPaletteName } from "../game/colors";
@@ -38,6 +41,10 @@ export interface RuntimePauseState {
 
 export interface RuntimeOverlayState {
   matterPulseActive: boolean;
+  spaceMistakePulseActive: boolean;
+  spaceSuccessPulseActive: boolean;
+  spaceLocalPhrase: string | null;
+  spaceLocalTypedLength: number;
 }
 
 export const blockKindOptions: BlockKind[] = ["ground", "boundary", "hazard"];
@@ -77,6 +84,12 @@ export interface StaticWorldPayload {
   chunkPatches: TerrainChunkPatchPayload[];
 }
 
+export interface RuntimeAuthoritativeFrame {
+  state: AuthoritativeMatchState;
+  terrainDeltaBatch: TerrainDeltaBatch | null;
+  gameplayEventBatch: GameplayEventBatch | null;
+}
+
 export interface RuntimeRenderFrame {
   tick: number;
   time: number;
@@ -84,6 +97,7 @@ export interface RuntimeRenderFrame {
   localPlayerId: string | null;
   hudState: HudState | null;
   focusState: RuntimeInteractionFocusState | null;
+  authoritative?: RuntimeAuthoritativeFrame;
   players: RuntimePlayerState[];
   eggs: RuntimeEggState[];
   eggScatterDebris: RuntimeEggScatterDebrisState[];

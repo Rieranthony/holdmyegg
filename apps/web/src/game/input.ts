@@ -11,6 +11,7 @@ export interface KeyboardInputState {
   egg: boolean;
   placePressed: boolean;
   pushPressed: boolean;
+  typedText: string;
 }
 
 export const initialKeyboardInputState: KeyboardInputState = {
@@ -23,7 +24,8 @@ export const initialKeyboardInputState: KeyboardInputState = {
   jumpReleased: false,
   egg: false,
   placePressed: false,
-  pushPressed: false
+  pushPressed: false,
+  typedText: ""
 };
 
 const normalize = (x: number, z: number): Vector2 => {
@@ -60,6 +62,7 @@ export const buildPlayerCommand = (
     lookZ: forward.z,
     eggCharge: 0,
     eggPitch: 0,
+    typedText: input.typedText,
     jump: input.jump,
     jumpPressed: input.jumpPressed,
     jumpReleased: input.jumpReleased,

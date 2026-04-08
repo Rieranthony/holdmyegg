@@ -4,7 +4,9 @@ export interface RuntimeInputCommand extends PlayerCommand {
   seq: number;
 }
 
-const PACKED_INPUT_BYTES = 4 + 4 * 6 + 2 + 2 * 6;
+export const MAX_TYPED_TEXT_BYTES = 24;
+
+const PACKED_INPUT_BYTES = 4 + 4 * 6 + 2 + 2 * 6 + 1 + MAX_TYPED_TEXT_BYTES;
 const FLAG_JUMP = 1 << 0;
 const FLAG_JUMP_PRESSED = 1 << 1;
 const FLAG_JUMP_RELEASED = 1 << 2;
@@ -27,9 +29,16 @@ const unpackVec3i = (view: DataView, offset: number) => ({
   z: view.getInt16(offset + 4, true)
 });
 
+const normalizeTypedText = (value: string) =>
+  value
+    .toLowerCase()
+    .replace(/[^a-z ]+/g, "")
+    .slice(0, MAX_TYPED_TEXT_BYTES);
+
 export const packRuntimeInputCommand = (command: RuntimeInputCommand) => {
   const buffer = new ArrayBuffer(PACKED_INPUT_BYTES);
   const view = new DataView(buffer);
+  const typedText = normalizeTypedText(command.typedText);
   view.setUint32(0, command.seq, true);
   view.setFloat32(4, command.moveX, true);
   view.setFloat32(8, command.moveZ, true);
@@ -51,12 +60,21 @@ export const packRuntimeInputCommand = (command: RuntimeInputCommand) => {
   view.setUint16(28, flags, true);
   packVec3i(view, 30, command.targetVoxel);
   packVec3i(view, 36, command.targetNormal);
+  view.setUint8(42, typedText.length);
+  for (let index = 0; index < typedText.length; index += 1) {
+    view.setUint8(43 + index, typedText.charCodeAt(index));
+  }
   return buffer;
 };
 
 export const unpackRuntimeInputCommand = (buffer: ArrayBuffer): RuntimeInputCommand => {
   const view = new DataView(buffer);
   const flags = view.getUint16(28, true);
+  const typedTextLength = Math.min(view.getUint8(42), MAX_TYPED_TEXT_BYTES);
+  let typedText = "";
+  for (let index = 0; index < typedTextLength; index += 1) {
+    typedText += String.fromCharCode(view.getUint8(43 + index));
+  }
   return {
     seq: view.getUint32(0, true),
     moveX: view.getFloat32(4, true),
@@ -65,6 +83,7 @@ export const unpackRuntimeInputCommand = (buffer: ArrayBuffer): RuntimeInputComm
     lookZ: view.getFloat32(16, true),
     eggCharge: view.getFloat32(20, true),
     eggPitch: view.getFloat32(24, true),
+    typedText,
     jump: (flags & FLAG_JUMP) !== 0,
     jumpPressed: (flags & FLAG_JUMP_PRESSED) !== 0,
     jumpReleased: (flags & FLAG_JUMP_RELEASED) !== 0,
@@ -84,6 +103,7 @@ export const clearTransientRuntimeInputFlags = (command: RuntimeInputCommand): R
   destroy: false,
   place: false,
   layEgg: false,
+  typedText: "",
   eggCharge: 0,
   eggPitch: 0
 });

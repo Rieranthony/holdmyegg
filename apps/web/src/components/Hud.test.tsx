@@ -21,11 +21,16 @@ const createHudState = (eggStatus: HudState["eggStatus"]): HudState => ({
     stunRemaining: 0
   },
   eggStatus,
+  spaceChallenge: null,
   ranking: [{ id: "human-1", name: "You", alive: true }]
 });
 
 const inactiveOverlayState: RuntimeOverlayState = {
-  matterPulseActive: false
+  matterPulseActive: false,
+  spaceMistakePulseActive: false,
+  spaceSuccessPulseActive: false,
+  spaceLocalPhrase: null,
+  spaceLocalTypedLength: 0
 };
 
 describe("Hud", () => {
@@ -123,10 +128,79 @@ describe("Hud", () => {
           canChargedThrow: false
         })}
         mode="explore"
-        overlayState={{ matterPulseActive: true }}
+        overlayState={{ ...inactiveOverlayState, matterPulseActive: true }}
       />
     );
 
     expect(screen.getByTestId("hud-matter-meter")).toHaveClass("hud-meter--pulse");
+  });
+
+  it("renders the top typing strip with optimistic local progress", () => {
+    const { container } = render(
+      <Hud
+        hudState={{
+          ...createHudState({
+            reason: "ready",
+            hasMatter: true,
+            ready: true,
+            activeCount: 0,
+            maxActiveCount: 2,
+            cost: 42,
+            cooldownRemaining: 0,
+            cooldownDuration: 1.6,
+            canQuickEgg: true,
+            canChargedThrow: true
+          }),
+          spaceChallenge: {
+            phrase: "go go",
+            typedLength: 2,
+            phase: "typing"
+          }
+        }}
+        mode="explore"
+        overlayState={{
+          ...inactiveOverlayState,
+          spaceLocalPhrase: "go go",
+          spaceLocalTypedLength: 3
+        }}
+      />
+    );
+
+    expect(screen.getByTestId("space-typing-overlay")).toBeInTheDocument();
+    expect(screen.getByTestId("space-typing-phrase")).toHaveTextContent("go go");
+    expect(container.querySelectorAll('[data-state="done"]')).toHaveLength(3);
+    expect(container.querySelectorAll('[data-state="current"]')).toHaveLength(1);
+    expect(screen.getByText("3 / 5")).toBeInTheDocument();
+  });
+
+  it("swaps the phrase strip for the super boom stamp during the dive", () => {
+    render(
+      <Hud
+        hudState={{
+          ...createHudState({
+            reason: "ready",
+            hasMatter: true,
+            ready: true,
+            activeCount: 0,
+            maxActiveCount: 2,
+            cost: 42,
+            cooldownRemaining: 0,
+            cooldownDuration: 1.6,
+            canQuickEgg: true,
+            canChargedThrow: true
+          }),
+          spaceChallenge: {
+            phrase: "kiss the moon",
+            typedLength: 13,
+            phase: "dive"
+          }
+        }}
+        mode="explore"
+        overlayState={inactiveOverlayState}
+      />
+    );
+
+    expect(screen.getByTestId("space-typing-stamp")).toHaveTextContent("SUPER BOOM");
+    expect(screen.queryByTestId("space-typing-phrase")).not.toBeInTheDocument();
   });
 });

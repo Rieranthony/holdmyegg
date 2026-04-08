@@ -57,6 +57,7 @@ const createEmptyRuntimeInputCommand = (seq = 0): RuntimeInputCommand => ({
   lookZ: 0,
   eggCharge: 0,
   eggPitch: 0,
+  typedText: "",
   jump: false,
   jumpPressed: false,
   jumpReleased: false,
@@ -175,6 +176,11 @@ const buildRuntimeFrame = (): RuntimeRenderFrame => {
       latestRuntimeInput.targetNormal,
       matchState.localPlayerId
     ),
+    authoritative: {
+      state: runtime.getAuthoritativeMatchState(matchState.localPlayerId),
+      terrainDeltaBatch: runtime.consumeTerrainDeltaBatch(),
+      gameplayEventBatch: runtime.consumeGameplayEventBatch()
+    },
     players: runtime
       .getPlayerIds()
       .map((playerId) => runtime.getPlayerRuntimeState(playerId))

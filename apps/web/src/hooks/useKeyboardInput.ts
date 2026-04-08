@@ -13,6 +13,7 @@ export interface KeyboardInputState {
   egg: boolean;
   placePressed: boolean;
   pushPressed: boolean;
+  typedText: string;
 }
 
 const initialState: KeyboardInputState = {
@@ -25,7 +26,8 @@ const initialState: KeyboardInputState = {
   jumpReleased: false,
   egg: false,
   placePressed: false,
-  pushPressed: false
+  pushPressed: false,
+  typedText: ""
 };
 
 const DOUBLE_TAP_WINDOW_MS = 220;
@@ -181,6 +183,7 @@ export const buildPlayerCommand = (
     lookZ: forward.z,
     eggCharge: 0,
     eggPitch: 0,
+    typedText: input.typedText,
     jump: input.jump,
     jumpPressed: input.jumpPressed,
     jumpReleased: input.jumpReleased,

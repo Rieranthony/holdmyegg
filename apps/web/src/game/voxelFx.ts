@@ -53,7 +53,8 @@ export interface VoxelBurstShockwaveState {
 
 export const voxelBurstParticleCountByStyle = {
   eggExplosion: 132,
-  harvest: 7
+  harvest: 7,
+  superBoomExplosion: 228
 } as const;
 
 export const getVoxelBurstParticleCount = (burst: RuntimeVoxelBurstState) =>
@@ -128,6 +129,32 @@ export const getVoxelBurstParticleState = (
     };
   }
 
+  if (burst.style === "superBoomExplosion") {
+    const burstBand = particleIndex % 6;
+    const bandDistanceStart = [0.18, 0.42, 0.72, 1.02, 1.34, 1.7][burstBand]!;
+    const bandDistanceEnd = [2.4, 3.1, 4.05, 4.95, 5.9, 6.75][burstBand]!;
+    const bandLift = [1.72, 2.14, 2.56, 2.94, 2.08, 1.46][burstBand]!;
+    const bandScaleStart = [0.62, 0.5, 0.4, 0.32, 0.24, 0.18][burstBand]!;
+    const distance = lerp(bandDistanceStart, bandDistanceEnd, progress) * (0.94 + radialJitter * 0.72);
+    const lift =
+      Math.sin(progress * Math.PI) * bandLift * liftJitter -
+      progress * progress * gravityJitter * 1.18 +
+      Math.sin(progress * Math.PI * (2.9 + burstBand * 0.18)) * 0.2;
+    const corePulse = 1 + Math.sin(progress * Math.PI) * 0.36;
+    return {
+      position: {
+        x: burst.position.x + Math.cos(yaw) * distance,
+        y: burst.position.y + lift,
+        z: burst.position.z + Math.sin(yaw) * distance
+      },
+      rotationX: spinX * 1.46,
+      rotationY: spinY * 1.6,
+      rotationZ: spinZ * 1.42,
+      scale: lerp(bandScaleStart, 0.11, progress) * corePulse,
+      opacity: clamp(1.2 - Math.pow(progress, 1.48), 0, 1)
+    };
+  }
+
   const distance = lerp(0.04, 0.42, progress) * radialJitter;
   const lift = Math.sin(progress * Math.PI) * 0.38 * liftJitter - progress * progress * gravityJitter * 0.55;
   return {
@@ -147,11 +174,23 @@ export const getVoxelBurstParticleState = (
 export const getVoxelBurstShockwaveState = (
   burst: RuntimeVoxelBurstState
 ): VoxelBurstShockwaveState | null => {
-  if (burst.style !== "eggExplosion") {
+  if (burst.style !== "eggExplosion" && burst.style !== "superBoomExplosion") {
     return null;
   }
 
   const progress = getProgress(burst.elapsed, burst.duration);
+  if (burst.style === "superBoomExplosion") {
+    return {
+      position: {
+        x: burst.position.x,
+        y: burst.position.y + 0.14 + progress * 0.08,
+        z: burst.position.z
+      },
+      scale: lerp(1.18, 8.2, progress),
+      opacity: clamp(0.92 - Math.pow(progress, 0.94), 0, 1)
+    };
+  }
+
   return {
     position: {
       x: burst.position.x,

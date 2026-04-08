@@ -42,7 +42,7 @@ import { cloudPresets, getVoxelCloudPosition, type VoxelCloudPreset } from "../g
 import { getPlayerBlobShadowState } from "../game/cheapShadows";
 import { createChickenAvatarRig, type ChickenAvatarRig } from "../game/chickenModel";
 import { getChickenPalette, type ChickenPaletteName } from "../game/colors";
-import { getEggVisualState } from "../game/eggs";
+import { eggVisualDefaults, getEggVisualState } from "../game/eggs";
 import { isEggLaunchKeyCode } from "../game/eggLaunchControls";
 import { eggBaseGeometry, eggCapGeometry, eggMiddleGeometry } from "../game/eggVisualRecipe";
 import { getFallingClusterVisualState } from "../game/fallingClusters";
@@ -98,7 +98,8 @@ import type {
   WorkerRequestMessage,
   WorkerResponseMessage
 } from "./protocol";
-import { packRuntimeInputCommand } from "./runtimeInput";
+import { AuthoritativeReplica } from "./authoritativeReplica";
+import { MAX_TYPED_TEXT_BYTES, packRuntimeInputCommand } from "./runtimeInput";
 import type {
   ActiveShellMode,
   EditorPanelState,
@@ -140,6 +141,8 @@ type GameShellIntent =
 interface PlayerVisual extends ChickenAvatarRig {
   paletteName: ChickenPaletteName;
   group: THREE.Group;
+  bomb: THREE.Group;
+  bombMaterial: THREE.MeshStandardMaterial;
   ring: THREE.Mesh;
   ringMaterial: THREE.MeshBasicMaterial;
   shadow: THREE.Mesh;
@@ -268,6 +271,12 @@ const DOUBLE_TAP_WINDOW_MS = 220;
 const MATTER_PULSE_DURATION = 0.72;
 const MATTER_BUBBLE_DURATION = 1.1;
 const MATTER_FEEDBACK_COOLDOWN = 0.5;
+const SPACE_TYPING_PRIME_DURATION = 0.22;
+const SPACE_TYPING_MISFIRE_DURATION = 0.16;
+const SPACE_TYPING_MISTAKE_PULSE_DURATION = 0.18;
+const SPACE_TYPING_SUCCESS_PULSE_DURATION = 0.48;
+const SUPER_BOOM_BOMB_SCALE = 2;
+const SUPER_BOOM_IMPACT_JOLT_DURATION = 0.22;
 const modifierSensitiveRuntimeKeyCodes = new Set([
   "KeyW",
   "KeyA",
@@ -549,6 +558,18 @@ const isFormElement = (target: EventTarget | null) =>
   target instanceof HTMLTextAreaElement ||
   target instanceof HTMLSelectElement;
 
+const getNormalizedTypedCharacter = (event: KeyboardEvent) => {
+  if (event.metaKey || event.ctrlKey || event.altKey || event.repeat) {
+    return null;
+  }
+
+  if (event.key === " ") {
+    return " ";
+  }
+
+  return /^[a-z]$/i.test(event.key) ? event.key.toLowerCase() : null;
+};
+
 const addPlayerPart = (
   parent: THREE.Object3D,
   geometry: THREE.BufferGeometry,
@@ -576,6 +597,7 @@ const createPlayerVisual = (playerId: string, matchColorSeed: number, preferredP
   const palette = getChickenPalette(playerId, matchColorSeed, preferredPaletteName);
   const materialBundle = createChickenMaterialBundle(palette);
   const motionSeed = getChickenMotionSeed(playerId);
+  const bomb = createEggVisual();
   const group = new THREE.Group();
   const rig = createChickenAvatarRig(materialBundle);
 
@@ -587,12 +609,17 @@ const createPlayerVisual = (playerId: string, matchColorSeed: number, preferredP
   ring.rotation.x = -Math.PI / 2;
   ring.position.y = 0.03;
   group.add(ring);
+  bomb.group.visible = false;
+  bomb.group.position.y = 0.74;
+  group.add(bomb.group);
   rig.avatar.position.y = AVATAR_BOB_BASE_Y;
   group.add(rig.root);
 
   return {
     paletteName: palette.name,
     group,
+    bomb: bomb.group,
+    bombMaterial: bomb.material,
     ...rig,
     ring,
     ringMaterial: materialBundle.ring,
@@ -610,6 +637,7 @@ const createPlayerVisual = (playerId: string, matchColorSeed: number, preferredP
 
 const disposePlayerVisual = (visual: PlayerVisual) => {
   disposeChickenMaterialBundle(visual.materialBundle);
+  visual.bombMaterial.dispose();
 };
 
 const createEggVisual = () => {
@@ -746,6 +774,7 @@ export class GameClient {
   private mode: ActiveShellMode;
   private worldDocument = normalizeArenaBudgetMapDocument(createDefaultArenaMap());
   private latestFrame: RuntimeRenderFrame | null = null;
+  private readonly authoritativeReplica = new AuthoritativeReplica();
   private matchColorSeed: number;
   private cameraForward = { x: 1, z: 0 };
   private inputSequence = 0;
@@ -783,6 +812,15 @@ export class GameClient {
   private matterPulseUntil = 0;
   private matterBubbleUntil = 0;
   private matterFeedbackLockedUntil = 0;
+  private spaceTypePrimeUntil = 0;
+  private spaceTypeMisfireUntil = 0;
+  private spaceMistakePulseUntil = 0;
+  private spaceSuccessPulseUntil = 0;
+  private superBoomImpactJoltUntil = 0;
+  private previousLocalSpacePhase: RuntimePlayerState["spacePhase"] | null = null;
+  private localSpaceChallengePhrase: string | null = null;
+  private localSpaceChallengeTypedLength = 0;
+  private pendingTypedText = "";
   private lastRuntimeOverlayState: RuntimeOverlayState | null = null;
   private resourceBubbleElement: HTMLDivElement | null = null;
 
@@ -887,13 +925,23 @@ export class GameClient {
 
   private emitRuntimeOverlayState(force = false, elapsedTime = this.clock.elapsedTime) {
     const matterPulseActive = elapsedTime < this.matterPulseUntil;
+    const spaceMistakePulseActive = elapsedTime < this.spaceMistakePulseUntil;
+    const spaceSuccessPulseActive = elapsedTime < this.spaceSuccessPulseUntil;
     const nextState: RuntimeOverlayState = {
-      matterPulseActive
+      matterPulseActive,
+      spaceMistakePulseActive,
+      spaceSuccessPulseActive,
+      spaceLocalPhrase: this.localSpaceChallengePhrase,
+      spaceLocalTypedLength: this.localSpaceChallengeTypedLength
     };
     const unchanged =
       !force &&
       this.lastRuntimeOverlayState !== null &&
-      this.lastRuntimeOverlayState.matterPulseActive === nextState.matterPulseActive;
+      this.lastRuntimeOverlayState.matterPulseActive === nextState.matterPulseActive &&
+      this.lastRuntimeOverlayState.spaceMistakePulseActive === nextState.spaceMistakePulseActive &&
+      this.lastRuntimeOverlayState.spaceSuccessPulseActive === nextState.spaceSuccessPulseActive &&
+      this.lastRuntimeOverlayState.spaceLocalPhrase === nextState.spaceLocalPhrase &&
+      this.lastRuntimeOverlayState.spaceLocalTypedLength === nextState.spaceLocalTypedLength;
 
     if (unchanged) {
       return;
@@ -901,6 +949,55 @@ export class GameClient {
 
     this.lastRuntimeOverlayState = nextState;
     this.callbacks.onRuntimeOverlayChange?.(nextState);
+  }
+
+  private getLocalSpaceChallengeState() {
+    return this.latestFrame?.hudState?.spaceChallenge ?? null;
+  }
+
+  private syncLocalSpaceChallengeState() {
+    const challenge = this.getLocalSpaceChallengeState();
+    if (!challenge) {
+      this.localSpaceChallengePhrase = null;
+      this.localSpaceChallengeTypedLength = 0;
+      return;
+    }
+
+    if (this.localSpaceChallengePhrase !== challenge.phrase) {
+      this.localSpaceChallengePhrase = challenge.phrase;
+      this.localSpaceChallengeTypedLength = challenge.typedLength;
+      return;
+    }
+
+    this.localSpaceChallengeTypedLength = Math.max(this.localSpaceChallengeTypedLength, challenge.typedLength);
+  }
+
+  private triggerSpaceMistakeFeedback(elapsedTime = this.clock.elapsedTime) {
+    this.spaceTypeMisfireUntil = elapsedTime + SPACE_TYPING_MISFIRE_DURATION;
+    this.spaceMistakePulseUntil = elapsedTime + SPACE_TYPING_MISTAKE_PULSE_DURATION;
+    this.emitRuntimeOverlayState(true, elapsedTime);
+  }
+
+  private triggerSpacePrimeFeedback(elapsedTime = this.clock.elapsedTime) {
+    this.spaceTypePrimeUntil = elapsedTime + SPACE_TYPING_PRIME_DURATION;
+  }
+
+  private triggerSpaceSuccessFeedback(elapsedTime = this.clock.elapsedTime) {
+    this.triggerSpacePrimeFeedback(elapsedTime);
+    this.spaceSuccessPulseUntil = elapsedTime + SPACE_TYPING_SUCCESS_PULSE_DURATION;
+    this.emitRuntimeOverlayState(true, elapsedTime);
+  }
+
+  private triggerSuperBoomImpactJolt(elapsedTime = this.clock.elapsedTime) {
+    this.superBoomImpactJoltUntil = elapsedTime + SUPER_BOOM_IMPACT_JOLT_DURATION;
+  }
+
+  private queueTypedCharacter(character: string) {
+    if (this.pendingTypedText.length >= MAX_TYPED_TEXT_BYTES) {
+      return;
+    }
+
+    this.pendingTypedText = `${this.pendingTypedText}${character}`.slice(0, MAX_TYPED_TEXT_BYTES);
   }
 
   private resetHoldAction(action: HoldActionState) {
@@ -963,6 +1060,15 @@ export class GameClient {
     this.matterPulseUntil = 0;
     this.matterBubbleUntil = 0;
     this.matterFeedbackLockedUntil = 0;
+    this.spaceTypePrimeUntil = 0;
+    this.spaceTypeMisfireUntil = 0;
+    this.spaceMistakePulseUntil = 0;
+    this.spaceSuccessPulseUntil = 0;
+    this.superBoomImpactJoltUntil = 0;
+    this.previousLocalSpacePhase = null;
+    this.localSpaceChallengePhrase = null;
+    this.localSpaceChallengeTypedLength = 0;
+    this.pendingTypedText = "";
     this.hideResourceBubble();
     this.emitRuntimeOverlayState(true);
   }
@@ -1054,6 +1160,8 @@ export class GameClient {
     }
 
     this.mode = nextState.mode;
+    this.latestFrame = null;
+    this.authoritativeReplica.reset();
     this.lookYaw = null;
     this.hasInitializedRuntimeCamera = false;
     this.resetPointerCaptureState();
@@ -1168,6 +1276,7 @@ export class GameClient {
     this.canvas.removeEventListener("contextmenu", this.handleContextMenu);
     this.clearPointerCaptureTimeout();
     this.worker.terminate();
+    this.authoritativeReplica.reset();
 
     for (const mesh of this.chunkMeshes.values()) {
       mesh.geometry.dispose();
@@ -1399,6 +1508,9 @@ export class GameClient {
           return;
         case "frame":
           this.latestFrame = message.frame;
+          if (message.frame.authoritative) {
+            this.authoritativeReplica.applyFrame(message.frame.authoritative);
+          }
           this.updateFocusedTargetVisuals();
           this.callbacks.onHudStateChange?.(message.frame.hudState);
           return;
@@ -2046,6 +2158,37 @@ export class GameClient {
       event.preventDefault();
     }
 
+    const typingChallenge =
+      isRuntimeMode(this.mode) && this.pointerLocked && !this.runtimePaused
+        ? this.getLocalSpaceChallengeState()
+        : null;
+    const typedCharacter = typingChallenge?.phase === "typing" ? getNormalizedTypedCharacter(event) : null;
+    if (typingChallenge?.phase === "typing" && typedCharacter !== null) {
+      event.preventDefault();
+      this.syncLocalSpaceChallengeState();
+      if (this.localSpaceChallengeTypedLength >= typingChallenge.phrase.length) {
+        return;
+      }
+
+      if (typedCharacter === typingChallenge.phrase[this.localSpaceChallengeTypedLength]) {
+        this.localSpaceChallengePhrase = typingChallenge.phrase;
+        this.localSpaceChallengeTypedLength = Math.min(
+          typingChallenge.phrase.length,
+          this.localSpaceChallengeTypedLength + 1
+        );
+        this.triggerSpacePrimeFeedback();
+        this.queueTypedCharacter(typedCharacter);
+        if (this.localSpaceChallengeTypedLength >= typingChallenge.phrase.length) {
+          this.triggerSpaceSuccessFeedback();
+        } else {
+          this.emitRuntimeOverlayState(true);
+        }
+      } else {
+        this.triggerSpaceMistakeFeedback();
+      }
+      return;
+    }
+
     if (isEggLaunchKeyCode(event.code)) {
       event.preventDefault();
       if (!isRuntimeMode(this.mode)) {
@@ -2117,6 +2260,15 @@ export class GameClient {
   };
 
   private readonly handleKeyUp = (event: KeyboardEvent) => {
+    const typingChallenge =
+      isRuntimeMode(this.mode) && this.pointerLocked && !this.runtimePaused
+        ? this.getLocalSpaceChallengeState()
+        : null;
+    if (typingChallenge?.phase === "typing" && event.code === "Space") {
+      event.preventDefault();
+      return;
+    }
+
     if (isEggLaunchKeyCode(event.code)) {
       event.preventDefault();
       if (!isRuntimeMode(this.mode)) {
@@ -2419,6 +2571,18 @@ export class GameClient {
     this.currentLookTarget.x = THREE.MathUtils.lerp(this.currentLookTarget.x, this.desiredLookTarget.x, lookTargetDamping);
     this.currentLookTarget.y = THREE.MathUtils.lerp(this.currentLookTarget.y, this.desiredLookTarget.y, verticalLookTargetDamping);
     this.currentLookTarget.z = THREE.MathUtils.lerp(this.currentLookTarget.z, this.desiredLookTarget.z, lookTargetDamping);
+    const impactJoltAlpha = THREE.MathUtils.clamp(
+      (this.superBoomImpactJoltUntil - this.clock.elapsedTime) / SUPER_BOOM_IMPACT_JOLT_DURATION,
+      0,
+      1
+    );
+    if (impactJoltAlpha > 0) {
+      const slam = Math.sin(impactJoltAlpha * Math.PI) * 0.28;
+      this.camera.position.x -= aimState.planarForward.x * slam + Math.sin(this.clock.elapsedTime * 84 + 0.3) * 0.05 * impactJoltAlpha;
+      this.camera.position.y -= slam * 0.12 - Math.sin(this.clock.elapsedTime * 90 + 0.9) * 0.04 * impactJoltAlpha;
+      this.camera.position.z -= aimState.planarForward.z * slam + Math.cos(this.clock.elapsedTime * 78 + 0.5) * 0.05 * impactJoltAlpha;
+      this.currentLookTarget.y -= 0.12 * impactJoltAlpha;
+    }
     this.camera.lookAt(this.currentLookTarget);
     this.cameraForward = getPlanarForwardBetweenPoints(this.camera.position, this.currentLookTarget);
   }
@@ -2572,6 +2736,7 @@ export class GameClient {
       return;
     }
 
+    const spaceChallenge = this.getLocalSpaceChallengeState();
     const nextCommand = buildPlayerCommand(this.keyboardState, this.cameraForward);
     nextCommand.destroy = this.destroyQueued && this.focusedTarget !== null;
     nextCommand.place = nextCommand.place && this.focusedTarget !== null;
@@ -2584,10 +2749,18 @@ export class GameClient {
         : 0;
     nextCommand.targetVoxel = this.focusedTarget?.voxel ?? null;
     nextCommand.targetNormal = this.focusedTarget?.normal ?? null;
+    nextCommand.typedText = this.pendingTypedText;
+
+    if (spaceChallenge?.phase === "typing") {
+      nextCommand.jump = false;
+      nextCommand.jumpPressed = false;
+      nextCommand.jumpReleased = false;
+    }
 
     this.destroyQueued = false;
     this.quickEggQueued = false;
     this.quickEggPitch = 0;
+    this.pendingTypedText = "";
     this.eggChargeState.pendingThrow = false;
     this.eggChargeState.pendingThrowCharge = 0;
     this.eggChargeState.pendingThrowPitch = 0;
@@ -2614,6 +2787,8 @@ export class GameClient {
   private applyRuntimeFrame(delta: number, elapsedTime: number) {
     const frame = this.latestFrame;
     if (!frame) {
+      this.syncLocalSpaceChallengeState();
+      this.previousLocalSpacePhase = null;
       this.updateSpeedTraces(null, delta, elapsedTime);
       this.updateSkyEnvironment(null, delta, elapsedTime);
       this.updateEggLaunchPreview(null, elapsedTime);
@@ -2622,10 +2797,15 @@ export class GameClient {
       return;
     }
 
-    this.syncPlayers(frame.players, frame.localPlayerId, delta, elapsedTime);
     const localPlayer = frame.localPlayerId
       ? frame.players.find((player) => player.id === frame.localPlayerId) ?? null
       : null;
+    this.syncLocalSpaceChallengeState();
+    if (localPlayer?.spacePhase === "superBoomImpact" && this.previousLocalSpacePhase !== "superBoomImpact") {
+      this.triggerSuperBoomImpactJolt(elapsedTime);
+    }
+    this.previousLocalSpacePhase = localPlayer?.spacePhase ?? null;
+    this.syncPlayers(frame.players, frame.localPlayerId, delta, elapsedTime);
     this.updateSpeedTraces(localPlayer, delta, elapsedTime);
     this.updateSkyEnvironment(localPlayer, delta, elapsedTime);
     this.updateEggLaunchPreview(localPlayer, elapsedTime);
@@ -2662,10 +2842,16 @@ export class GameClient {
       seen.add(player.id);
       const playerVisible = player.fallingOut || (player.alive && !player.respawning);
       visual.group.visible = playerVisible;
+      const superBoomDive = player.spacePhase === "superBoomDive";
+      const superBoomImpact = player.spacePhase === "superBoomImpact";
+      const superBoomBombPhase = superBoomDive || superBoomImpact;
+      visual.root.visible = playerVisible && !superBoomBombPhase;
+      visual.bomb.visible = playerVisible && superBoomBombPhase;
       if (!playerVisible) {
         visual.previousGrounded = player.grounded;
         visual.previousVelocityY = player.velocity.y;
         visual.landingRollRemaining = 0;
+        visual.bomb.visible = false;
         continue;
       }
 
@@ -2718,6 +2904,32 @@ export class GameClient {
       });
       visual.shell.rotation.x = poseState.bodyPitch;
       visual.shell.rotation.z = poseState.bodyRoll;
+      if (superBoomBombPhase) {
+        const bombPulse = superBoomImpact
+          ? 1.16 + Math.sin(elapsedTime * 34 + visual.motionSeed * 7) * 0.08
+          : 1 + Math.sin(elapsedTime * 18 + visual.motionSeed * 6) * 0.06;
+        if (superBoomImpact) {
+          visual.bomb.scale.set(
+            SUPER_BOOM_BOMB_SCALE * bombPulse,
+            SUPER_BOOM_BOMB_SCALE * 0.88,
+            SUPER_BOOM_BOMB_SCALE * (1.02 + bombPulse * 0.02)
+          );
+          visual.bomb.rotation.set(0.08, elapsedTime * 4 + visual.motionSeed, Math.sin(elapsedTime * 22) * 0.06);
+          visual.bomb.position.y = 0.68;
+        } else {
+          visual.bomb.scale.setScalar(SUPER_BOOM_BOMB_SCALE * bombPulse);
+          visual.bomb.rotation.set(0, elapsedTime * 11 + visual.motionSeed * 2, 0);
+          visual.bomb.position.y = 0.82;
+        }
+        visual.bombMaterial.emissiveIntensity =
+          1.12 + Math.sin(elapsedTime * (superBoomImpact ? 28 : 20) + visual.motionSeed * 4) * 0.24;
+        visual.bombMaterial.color.set("#fff0d9");
+      } else {
+        visual.bomb.scale.setScalar(1);
+        visual.bomb.rotation.set(0, 0, 0);
+        visual.bomb.position.y = 0.74;
+        visual.bombMaterial.emissiveIntensity = eggVisualDefaults.emissiveMin;
+      }
 
       const shadowSurfaceY = this.resolvePlayerShadowSurfaceY(player.position);
       const shadowState = player.alive
@@ -2791,6 +3003,41 @@ export class GameClient {
       const traceHeightScale = getChickenWingTraceHeightScale(wingState.traceIntensity);
       const lowDetailTraceOffsetX = getChickenLowDetailTraceOffsetX(wingState.wingSpanScale);
       const lowDetailTraceHeightScale = getChickenLowDetailWingTraceHeightScale(wingState.traceIntensity);
+
+      if (
+        isLocal &&
+        player.spacePhase === "float" &&
+        this.localSpaceChallengePhrase &&
+        this.localSpaceChallengePhrase.length > 0
+      ) {
+        const typingProgress = THREE.MathUtils.clamp(
+          this.localSpaceChallengeTypedLength / this.localSpaceChallengePhrase.length,
+          0,
+          1
+        );
+        const primeAlpha = THREE.MathUtils.clamp(
+          (this.spaceTypePrimeUntil - elapsedTime) / SPACE_TYPING_PRIME_DURATION,
+          0,
+          1
+        );
+        const misfireAlpha = THREE.MathUtils.clamp(
+          (this.spaceTypeMisfireUntil - elapsedTime) / SPACE_TYPING_MISFIRE_DURATION,
+          0,
+          1
+        );
+        const misfireWobble = Math.sin(elapsedTime * 30 + visual.motionSeed * 8) * 0.08 * misfireAlpha;
+        visual.shell.rotation.x += typingProgress * 0.4 + primeAlpha * 0.18 - misfireAlpha * 0.04;
+        visual.shell.rotation.z += typingProgress * 0.05 + primeAlpha * 0.08 + misfireWobble;
+        visual.body.rotation.y += typingProgress * 0.08 + primeAlpha * 0.16 - misfireAlpha * 0.2;
+        visual.avatar.position.z -= typingProgress * 0.16 + primeAlpha * 0.08;
+        visual.avatar.position.y += primeAlpha * 0.08;
+        visual.avatar.rotation.x += typingProgress * 0.12 + primeAlpha * 0.1;
+        visual.shell.scale.set(
+          visual.shell.scale.x * (1 + typingProgress * 0.02 + primeAlpha * 0.08),
+          visual.shell.scale.y * (1 - typingProgress * 0.1 - primeAlpha * 0.12 + misfireAlpha * 0.04),
+          visual.shell.scale.z * (1 + typingProgress * 0.03 + primeAlpha * 0.08)
+        );
+      }
 
       visual.leftWing.rotation.z = leftWingAngle;
       visual.rightWing.rotation.z = -rightWingAngle;

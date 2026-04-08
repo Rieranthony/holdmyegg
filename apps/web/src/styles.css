@@ -1541,6 +1541,195 @@ input::placeholder {
   z-index: 3;
 }
 
+.space-typing-overlay {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: grid;
+  justify-items: center;
+  gap: 0.36rem;
+  width: min(760px, calc(100% - 2rem));
+  padding: 0.4rem clamp(0.75rem, 3vw, 2rem) 0.55rem;
+  transform: translate(-50%, -50%);
+  color: #fff8dd;
+  text-align: center;
+  text-transform: uppercase;
+  filter: drop-shadow(0 4px 0 rgba(8, 12, 16, 0.75));
+}
+
+.space-typing-overlay::after {
+  content: "";
+  width: min(460px, 72vw);
+  height: 0.55rem;
+  background:
+    linear-gradient(90deg, rgba(255, 204, 69, 0), rgba(255, 204, 69, 0.9) 24%, rgba(244, 93, 72, 0.95) 76%, rgba(244, 93, 72, 0)),
+    repeating-linear-gradient(
+      90deg,
+      rgba(8, 12, 16, 0.18) 0,
+      rgba(8, 12, 16, 0.18) 12px,
+      rgba(255, 255, 255, 0) 12px,
+      rgba(255, 255, 255, 0) 18px
+    );
+  box-shadow:
+    0 3px 0 rgba(8, 12, 16, 0.62),
+    0 0 0 2px rgba(255, 255, 255, 0.15);
+  opacity: 0.92;
+}
+
+.space-typing-overlay--mistake {
+  animation: space-typing-overlay-shake 180ms steps(2, end) 1;
+}
+
+.space-typing-overlay--success .space-typing-overlay__phrase,
+.space-typing-overlay--dive .space-typing-overlay__phrase {
+  animation: space-typing-overlay-success 280ms steps(2, end) infinite alternate;
+}
+
+.space-typing-overlay__lead {
+  color: rgba(255, 246, 211, 0.78);
+  font-size: 0.66rem;
+  letter-spacing: 0.22em;
+}
+
+.space-typing-overlay__phrase {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.08rem;
+  max-width: min(100%, 24ch);
+  font-size: clamp(1rem, 2vw + 0.45rem, 1.78rem);
+  letter-spacing: 0.08em;
+  line-height: 0.98;
+}
+
+.space-typing-overlay__char {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  min-width: 0.84ch;
+  padding: 0.08rem 0.13rem;
+  transition:
+    transform 120ms steps(2, end),
+    color 120ms linear,
+    background 120ms linear,
+    box-shadow 120ms linear;
+}
+
+.space-typing-overlay__char--done {
+  color: #ffe58f;
+  text-shadow:
+    0 0 0 rgba(0, 0, 0, 0),
+    0 2px 0 rgba(8, 12, 16, 0.78);
+}
+
+.space-typing-overlay__char--current {
+  color: #101922;
+  background:
+    linear-gradient(180deg, #ffe38c, #ffb34a);
+  box-shadow:
+    0 0 0 2px rgba(16, 25, 34, 0.96),
+    0 4px 0 rgba(16, 25, 34, 0.82);
+  animation: space-typing-cursor-bounce 260ms steps(2, end) infinite alternate;
+}
+
+.space-typing-overlay__char--todo {
+  color: rgba(255, 246, 211, 0.42);
+}
+
+.space-typing-overlay__meter {
+  width: min(360px, 68vw);
+  height: 0.8rem;
+  overflow: hidden;
+  border: 3px solid rgba(16, 25, 34, 0.95);
+  background:
+    repeating-linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0.14) 0,
+      rgba(255, 255, 255, 0.14) 8px,
+      rgba(0, 0, 0, 0.12) 8px,
+      rgba(0, 0, 0, 0.12) 16px
+    );
+  box-shadow: 0 4px 0 rgba(8, 12, 16, 0.58);
+}
+
+.space-typing-overlay__meter-fill {
+  display: block;
+  height: 100%;
+  background:
+    linear-gradient(90deg, #ffcf4b 0%, #ff9349 42%, #f45d48 100%);
+  box-shadow:
+    inset 0 -3px 0 rgba(16, 25, 34, 0.26),
+    0 0 16px rgba(255, 204, 69, 0.4);
+}
+
+.space-typing-overlay__meta {
+  color: rgba(255, 246, 211, 0.8);
+  font-size: 0.7rem;
+  letter-spacing: 0.18em;
+}
+
+.space-typing-overlay__stamp {
+  padding: 0.12rem 0.55rem 0.2rem;
+  color: #101922;
+  font-size: clamp(1.5rem, 4vw, 2.8rem);
+  letter-spacing: 0.12em;
+  line-height: 1;
+  background:
+    linear-gradient(180deg, #ffe48f 0%, #ffb84d 58%, #f45d48 100%);
+  box-shadow:
+    0 0 0 3px rgba(16, 25, 34, 0.98),
+    0 7px 0 rgba(16, 25, 34, 0.76);
+  transform: rotate(-2deg);
+  animation: space-typing-stamp-pop 360ms steps(2, end) infinite alternate;
+}
+
+@keyframes space-typing-cursor-bounce {
+  0% {
+    transform: translateY(-1px) scale(1.02);
+  }
+
+  100% {
+    transform: translateY(3px) scale(0.98, 1.04);
+  }
+}
+
+@keyframes space-typing-overlay-shake {
+  0%,
+  100% {
+    transform: translate(-50%, -50%);
+  }
+
+  25% {
+    transform: translate(calc(-50% - 8px), -50%);
+  }
+
+  75% {
+    transform: translate(calc(-50% + 8px), -50%);
+  }
+}
+
+@keyframes space-typing-overlay-success {
+  0% {
+    transform: scale(1) translateY(0);
+    filter: saturate(1);
+  }
+
+  100% {
+    transform: scale(1.03) translateY(-1px);
+    filter: saturate(1.16);
+  }
+}
+
+@keyframes space-typing-stamp-pop {
+  0% {
+    transform: rotate(-2deg) scale(0.98);
+  }
+
+  100% {
+    transform: rotate(1deg) scale(1.05);
+  }
+}
+
 .hud-egg-card {
   position: absolute;
   top: 0.8rem;
@@ -1822,6 +2011,10 @@ input::placeholder {
     width: min(360px, calc(100% - 2rem));
   }
 
+  .space-typing-overlay {
+    width: min(700px, calc(100% - 2rem));
+  }
+
   .hud-egg-card {
     width: 2.7rem;
     height: 2.9rem;
@@ -2000,6 +2193,32 @@ input::placeholder {
     left: 0.75rem;
     width: min(320px, calc(100% - 1.5rem));
     padding: 0.62rem 0.7rem;
+  }
+
+  .space-typing-overlay {
+    width: calc(100% - 1.1rem);
+    padding-inline: 0.5rem;
+    gap: 0.22rem;
+  }
+
+  .space-typing-overlay__lead,
+  .space-typing-overlay__meta {
+    font-size: 0.58rem;
+    letter-spacing: 0.15em;
+  }
+
+  .space-typing-overlay__phrase {
+    font-size: clamp(0.92rem, 5vw, 1.22rem);
+    max-width: min(100%, 18ch);
+  }
+
+  .space-typing-overlay__meter {
+    width: min(280px, 80vw);
+    height: 0.7rem;
+  }
+
+  .space-typing-overlay::after {
+    width: min(300px, 82vw);
   }
 
   .hud-egg-card {

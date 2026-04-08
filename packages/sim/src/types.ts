@@ -21,6 +21,7 @@ export interface PlayerCommand {
   lookZ: number;
   eggCharge: number;
   eggPitch: number;
+  typedText: string;
   jump: boolean;
   jumpPressed: boolean;
   jumpReleased: boolean;
@@ -103,7 +104,7 @@ export interface SimulationConfig {
 
 export type FallingClusterPhase = "warning" | "falling";
 export type SkyDropPhase = "warning" | "falling";
-export type SpacePhase = "none" | "float" | "reentry";
+export type SpacePhase = "none" | "float" | "reentry" | "superBoomDive" | "superBoomImpact";
 
 export interface FallingClusterVoxelView {
   x: number;
@@ -138,7 +139,7 @@ export interface EggScatterDebrisViewState {
   duration: number;
 }
 
-export type VoxelBurstStyle = "eggExplosion" | "harvest";
+export type VoxelBurstStyle = "eggExplosion" | "harvest" | "superBoomExplosion";
 
 export interface VoxelBurstViewState {
   id: string;
@@ -218,6 +219,169 @@ export type RuntimeEggScatterDebrisState = EggScatterDebrisViewState;
 export type RuntimeVoxelBurstState = VoxelBurstViewState;
 export type RuntimeSkyDropState = SkyDropViewState;
 
+export interface HumanPlayerSlot {
+  id: string;
+  name: string;
+}
+
+export interface AuthoritativePlayerState extends RuntimePlayerState {
+  entityId: string;
+  spawnTick: number;
+  visualSeed: number;
+}
+
+export interface AuthoritativeProjectileState extends RuntimeEggState {
+  entityId: string;
+  projectileKind: "egg";
+  spawnTick: number;
+  visualSeed: number;
+}
+
+export interface AuthoritativeFallingClusterState extends RuntimeFallingClusterState {
+  entityId: string;
+  spawnTick: number;
+  visualSeed: number;
+}
+
+export interface AuthoritativeSkyDropState extends RuntimeSkyDropState {
+  entityId: string;
+  spawnTick: number;
+  visualSeed: number;
+}
+
+export interface AuthoritativeEggScatterDebrisState extends RuntimeEggScatterDebrisState {
+  entityId: string;
+  spawnTick: number;
+  visualSeed: number;
+}
+
+export interface AuthoritativeHazardState {
+  fallingClusters: AuthoritativeFallingClusterState[];
+  skyDrops: AuthoritativeSkyDropState[];
+  eggScatterDebris: AuthoritativeEggScatterDebrisState[];
+}
+
+export interface AuthoritativeMatchStats {
+  terrainRevision: number;
+}
+
+export interface AuthoritativeMatchState {
+  tick: number;
+  time: number;
+  mode: GameMode;
+  localPlayerId: string | null;
+  players: AuthoritativePlayerState[];
+  projectiles: AuthoritativeProjectileState[];
+  hazards: AuthoritativeHazardState;
+  stats: AuthoritativeMatchStats;
+  ranking: string[];
+}
+
+export type TerrainDeltaOperation = "set" | "remove";
+
+export type TerrainDeltaSource =
+  | "destroy"
+  | "place"
+  | "projectile_explosion"
+  | "super_boom_explosion"
+  | "egg_scatter_settle"
+  | "collapse_detach"
+  | "falling_cluster_land"
+  | "sky_drop_land";
+
+export interface TerrainDelta {
+  voxel: Vec3i;
+  kind: BlockKind | null;
+  operation: TerrainDeltaOperation;
+  source: TerrainDeltaSource;
+}
+
+export interface TerrainDeltaBatch {
+  tick: number;
+  terrainRevision: number;
+  changes: TerrainDelta[];
+}
+
+export type GameplayDamageSourceKind =
+  | "projectile"
+  | "superBoom"
+  | "fallingCluster"
+  | "skyDrop"
+  | "ringOut";
+
+export interface ProjectileSpawnedEvent {
+  type: "projectile_spawned";
+  entityId: string;
+  projectileKind: "egg";
+  ownerId: string;
+  spawnTick: number;
+  visualSeed: number;
+  position: Vector3;
+  velocity: Vector3;
+}
+
+export interface ProjectileHitResolvedEvent {
+  type: "projectile_hit_resolved";
+  entityId: string;
+  projectileKind: "egg";
+  impactPosition: Vector3;
+  hitPlayerIds: string[];
+  terrainChanged: boolean;
+}
+
+export interface ExplosionResolvedEvent {
+  type: "explosion_resolved";
+  entityId: string;
+  sourceEntityId: string;
+  position: Vector3;
+  destroyedVoxelCount: number;
+  hitPlayerIds: string[];
+}
+
+export interface PlayerDamagedEvent {
+  type: "player_damaged";
+  entityId: string;
+  playerId: string;
+  sourceEntityId: string;
+  sourceKind: GameplayDamageSourceKind;
+  livesRemaining: number;
+  stunRemaining: number;
+  position: Vector3;
+  velocity: Vector3;
+}
+
+export interface PlayerEliminatedEvent {
+  type: "player_eliminated";
+  entityId: string;
+  playerId: string;
+  fallingOut: boolean;
+  sourceEntityId: string | null;
+  sourceKind: GameplayDamageSourceKind;
+  livesRemaining: number;
+  ranking: string[];
+}
+
+export interface TerrainChangedEvent {
+  type: "terrain_changed";
+  entityId: string;
+  terrainRevision: number;
+  source: TerrainDeltaSource;
+  changeCount: number;
+}
+
+export type GameplayEvent =
+  | ExplosionResolvedEvent
+  | PlayerDamagedEvent
+  | PlayerEliminatedEvent
+  | ProjectileHitResolvedEvent
+  | ProjectileSpawnedEvent
+  | TerrainChangedEvent;
+
+export interface GameplayEventBatch {
+  tick: number;
+  events: GameplayEvent[];
+}
+
 export type RuntimeInteractionInvalidReason =
   | "outOfRange"
   | "hazard"
@@ -295,11 +459,18 @@ export interface HudEggStatus {
   canChargedThrow: boolean;
 }
 
+export interface SpaceChallengeHudState {
+  phrase: string;
+  typedLength: number;
+  phase: "typing" | "dive";
+}
+
 export interface HudState {
   mode: GameMode;
   localPlayerId: string | null;
   localPlayer: HudPlayerState | null;
   eggStatus: HudEggStatus | null;
+  spaceChallenge: SpaceChallengeHudState | null;
   ranking: HudRankingEntry[];
 }
 
@@ -333,6 +504,8 @@ export type SimulationInitialSpawnStyle = "ground" | "sky";
 
 export interface SimulationResetOptions {
   npcCount?: number;
+  humanPlayers?: HumanPlayerSlot[];
+  localPlayerId?: string | null;
   localPlayerName?: string;
   initialSpawnStyle?: SimulationInitialSpawnStyle;
   initialSpawnSeed?: number;

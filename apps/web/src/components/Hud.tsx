@@ -50,6 +50,18 @@ const areHudStatesEqual = (left: HudState, right: HudState) => {
     return false;
   }
 
+  if (left.spaceChallenge === null || right.spaceChallenge === null) {
+    if (left.spaceChallenge !== right.spaceChallenge) {
+      return false;
+    }
+  } else if (
+    left.spaceChallenge.phrase !== right.spaceChallenge.phrase ||
+    left.spaceChallenge.typedLength !== right.spaceChallenge.typedLength ||
+    left.spaceChallenge.phase !== right.spaceChallenge.phase
+  ) {
+    return false;
+  }
+
   if (left.ranking.length !== right.ranking.length) {
     return false;
   }
@@ -112,6 +124,16 @@ export function Hud({
   const massWidth = `${(localPlayer.mass / localPlayer.maxMass) * 100}%`;
   const featherText = "^".repeat(localPlayer.livesRemaining).padEnd(localPlayer.maxLives, ".");
   const eggStatus = hudState.eggStatus;
+  const spaceChallenge = hudState.spaceChallenge;
+  const typedLength =
+    spaceChallenge && overlayState?.spaceLocalPhrase === spaceChallenge.phrase
+      ? Math.max(spaceChallenge.typedLength, overlayState.spaceLocalTypedLength)
+      : spaceChallenge?.typedLength ?? 0;
+  const showSuperBoomStamp =
+    spaceChallenge?.phase === "dive" ||
+    (spaceChallenge !== null &&
+      typedLength >= spaceChallenge.phrase.length &&
+      Boolean(overlayState?.spaceSuccessPulseActive));
   const statusText = localPlayer.respawning
     ? `Respawning ${Math.max(0, localPlayer.invulnerableRemaining).toFixed(1)}s shield queued`
     : localPlayer.stunRemaining > 0
@@ -132,6 +154,63 @@ export function Hud({
 
   return (
     <div className="hud">
+      {spaceChallenge && (
+        <div
+          className={[
+            "space-typing-overlay",
+            overlayState?.spaceMistakePulseActive ? "space-typing-overlay--mistake" : "",
+            overlayState?.spaceSuccessPulseActive ? "space-typing-overlay--success" : "",
+            showSuperBoomStamp ? "space-typing-overlay--dive" : ""
+          ]
+            .filter(Boolean)
+            .join(" ")}
+          data-testid="space-typing-overlay"
+        >
+          {showSuperBoomStamp ? (
+            <div
+              className="space-typing-overlay__stamp"
+              data-testid="space-typing-stamp"
+            >
+              SUPER BOOM
+            </div>
+          ) : (
+            <>
+              <div className="space-typing-overlay__lead">TYPE LIKE A GOBLIN</div>
+              <div
+                className="space-typing-overlay__phrase"
+                data-testid="space-typing-phrase"
+              >
+                {spaceChallenge.phrase.split("").map((character, index) => {
+                  const state =
+                    index < typedLength
+                      ? "done"
+                      : index === typedLength
+                        ? "current"
+                        : "todo";
+                  return (
+                    <span
+                      className={`space-typing-overlay__char space-typing-overlay__char--${state}`}
+                      data-state={state}
+                      key={`${spaceChallenge.phrase}-${index}`}
+                    >
+                      {character === " " ? "\u00A0" : character}
+                    </span>
+                  );
+                })}
+              </div>
+              <div
+                className="space-typing-overlay__meter"
+                data-testid="space-typing-meter"
+              >
+                <span className="space-typing-overlay__meter-fill" style={{ width: `${(typedLength / Math.max(1, spaceChallenge.phrase.length)) * 100}%` }} />
+              </div>
+              <div className="space-typing-overlay__meta">
+                {typedLength} / {spaceChallenge.phrase.length}
+              </div>
+            </>
+          )}
+        </div>
+      )}
       {eggStatus && (
         <section
           aria-label={eggStatus.reason === "ready" ? "Egg ready" : "Egg unavailable"}

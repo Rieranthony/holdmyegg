@@ -33,6 +33,7 @@ const createHudState = (mode: "explore" | "playNpc", playerName = "You"): HudSta
     cooldownRemaining: 0,
     cooldownDuration: 1.6
   },
+  spaceChallenge: null,
   ranking:
     mode === "playNpc"
       ? [
