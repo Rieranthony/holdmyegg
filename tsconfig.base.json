@@ -13,8 +13,14 @@
     "noEmit": true,
     "baseUrl": ".",
     "paths": {
+      "@out-of-bounds/db": [
+        "packages/db/src/index.ts"
+      ],
       "@out-of-bounds/map": [
         "packages/map/src/index.ts"
+      ],
+      "@out-of-bounds/netcode": [
+        "packages/netcode/src/index.ts"
       ],
       "@out-of-bounds/sim": [
         "packages/sim/src/index.ts"

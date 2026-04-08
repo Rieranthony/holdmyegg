@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: out-of-bounds-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: out_of_bounds
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - out_of_bounds_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d out_of_bounds"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  out_of_bounds_postgres:

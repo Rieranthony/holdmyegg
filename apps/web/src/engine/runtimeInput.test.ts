@@ -1,146 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
   clearTransientRuntimeInputFlags,
-  MAX_TYPED_TEXT_BYTES,
+  createEmptyRuntimeInputCommand,
   packRuntimeInputCommand,
-  unpackRuntimeInputCommand,
-  type RuntimeInputCommand
+  unpackRuntimeInputCommand
 } from "./runtimeInput";
 
-describe("packRuntimeInputCommand", () => {
-  it("round-trips every packed runtime field including voxel targets", () => {
-    const command: RuntimeInputCommand = {
-      seq: 42,
-      moveX: 0.5,
-      moveZ: -0.25,
-      lookX: 0.75,
-      lookZ: -1,
-      eggCharge: 0.65,
-      eggPitch: -0.22,
-      typedText: "Kiss My Toes!!!",
-      jump: true,
-      jumpPressed: true,
-      jumpReleased: true,
-      destroy: true,
-      place: true,
-      push: true,
-      layEgg: true,
-      targetVoxel: { x: 12, y: -4, z: 28 },
-      targetNormal: { x: 0, y: 1, z: -1 }
-    };
+describe("web runtimeInput re-export", () => {
+  it("re-exports the shared netcode helpers", () => {
+    const packed = packRuntimeInputCommand(createEmptyRuntimeInputCommand());
+    const unpacked = unpackRuntimeInputCommand(packed);
 
-    const buffer = packRuntimeInputCommand(command);
-    const unpacked = unpackRuntimeInputCommand(buffer);
-
-    expect(buffer.byteLength).toBe(67);
-    expect(unpacked).toMatchObject({
-      ...command,
-      typedText: "kiss my toes",
-      eggCharge: expect.any(Number),
-      eggPitch: expect.any(Number)
-    });
-    expect(unpacked.eggCharge).toBeCloseTo(command.eggCharge, 5);
-    expect(unpacked.eggPitch).toBeCloseTo(command.eggPitch, 5);
-  });
-
-  it("keeps optional target vectors null when their flags are not set", () => {
-    const command: RuntimeInputCommand = {
-      seq: 3,
-      moveX: 0,
-      moveZ: 0,
-      lookX: 1,
-      lookZ: 0,
-      eggCharge: 0,
-      eggPitch: 0,
-      typedText: "",
-      jump: false,
-      jumpPressed: false,
-      jumpReleased: false,
-      destroy: false,
-      place: false,
-      push: false,
-      layEgg: false,
-      targetVoxel: null,
-      targetNormal: null
-    };
-
-    const unpacked = unpackRuntimeInputCommand(packRuntimeInputCommand(command));
-
-    expect(unpacked.targetVoxel).toBeNull();
-    expect(unpacked.targetNormal).toBeNull();
-    expect(unpacked.destroy).toBe(false);
-    expect(unpacked.place).toBe(false);
-    expect(unpacked.layEgg).toBe(false);
-  });
-
-  it("truncates typed text to the packed ASCII budget", () => {
-    const command: RuntimeInputCommand = {
-      seq: 4,
-      moveX: 0,
-      moveZ: 0,
-      lookX: 0,
-      lookZ: 1,
-      eggCharge: 0,
-      eggPitch: 0,
-      typedText: "ABCDEFGHIJKLMNOPQRSTUVWXYZ!!!",
-      jump: false,
-      jumpPressed: false,
-      jumpReleased: false,
-      destroy: false,
-      place: false,
-      push: false,
-      layEgg: false,
-      targetVoxel: null,
-      targetNormal: null
-    };
-
-    const unpacked = unpackRuntimeInputCommand(packRuntimeInputCommand(command));
-
-    expect(unpacked.typedText).toBe("abcdefghijklmnopqrstuvwx".slice(0, MAX_TYPED_TEXT_BYTES));
-    expect(unpacked.typedText).toHaveLength(MAX_TYPED_TEXT_BYTES);
-  });
-});
-
-describe("clearTransientRuntimeInputFlags", () => {
-  it("resets one-shot flags without mutating the original command", () => {
-    const command: RuntimeInputCommand = {
-      seq: 9,
-      moveX: 1,
-      moveZ: 0,
-      lookX: 0,
-      lookZ: 1,
-      eggCharge: 0.9,
-      eggPitch: 0.14,
-      typedText: "go go go",
-      jump: true,
-      jumpPressed: true,
-      jumpReleased: true,
-      destroy: true,
-      place: true,
-      push: true,
-      layEgg: true,
-      targetVoxel: { x: 1, y: 2, z: 3 },
-      targetNormal: { x: -1, y: 0, z: 0 }
-    };
-
-    const cleared = clearTransientRuntimeInputFlags(command);
-
-    expect(cleared).toEqual({
-      ...command,
-      jumpPressed: false,
-      jumpReleased: false,
-      destroy: false,
-      place: false,
-      layEgg: false,
-      typedText: "",
-      eggCharge: 0,
-      eggPitch: 0
-    });
-    expect(cleared).not.toBe(command);
-    expect(command.jumpPressed).toBe(true);
-    expect(command.place).toBe(true);
-    expect(command.layEgg).toBe(true);
-    expect(cleared.jump).toBe(true);
-    expect(cleared.push).toBe(true);
+    expect(unpacked.seq).toBe(0);
+    expect(clearTransientRuntimeInputFlags(unpacked).typedText).toBe("");
   });
 });

@@ -28,6 +28,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@out-of-bounds/map": path.resolve(__dirname, "../../packages/map/src/index.ts"),
+      "@out-of-bounds/netcode": path.resolve(__dirname, "../../packages/netcode/src/index.ts"),
       "@out-of-bounds/sim": path.resolve(__dirname, "../../packages/sim/src/index.ts")
     }
   },

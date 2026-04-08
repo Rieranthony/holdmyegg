@@ -30,9 +30,9 @@ export const getRuntimeShortcutBindings = (): ShortcutBinding[] => [
   },
   {
     action: "Harvest",
-    detail: "click to eat terrain for matter",
+    detail: "hold LMB to eat terrain for matter",
     pauseDetail: "eat terrain for matter",
-    keys: ["Click"],
+    keys: ["LMB"],
   },
   {
     action: "Build",
@@ -42,7 +42,7 @@ export const getRuntimeShortcutBindings = (): ShortcutBinding[] => [
   },
   {
     action: "Launch Eggs",
-    detail: "tap E to egg, hold E to throw, costs matter",
+    detail: "tap RMB or E to egg, hold to throw, costs matter",
     pauseDetail: "tap to lay, hold to throw",
     keys: getEggLaunchShortcutLabels(),
   },

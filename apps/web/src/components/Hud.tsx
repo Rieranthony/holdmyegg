@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import type { HudState, OutOfBoundsSimulation } from "@out-of-bounds/sim";
 import type { RuntimeOverlayState } from "../engine/types";
 import type { ActiveMode } from "./GameCanvas";
@@ -55,8 +55,9 @@ const areHudStatesEqual = (left: HudState, right: HudState) => {
       return false;
     }
   } else if (
-    left.spaceChallenge.phrase !== right.spaceChallenge.phrase ||
-    left.spaceChallenge.typedLength !== right.spaceChallenge.typedLength ||
+    left.spaceChallenge.targetKey !== right.spaceChallenge.targetKey ||
+    left.spaceChallenge.hits !== right.spaceChallenge.hits ||
+    left.spaceChallenge.requiredHits !== right.spaceChallenge.requiredHits ||
     left.spaceChallenge.phase !== right.spaceChallenge.phase
   ) {
     return false;
@@ -125,15 +126,28 @@ export function Hud({
   const featherText = "^".repeat(localPlayer.livesRemaining).padEnd(localPlayer.maxLives, ".");
   const eggStatus = hudState.eggStatus;
   const spaceChallenge = hudState.spaceChallenge;
-  const typedLength =
-    spaceChallenge && overlayState?.spaceLocalPhrase === spaceChallenge.phrase
-      ? Math.max(spaceChallenge.typedLength, overlayState.spaceLocalTypedLength)
-      : spaceChallenge?.typedLength ?? 0;
-  const showSuperBoomStamp =
-    spaceChallenge?.phase === "dive" ||
-    (spaceChallenge !== null &&
-      typedLength >= spaceChallenge.phrase.length &&
-      Boolean(overlayState?.spaceSuccessPulseActive));
+  const hitCount =
+    spaceChallenge && overlayState?.spaceLocalTargetKey === spaceChallenge.targetKey
+      ? Math.max(spaceChallenge.hits, overlayState.spaceLocalHitCount)
+      : spaceChallenge?.hits ?? 0;
+  const progressRatio =
+    spaceChallenge === null ? 0 : hitCount / Math.max(1, spaceChallenge.requiredHits);
+  const showSuperBoomStamp = spaceChallenge?.phase === "dive";
+  const showFailFlash = spaceChallenge === null && overlayState?.spaceFailPulseActive;
+  const challengeChargeLabel =
+    progressRatio >= 0.92
+      ? "LOCKED IN"
+      : progressRatio >= 0.58
+        ? "BOMB CHARGE"
+        : "ARM THE BOOM";
+  const challengeHelperCopy =
+    overlayState?.spaceMistakePulseActive
+      ? "WRONG KEY. HIT THE BIG ONE."
+      : overlayState?.spaceSuccessPulseActive
+        ? "KEEP POUNDING IT"
+        : progressRatio >= 0.66
+          ? "GO FASTER"
+          : "MASH LIKE A GREMLIN";
   const statusText = localPlayer.respawning
     ? `Respawning ${Math.max(0, localPlayer.invulnerableRemaining).toFixed(1)}s shield queued`
     : localPlayer.stunRemaining > 0
@@ -154,58 +168,97 @@ export function Hud({
 
   return (
     <div className="hud">
-      {spaceChallenge && (
+      {(spaceChallenge || showFailFlash) && (
         <div
           className={[
             "space-typing-overlay",
+            overlayState?.spaceFailPulseActive ? "space-typing-overlay--fail" : "",
             overlayState?.spaceMistakePulseActive ? "space-typing-overlay--mistake" : "",
             overlayState?.spaceSuccessPulseActive ? "space-typing-overlay--success" : "",
+            progressRatio >= 0.66 ? "space-typing-overlay--charged" : "",
             showSuperBoomStamp ? "space-typing-overlay--dive" : ""
           ]
             .filter(Boolean)
             .join(" ")}
           data-testid="space-typing-overlay"
+          style={
+            {
+              "--space-charge": progressRatio.toFixed(3)
+            } as CSSProperties
+          }
         >
           {showSuperBoomStamp ? (
-            <div
-              className="space-typing-overlay__stamp"
-              data-testid="space-typing-stamp"
-            >
-              SUPER BOOM
-            </div>
+            <>
+              <div className="space-typing-overlay__lead space-typing-overlay__lead--dive">
+                STAND CLEAR
+              </div>
+              <div
+                className="space-typing-overlay__stamp"
+                data-testid="space-typing-stamp"
+              >
+                SUPER BOOM
+              </div>
+              <div className="space-typing-overlay__helper space-typing-overlay__helper--dive">
+                DELIVERY EXPRESS
+              </div>
+            </>
+          ) : showFailFlash ? (
+            <>
+              <div className="space-typing-overlay__lead space-typing-overlay__lead--fail">
+                TOO SLOW
+              </div>
+              <div
+                className="space-typing-overlay__stamp space-typing-overlay__stamp--fail"
+                data-testid="space-typing-fail"
+              >
+                MISS
+              </div>
+              <div className="space-typing-overlay__helper space-typing-overlay__helper--fail">
+                BACK TO EARTH
+              </div>
+            </>
           ) : (
             <>
-              <div className="space-typing-overlay__lead">TYPE LIKE A GOBLIN</div>
-              <div
-                className="space-typing-overlay__phrase"
-                data-testid="space-typing-phrase"
-              >
-                {spaceChallenge.phrase.split("").map((character, index) => {
-                  const state =
-                    index < typedLength
-                      ? "done"
-                      : index === typedLength
-                        ? "current"
-                        : "todo";
-                  return (
-                    <span
-                      className={`space-typing-overlay__char space-typing-overlay__char--${state}`}
-                      data-state={state}
-                      key={`${spaceChallenge.phrase}-${index}`}
-                    >
-                      {character === " " ? "\u00A0" : character}
-                    </span>
-                  );
-                })}
+              <div className="space-typing-overlay__lead">MASH THIS KEY</div>
+              <div className="space-typing-overlay__hero">
+                <div
+                  className="space-typing-overlay__key"
+                  data-testid="space-typing-key"
+                >
+                  <span className="space-typing-overlay__key-main">
+                    {spaceChallenge?.targetKey.toUpperCase()}
+                  </span>
+                  <span className="space-typing-overlay__key-glow" aria-hidden="true">
+                    {spaceChallenge?.targetKey.toUpperCase()}
+                  </span>
+                </div>
+              </div>
+              <div className="space-typing-overlay__trail" aria-hidden="true">
+                {Array.from({ length: 5 }, (_, index) => (
+                  <span className="space-typing-overlay__trail-chip" key={`${spaceChallenge?.targetKey ?? "?"}-${index}`}>
+                    {spaceChallenge?.targetKey.toUpperCase()}
+                  </span>
+                ))}
+              </div>
+              <div className="space-typing-overlay__progress">
+                <span className="space-typing-overlay__progress-label">{challengeChargeLabel}</span>
+                <span className="space-typing-overlay__progress-value">
+                  {hitCount} / {spaceChallenge?.requiredHits}
+                </span>
               </div>
               <div
                 className="space-typing-overlay__meter"
                 data-testid="space-typing-meter"
               >
-                <span className="space-typing-overlay__meter-fill" style={{ width: `${(typedLength / Math.max(1, spaceChallenge.phrase.length)) * 100}%` }} />
+                <span className="space-typing-overlay__meter-fill" style={{ width: `${progressRatio * 100}%` }} />
               </div>
-              <div className="space-typing-overlay__meta">
-                {typedLength} / {spaceChallenge.phrase.length}
+              <div className="space-typing-overlay__meta">ARM THE BOOM</div>
+              <div className="space-typing-overlay__helper">{challengeHelperCopy}</div>
+              <div className="space-typing-overlay__footer">
+                <span className="space-typing-overlay__footer-text">PUNCH THE LETTER UNTIL THE CHICKEN DROPS</span>
+                <span className="space-typing-overlay__footer-key">
+                  {spaceChallenge?.targetKey.toUpperCase()}
+                </span>
               </div>
             </>
           )}

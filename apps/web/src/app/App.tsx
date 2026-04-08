@@ -13,6 +13,8 @@ import type { GameMode, HudState } from "@out-of-bounds/sim";
 import { ChickenPreview } from "../components/ChickenPreview";
 import { preloadGameCanvas } from "../components/GameCanvasBoundary";
 import { Hud } from "../components/Hud";
+import { MultiplayerRoomCards } from "../components/MultiplayerRoomCards";
+import { MultiplayerRoomOverlay } from "../components/MultiplayerRoomOverlay";
 import { RuntimeControlsSettings } from "../components/RuntimeControlsSettings";
 import {
   getPauseShortcutBindings,
@@ -43,6 +45,10 @@ import {
   normalizeRuntimeControlSettings,
   type RuntimeControlSettings,
 } from "../game/runtimeControlSettings";
+import {
+  MultiplayerClient,
+  type MultiplayerSnapshot,
+} from "../multiplayer/client";
 import { useMapPersistence } from "./useMapPersistence";
 
 const defaultStatus =
@@ -54,7 +60,7 @@ const launchTimings = {
 } as const;
 
 type LaunchPhase = "dimming" | "staging" | "dropping";
-type RulesOrigin = "menu" | "pause";
+type RulesOrigin = "menu" | "multiplayerMenu" | "pause";
 
 interface LaunchState {
   mode: GameMode;
@@ -113,6 +119,10 @@ const getModeStatusMessage = (mode: ActiveShellMode) => {
     return "Editor ready.";
   }
 
+  if (mode === "multiplayer") {
+    return "Multiplayer room ready.";
+  }
+
   return mode === "explore"
     ? "Explore mode ready."
     : "PLAY NPC mode ready. Outlast the flock.";
@@ -121,6 +131,10 @@ const getModeStatusMessage = (mode: ActiveShellMode) => {
 const getModeLabel = (mode: ActiveShellMode) => {
   if (mode === "editor") {
     return "WORKSHOP";
+  }
+
+  if (mode === "multiplayer") {
+    return "MULTIPLAYER";
   }
 
   return mode === "explore" ? "EXPLORE" : "PLAY NPC";
@@ -145,13 +159,61 @@ const getRuntimeControlsSummary = (
   }`;
 };
 
+const getMultiplayerIdentityTitle = (
+  multiplayer: MultiplayerSnapshot,
+  fallbackName: string,
+) => {
+  const savedDisplayName = multiplayer.profile?.displayName?.trim();
+  if (savedDisplayName) {
+    return savedDisplayName;
+  }
+
+  const localName = fallbackName.trim();
+  return localName.length > 0 ? localName : "Anonymous mode";
+};
+
+const getMultiplayerIdentityDetail = (
+  multiplayer: MultiplayerSnapshot,
+  fallbackName: string,
+) => {
+  if (multiplayer.booting) {
+    return "Restoring multiplayer";
+  }
+
+  if (multiplayer.authenticated) {
+    return "Anonymous mode · scores saved";
+  }
+
+  if (multiplayer.available) {
+    return fallbackName.trim().length > 0
+      ? "Anonymous mode · ready to save scores"
+      : "Anonymous mode · enter your name once";
+  }
+
+  return "Multiplayer offline";
+};
+
 interface AppProps {
   initialMode?: ShellMode;
+  multiplayerClient?: Pick<
+    MultiplayerClient,
+    | "boot"
+    | "createWorkerBridge"
+    | "dispose"
+    | "ensureReady"
+    | "getSnapshot"
+    | "joinRoom"
+    | "leaveRoom"
+    | "quickJoin"
+    | "sendChat"
+    | "subscribe"
+  >;
   onOpenSupportWidget?: () => void;
 }
 
 export function App({
   initialMode = "menu",
+  multiplayerClient: injectedMultiplayerClient,
   onOpenSupportWidget,
 }: AppProps = {}) {
   const hostRef = useRef<GameHostHandle>(null);
@@ -188,6 +250,12 @@ export function App({
   });
   const [runtimeControlSettings, setRuntimeControlSettings] =
     useState<RuntimeControlSettings>(() => loadRuntimeControlSettings());
+  const [multiplayerClient] = useState(
+    () => injectedMultiplayerClient ?? new MultiplayerClient(),
+  );
+  const [multiplayer, setMultiplayer] = useState<MultiplayerSnapshot>(() =>
+    multiplayerClient.getSnapshot(),
+  );
 
   const updateStatus = useCallback((message: string) => {
     startTransition(() => {
@@ -221,6 +289,31 @@ export function App({
     preloadGameCanvas();
   }, []);
 
+  useEffect(() => {
+    const unsubscribe = multiplayerClient.subscribe(setMultiplayer);
+    void multiplayerClient.boot();
+    return () => {
+      unsubscribe();
+      multiplayerClient.dispose();
+    };
+  }, [multiplayerClient]);
+
+  useEffect(() => {
+    const displayName = multiplayer.profile?.displayName?.trim();
+    if (!displayName) {
+      return;
+    }
+
+    setPlayerProfile((current) =>
+      current.name.trim().length > 0
+        ? current
+        : {
+            ...current,
+            name: displayName,
+          },
+    );
+  }, [multiplayer.profile?.displayName]);
+
   const rearmMenuLoading = useCallback(() => {
     const nextToken = menuLoadTokenRef.current + 1;
     menuLoadTokenRef.current = nextToken;
@@ -237,13 +330,17 @@ export function App({
   }, [menuLoadToken]);
 
   const activePlayMode =
-    mode === "explore" || mode === "playNpc"
+    mode === "explore" || mode === "playNpc" || mode === "multiplayer"
       ? mode
       : mode === "rules" && rulesOrigin === "pause"
         ? runtimeModeRef.current
         : null;
   const isMenu = mode === "menu";
-  const isRulesFromMenu = mode === "rules" && rulesOrigin === "menu";
+  const isMultiplayerMenu = mode === "multiplayerMenu";
+  const isMenuShell = isMenu || isMultiplayerMenu;
+  const isRulesFromMenu =
+    mode === "rules" &&
+    (rulesOrigin === "menu" || rulesOrigin === "multiplayerMenu");
   const isRulesFromPause = mode === "rules" && rulesOrigin === "pause";
   const isEditor = mode === "editor";
   const isRuntimePlay = activePlayMode !== null;
@@ -256,6 +353,14 @@ export function App({
       (palette) => palette.name === playerProfile.paletteName,
     ) ?? chickenPalettes[0]!;
   const selectedPreviewPaletteName = selectedPreviewPalette.name;
+  const multiplayerIdentityTitle = getMultiplayerIdentityTitle(
+    multiplayer,
+    playerProfile.name,
+  );
+  const multiplayerIdentityDetail = getMultiplayerIdentityDetail(
+    multiplayer,
+    playerProfile.name,
+  );
 
   useEffect(() => {
     if (!isRuntimePlay) {
@@ -308,6 +413,14 @@ export function App({
     pauseState.pointerLocked,
   ]);
 
+  useEffect(() => {
+    if (activePlayMode !== "multiplayer") {
+      return;
+    }
+
+    hostRef.current?.setRuntimePaused(false);
+  }, [activePlayMode, multiplayer.activeRoom?.roomId]);
+
   const handleEditorStateChange = useCallback((nextState: EditorPanelState) => {
     setEditorState(nextState);
   }, []);
@@ -355,10 +468,102 @@ export function App({
     setRuntimeControlSettings(createDefaultRuntimeControlSettings());
   }, []);
 
+  const createMultiplayerWorker = useCallback(
+    () => multiplayerClient.createWorkerBridge(),
+    [multiplayerClient],
+  );
+
+  const enterMultiplayerRoom = useCallback(() => {
+    cancelLaunchSequence();
+    runtimeModeRef.current = "multiplayer";
+    setRulesOrigin(null);
+    setMode("multiplayer");
+    setHudState(null);
+    setDiagnostics(null);
+    setPauseState({
+      hasStarted: false,
+      paused: false,
+      pointerLocked: false,
+      pointerCapturePending: false,
+      pointerCaptureFailureReason: null,
+    });
+    updateStatus(
+      multiplayer.activeRoom?.countdown.reason ?? "Multiplayer room ready.",
+    );
+  }, [cancelLaunchSequence, multiplayer.activeRoom?.countdown.reason, updateStatus]);
+
+  const handleQuickJoinMultiplayer = useCallback(async () => {
+    if (!trimmedPlayerName) {
+      updateStatus("Type your name once so we can save your multiplayer account.");
+      return;
+    }
+
+    try {
+      updateStatus("Joining a multiplayer room...");
+      await multiplayerClient.quickJoin(trimmedPlayerName);
+      enterMultiplayerRoom();
+    } catch (error) {
+      updateStatus(
+        error instanceof Error
+          ? error.message
+          : "Could not join a multiplayer room.",
+      );
+    }
+  }, [enterMultiplayerRoom, multiplayerClient, trimmedPlayerName, updateStatus]);
+
+  const handleJoinSpecificRoom = useCallback(
+    async (roomId: string) => {
+      if (!trimmedPlayerName) {
+        updateStatus("Type your name once so we can save your multiplayer account.");
+        return;
+      }
+
+      try {
+        updateStatus(`Joining ${roomId}...`);
+        await multiplayerClient.joinRoom(roomId, trimmedPlayerName);
+        enterMultiplayerRoom();
+      } catch (error) {
+        updateStatus(
+          error instanceof Error
+            ? error.message
+            : "Could not join that room.",
+        );
+      }
+    },
+    [enterMultiplayerRoom, multiplayerClient, trimmedPlayerName, updateStatus],
+  );
+
+  const openMultiplayerMenu = useCallback(async () => {
+    setRulesOrigin(null);
+    setMode("multiplayerMenu");
+
+    if (!trimmedPlayerName) {
+      updateStatus("Type your name once and then you will be ready to play.");
+      return;
+    }
+
+    try {
+      await multiplayerClient.ensureReady(trimmedPlayerName);
+      updateStatus("Pick a room or quick join the best one.");
+    } catch (error) {
+      updateStatus(
+        error instanceof Error
+          ? error.message
+          : "Could not prepare multiplayer right now.",
+      );
+    }
+  }, [multiplayerClient, trimmedPlayerName, updateStatus]);
+
+  const returnToMainMenu = useCallback(() => {
+    setRulesOrigin(null);
+    setMode("menu");
+    updateStatus("Back to the main menu.");
+  }, [updateStatus]);
+
   const openRulesFromMenu = useCallback(() => {
-    setRulesOrigin("menu");
+    setRulesOrigin(isMultiplayerMenu ? "multiplayerMenu" : "menu");
     setMode("rules");
-  }, []);
+  }, [isMultiplayerMenu]);
 
   const openRulesFromPause = useCallback(() => {
     if (!activePlayMode) {
@@ -373,6 +578,8 @@ export function App({
   const closeRules = useCallback(() => {
     if (rulesOrigin === "pause") {
       setMode(runtimeModeRef.current);
+    } else if (rulesOrigin === "multiplayerMenu") {
+      setMode("multiplayerMenu");
     } else {
       rearmMenuLoading();
       setMode("menu");
@@ -457,6 +664,9 @@ export function App({
   const returnToMenu = useCallback(async () => {
     cancelLaunchSequence();
     setRulesOrigin(null);
+    if (activePlayMode === "multiplayer") {
+      multiplayerClient.leaveRoom();
+    }
     const nextDocument = await hostRef.current?.getEditorDocument();
     if (nextDocument) {
       setEditorDocument(nextDocument);
@@ -472,7 +682,7 @@ export function App({
     rearmMenuLoading();
     setMode("menu");
     updateStatus("Back to the main menu.");
-  }, [cancelLaunchSequence, rearmMenuLoading, updateStatus]);
+  }, [activePlayMode, cancelLaunchSequence, multiplayerClient, rearmMenuLoading, updateStatus]);
 
   const saveCurrentMap = useCallback(async () => {
     const document =
@@ -542,7 +752,7 @@ export function App({
     return <RulesAndControlsScreen onBack={closeRules} />;
   }
 
-  if (isMenu) {
+  if (isMenuShell) {
     return (
       <main className="menu-shell">
         <div className="menu-background">
@@ -575,6 +785,14 @@ export function App({
             } as CSSProperties
           }
         />
+        <div className="menu-corner-status" role="status">
+          <span className="menu-corner-status__title">
+            {multiplayerIdentityTitle}
+          </span>
+          <span className="menu-corner-status__detail">
+            {multiplayerIdentityDetail}
+          </span>
+        </div>
         <div className="menu-overlay">
           <section className="menu-sidebar">
             <div className="menu-sidebar__content">
@@ -632,99 +850,150 @@ export function App({
                 )}
               </div>
 
-              <div
-                aria-label="Modes"
-                className="menu-primary-actions"
-                role="group"
-              >
-                <button
-                  className="menu-action menu-action--full menu-action--hero"
-                  disabled={!canStartMatch}
-                  onClick={() => beginMode("explore")}
-                  type="button"
-                >
-                  Explore
-                </button>
-                <button
-                  className="menu-action menu-action--full menu-action--hero-secondary"
-                  disabled={!canStartMatch}
-                  onClick={() => beginMode("playNpc")}
-                  type="button"
-                >
-                  PLAY NPC
-                </button>
-              </div>
-              <div className="menu-utility">
+              {isMenu && (
                 <div
-                  aria-label="Menu links"
-                  className="menu-secondary-actions"
+                  aria-label="Modes"
+                  className="menu-primary-actions"
                   role="group"
                 >
+                  {multiplayer.available && (
+                    <button
+                      className="menu-action menu-action--full menu-action--hero"
+                      disabled={multiplayer.joining}
+                      onClick={() => {
+                        void openMultiplayerMenu();
+                      }}
+                      type="button"
+                    >
+                      {`Multiplayer · ${multiplayer.onlinePlayers} online`}
+                    </button>
+                  )}
+                  <button
+                    className="menu-action menu-action--full menu-action--hero-secondary"
+                    disabled={!canStartMatch}
+                    onClick={() => beginMode("explore")}
+                    type="button"
+                  >
+                    Explore
+                  </button>
                   <button
                     className="menu-action menu-action--full menu-action--compact"
-                    onClick={openRulesFromMenu}
+                    disabled={!canStartMatch}
+                    onClick={() => beginMode("playNpc")}
                     type="button"
                   >
-                    Rules / Shortcuts
+                    PLAY NPC
                   </button>
-                  {/* <button
-                    className="menu-action menu-action--secondary menu-action--full menu-action--compact"
-                    onClick={onOpenSupportWidget}
-                    type="button"
-                  >
-                    Feedback / bug
-                  </button> */}
                 </div>
-                <section className="menu-controls-panel">
-                  <button
-                    aria-expanded={menuControlsOpen}
-                    className="menu-controls-panel__toggle"
-                    onClick={() => setMenuControlsOpen((current) => !current)}
-                    type="button"
-                  >
-                    <span className="menu-controls-panel__copy">
-                      <span className="menu-controls-panel__title">
-                        Controls
-                      </span>
-                      <span className="menu-controls-panel__summary">
-                        Saved locally ·{" "}
-                        {getRuntimeControlsSummary(runtimeControlSettings)}
-                      </span>
-                    </span>
-                    <span className="menu-controls-panel__state">
-                      {menuControlsOpen ? "Hide" : "Edit"}
-                    </span>
-                  </button>
-                  {menuControlsOpen && (
-                    <div className="menu-controls-panel__body">
-                      <RuntimeControlsSettings
-                        onReset={handleRuntimeControlSettingsReset}
-                        onSettingsChange={handleRuntimeControlSettingsChange}
-                        settings={runtimeControlSettings}
-                        variant="menu"
-                      />
+              )}
+              {isMultiplayerMenu && (
+                <section className="multiplayer-menu-screen">
+                  <div className="multiplayer-menu-screen__header">
+                    <div>
+                      <span className="menu-kicker">Multiplayer</span>
+                      <h2>US Rooms</h2>
                     </div>
+                    <button
+                      className="menu-action menu-action--compact"
+                      onClick={returnToMainMenu}
+                      type="button"
+                    >
+                      Back
+                    </button>
+                  </div>
+                  <p className="multiplayer-menu-screen__copy">
+                    {multiplayer.available
+                      ? "Watch the live room flow, quick join the best match, or pick a room."
+                      : "Multiplayer is offline right now. We will keep checking for it."}
+                  </p>
+                  {multiplayer.available && (
+                    <MultiplayerRoomCards
+                      busy={multiplayer.joining}
+                      onJoinRoom={(roomId) => {
+                        void handleJoinSpecificRoom(roomId);
+                      }}
+                      onQuickJoin={() => {
+                        void handleQuickJoinMultiplayer();
+                      }}
+                      rooms={multiplayer.rooms}
+                      sessionReady={!multiplayer.booting && canStartMatch}
+                    />
                   )}
                 </section>
-                <p className="menu-credit">
-                  Made by{" "}
-                  <a
-                    href="https://x.com/anthonyriera"
-                    rel="noreferrer"
-                    target="_blank"
+              )}
+              {isMenu && (
+                <div className="menu-utility">
+                  <div
+                    aria-label="Menu links"
+                    className="menu-secondary-actions"
+                    role="group"
                   >
-                    Anthony Riera
-                  </a>{" "}
-                  and{" "}
-                  <a
-                    href="https://cossistant.com"
-                    rel="noreferrer"
-                    target="_blank"
-                  >
-                    cossistant.com
-                  </a>
-                </p>
-              </div>
+                    <button
+                      className="menu-action menu-action--full menu-action--compact"
+                      onClick={openRulesFromMenu}
+                      type="button"
+                    >
+                      Rules / Shortcuts
+                    </button>
+                    {/* <button
+                      className="menu-action menu-action--secondary menu-action--full menu-action--compact"
+                      onClick={onOpenSupportWidget}
+                      type="button"
+                    >
+                      Feedback / bug
+                    </button> */}
+                  </div>
+                  <section className="menu-controls-panel">
+                    <button
+                      aria-expanded={menuControlsOpen}
+                      className="menu-controls-panel__toggle"
+                      onClick={() => setMenuControlsOpen((current) => !current)}
+                      type="button"
+                    >
+                      <span className="menu-controls-panel__copy">
+                        <span className="menu-controls-panel__title">
+                          Controls
+                        </span>
+                        <span className="menu-controls-panel__summary">
+                          Saved locally ·{" "}
+                          {getRuntimeControlsSummary(runtimeControlSettings)}
+                        </span>
+                      </span>
+                      <span className="menu-controls-panel__state">
+                        {menuControlsOpen ? "Hide" : "Edit"}
+                      </span>
+                    </button>
+                    {menuControlsOpen && (
+                      <div className="menu-controls-panel__body">
+                        <RuntimeControlsSettings
+                          onReset={handleRuntimeControlSettingsReset}
+                          onSettingsChange={handleRuntimeControlSettingsChange}
+                          settings={runtimeControlSettings}
+                          variant="menu"
+                        />
+                      </div>
+                    )}
+                  </section>
+                  <p className="menu-credit">
+                    Made by{" "}
+                    <a
+                      href="https://x.com/anthonyriera"
+                      rel="noreferrer"
+                      target="_blank"
+                    >
+                      Anthony Riera
+                    </a>{" "}
+                    and{" "}
+                    <a
+                      href="https://cossistant.com"
+                      rel="noreferrer"
+                      target="_blank"
+                    >
+                      cossistant.com
+                    </a>
+                  </p>
+                </div>
+              )}
             </div>
           </section>
 
@@ -758,11 +1027,28 @@ export function App({
             onStatus={updateStatus}
             ref={hostRef}
             runtimeSettings={runtimeControlSettings}
+            workerFactory={
+              activePlayMode === "multiplayer"
+                ? createMultiplayerWorker
+                : undefined
+            }
           />
           {launchState && (
             <LaunchOverlay
               paletteName={selectedPreviewPaletteName}
               phase={launchState.phase}
+            />
+          )}
+          {activePlayMode === "multiplayer" && multiplayer.activeRoom && (
+            <MultiplayerRoomOverlay
+              chat={multiplayer.chat}
+              connectionStatus={multiplayer.connectionStatus}
+              localUserId={multiplayer.sessionUserId}
+              onChatSend={(text) => multiplayerClient.sendChat(text)}
+              onReturnToMenu={() => {
+                void returnToMenu();
+              }}
+              room={multiplayer.activeRoom}
             />
           )}
           {isRulesFromPause && <RulesAndControlsScreen onBack={closeRules} />}

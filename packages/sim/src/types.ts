@@ -460,9 +460,10 @@ export interface HudEggStatus {
 }
 
 export interface SpaceChallengeHudState {
-  phrase: string;
-  typedLength: number;
-  phase: "typing" | "dive";
+  targetKey: string;
+  hits: number;
+  requiredHits: number;
+  phase: "mash" | "dive";
 }
 
 export interface HudState {

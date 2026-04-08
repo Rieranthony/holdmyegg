@@ -39,9 +39,10 @@ const getInternalPlayer = (simulation: OutOfBoundsSimulation, playerId: string) 
     spacePhase: "none" | "float" | "reentry" | "superBoomDive" | "superBoomImpact";
     spacePhaseRemaining: number;
     spaceTriggerArmed: boolean;
-    spaceChallengePhrase: string | null;
-    spaceChallengeTypedLength: number;
-    spaceChallengePreviousPhrase: string | null;
+    spaceChallengeTargetKey: string | null;
+    spaceChallengeHits: number;
+    spaceChallengeRequiredHits: number;
+    spaceChallengePreviousKey: string | null;
   });
 
 const getNpcId = (simulation: OutOfBoundsSimulation) =>
@@ -1995,6 +1996,17 @@ describe("OutOfBoundsSimulation", () => {
     expect(simulation.config.startingLives).toBe(defaultSimulationConfig.startingLives);
   });
 
+  it("keeps the tuned shared movement defaults available through the live simulation config", () => {
+    const simulation = new OutOfBoundsSimulation();
+
+    expect(simulation.config.moveSpeed).toBe(defaultSimulationConfig.moveSpeed);
+    expect(simulation.config.moveSpeed).toBe(6.6);
+    expect(simulation.config.groundAcceleration).toBe(defaultSimulationConfig.groundAcceleration);
+    expect(simulation.config.groundAcceleration).toBe(30.8);
+    expect(simulation.config.airAcceleration).toBe(defaultSimulationConfig.airAcceleration);
+    expect(simulation.config.airAcceleration).toBe(13.2);
+  });
+
   it("pushes valid targets and respects cooldown", () => {
     const simulation = createTestSimulation("playNpc");
     const simulationInternals = simulation as unknown as { generateNpcCommand: (player: unknown) => PlayerCommand };
@@ -2186,12 +2198,12 @@ describe("OutOfBoundsSimulation", () => {
     expect(runtimePlayer.position.y).toBeGreaterThan(60);
   });
 
-  it("assigns a fresh phrase when space float starts without immediately repeating the previous trip", () => {
+  it("assigns a fresh target key and hit goal when space float starts without immediately repeating the previous trip", () => {
     const simulation = createTestSimulation("explore");
     const localPlayerId = simulation.getLocalPlayerId()!;
     const localPlayer = getInternalPlayer(simulation, localPlayerId);
 
-    localPlayer.spaceChallengePreviousPhrase = "i love feet";
+    localPlayer.spaceChallengePreviousKey = "a";
     localPlayer.position = { x: 10.5, y: 59.9, z: 10.5 };
     localPlayer.velocity = { x: 0, y: 12, z: 0 };
     localPlayer.grounded = false;
@@ -2205,17 +2217,20 @@ describe("OutOfBoundsSimulation", () => {
     }, 0.16);
 
     expect(localPlayer.spacePhase).toBe("float");
-    expect(localPlayer.spaceChallengePhrase).not.toBeNull();
-    expect(localPlayer.spaceChallengePhrase).not.toBe("i love feet");
-    expect(localPlayer.spaceChallengeTypedLength).toBe(0);
+    expect(localPlayer.spaceChallengeTargetKey).toMatch(/^[a-z]$/);
+    expect(localPlayer.spaceChallengeTargetKey).not.toBe("a");
+    expect(localPlayer.spaceChallengeHits).toBe(0);
+    expect(localPlayer.spaceChallengeRequiredHits).toBeGreaterThanOrEqual(10);
+    expect(localPlayer.spaceChallengeRequiredHits).toBeLessThanOrEqual(15);
     expect(simulation.getHudState().spaceChallenge).toEqual({
-      phrase: localPlayer.spaceChallengePhrase,
-      typedLength: 0,
-      phase: "typing"
+      targetKey: localPlayer.spaceChallengeTargetKey,
+      hits: 0,
+      requiredHits: localPlayer.spaceChallengeRequiredHits,
+      phase: "mash"
     });
   });
 
-  it("advances only correct in-order challenge typing and flips into super boom dive on completion", () => {
+  it("advances only matching challenge key presses and flips into super boom dive on completion", () => {
     const simulation = createTestSimulation("explore");
     const localPlayerId = simulation.getLocalPlayerId()!;
     const localPlayer = getInternalPlayer(simulation, localPlayerId);
@@ -2226,35 +2241,37 @@ describe("OutOfBoundsSimulation", () => {
     localPlayer.spacePhase = "float";
     localPlayer.spacePhaseRemaining = 5;
     localPlayer.spaceTriggerArmed = false;
-    localPlayer.spaceChallengePhrase = "go go";
-    localPlayer.spaceChallengeTypedLength = 0;
+    localPlayer.spaceChallengeTargetKey = "g";
+    localPlayer.spaceChallengeHits = 0;
+    localPlayer.spaceChallengeRequiredHits = 5;
 
     simulation.step({
       [localPlayerId]: idle({ typedText: "x" })
     });
-    expect(localPlayer.spaceChallengeTypedLength).toBe(0);
+    expect(localPlayer.spaceChallengeHits).toBe(0);
 
     simulation.step({
       [localPlayerId]: idle({ typedText: "g" })
     });
-    expect(localPlayer.spaceChallengeTypedLength).toBe(1);
+    expect(localPlayer.spaceChallengeHits).toBe(1);
 
     simulation.step({
-      [localPlayerId]: idle({ typedText: "o " })
+      [localPlayerId]: idle({ typedText: "gg" })
     });
-    expect(localPlayer.spaceChallengeTypedLength).toBe(3);
+    expect(localPlayer.spaceChallengeHits).toBe(3);
     expect(localPlayer.spacePhase).toBe("float");
 
     simulation.step({
-      [localPlayerId]: idle({ typedText: "xgo" })
+      [localPlayerId]: idle({ typedText: "xgg" })
     });
 
-    expect(localPlayer.spaceChallengeTypedLength).toBe("go go".length);
+    expect(localPlayer.spaceChallengeHits).toBe(5);
     expect(localPlayer.spacePhase).toBe("superBoomDive");
     expect(localPlayer.velocity.y).toBeLessThanOrEqual(-44);
     expect(simulation.getHudState().spaceChallenge).toEqual({
-      phrase: "go go",
-      typedLength: "go go".length,
+      targetKey: "g",
+      hits: 5,
+      requiredHits: 5,
       phase: "dive"
     });
   });
@@ -2435,7 +2452,8 @@ describe("OutOfBoundsSimulation", () => {
 
     const reentryPlayer = getInternalPlayer(simulation, localPlayerId);
     expect(reentryPlayer.spacePhase).toBe("reentry");
-    expect(reentryPlayer.velocity.y).toBeLessThan(-5);
+    expect(reentryPlayer.velocity.y).toBeLessThanOrEqual(-12);
+    expect(reentryPlayer.jetpackEligible).toBe(false);
 
     simulation.step({
       [localPlayerId]: idle()
@@ -2465,8 +2483,9 @@ describe("OutOfBoundsSimulation", () => {
     localPlayer.spacePhase = "superBoomDive";
     localPlayer.spacePhaseRemaining = 0;
     localPlayer.spaceTriggerArmed = false;
-    localPlayer.spaceChallengePhrase = "go go";
-    localPlayer.spaceChallengeTypedLength = 5;
+    localPlayer.spaceChallengeTargetKey = "g";
+    localPlayer.spaceChallengeHits = 5;
+    localPlayer.spaceChallengeRequiredHits = 5;
 
     npcPlayer.position = { x: 20.4, y: PLAYER_GROUND_Y, z: 18.5 };
     npcPlayer.velocity = { x: 0, y: 0, z: 0 };
@@ -2521,7 +2540,35 @@ describe("OutOfBoundsSimulation", () => {
     expect(reboundDistance).toBeLessThanOrEqual(10.5);
   });
 
-  it("lets a fresh Space press recover from reentry into jetpack before ground contact", () => {
+  it("forces a failed challenge into a downward reentry even if jump is held", () => {
+    const simulation = createTestSimulation("explore");
+    const localPlayerId = simulation.getLocalPlayerId()!;
+    const localPlayer = getInternalPlayer(simulation, localPlayerId);
+
+    localPlayer.position = { x: 10.5, y: 60.6, z: 10.5 };
+    localPlayer.velocity = { x: 0, y: 5.8, z: 0 };
+    localPlayer.grounded = false;
+    localPlayer.mass = simulation.config.maxMass;
+    localPlayer.spacePhase = "float";
+    localPlayer.spacePhaseRemaining = 0.04;
+    localPlayer.spaceTriggerArmed = false;
+    localPlayer.spaceChallengeTargetKey = "g";
+    localPlayer.spaceChallengeHits = 0;
+    localPlayer.spaceChallengeRequiredHits = 5;
+    localPlayer.jetpackEligible = false;
+    localPlayer.jetpackActive = false;
+
+    simulation.step({
+      [localPlayerId]: { ...idle(), jump: true }
+    }, 0.08);
+
+    const failedPlayer = simulation.getPlayerRuntimeState(localPlayerId)!;
+    expect(failedPlayer.spacePhase).toBe("reentry");
+    expect(failedPlayer.jetpackActive).toBe(false);
+    expect(failedPlayer.velocity.y).toBeLessThanOrEqual(-12);
+  });
+
+  it("does not reactivate jetpack during failed reentry even on a fresh jump press", () => {
     const simulation = createTestSimulation("explore");
     const localPlayerId = simulation.getLocalPlayerId()!;
     const localPlayer = getInternalPlayer(simulation, localPlayerId);
@@ -2533,33 +2580,7 @@ describe("OutOfBoundsSimulation", () => {
     localPlayer.spacePhase = "reentry";
     localPlayer.spacePhaseRemaining = 0;
     localPlayer.spaceTriggerArmed = false;
-    localPlayer.jetpackEligible = true;
-    localPlayer.jetpackActive = false;
-
-    simulation.step({
-      [localPlayerId]: jump()
-    });
-
-    const recoveredPlayer = simulation.getPlayerRuntimeState(localPlayerId)!;
-    expect(recoveredPlayer.spacePhase).toBe("none");
-    expect(recoveredPlayer.jetpackActive).toBe(true);
-    expect(recoveredPlayer.velocity.y).toBeGreaterThan(0);
-    expect(getInternalPlayer(simulation, localPlayerId).spaceTriggerArmed).toBe(false);
-  });
-
-  it("does not recover jetpack from reentry without matter", () => {
-    const simulation = createTestSimulation("explore");
-    const localPlayerId = simulation.getLocalPlayerId()!;
-    const localPlayer = getInternalPlayer(simulation, localPlayerId);
-
-    localPlayer.position = { x: 10.5, y: 55, z: 10.5 };
-    localPlayer.velocity = { x: 0, y: -4, z: 0 };
-    localPlayer.grounded = false;
-    localPlayer.mass = 0;
-    localPlayer.spacePhase = "reentry";
-    localPlayer.spacePhaseRemaining = 0;
-    localPlayer.spaceTriggerArmed = false;
-    localPlayer.jetpackEligible = true;
+    localPlayer.jetpackEligible = false;
     localPlayer.jetpackActive = false;
 
     simulation.step({
@@ -2569,6 +2590,7 @@ describe("OutOfBoundsSimulation", () => {
     const unrecoveredPlayer = simulation.getPlayerRuntimeState(localPlayerId)!;
     expect(unrecoveredPlayer.spacePhase).toBe("reentry");
     expect(unrecoveredPlayer.jetpackActive).toBe(false);
+    expect(unrecoveredPlayer.mass).toBe(simulation.config.maxMass);
     expect(unrecoveredPlayer.velocity.y).toBeLessThan(-4);
   });
 

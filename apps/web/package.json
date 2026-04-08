@@ -11,10 +11,13 @@
   "dependencies": {
     "@cossistant/react": "^0.1.2",
     "@out-of-bounds/map": "workspace:*",
+    "@out-of-bounds/netcode": "workspace:*",
     "@out-of-bounds/sim": "workspace:*",
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.5.0",
+    "better-auth": "^1.6.0",
     "detect-gpu": "^5.0.70",
+    "facehash": "^0.1.0",
     "geist": "^1.7.0",
     "idb": "^8.0.3",
     "react": "^19.2.4",

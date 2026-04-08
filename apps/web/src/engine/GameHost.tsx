@@ -3,6 +3,7 @@ import type { MapDocumentV1 } from "@out-of-bounds/map";
 import type { HudState, SimulationInitialSpawnStyle } from "@out-of-bounds/sim";
 import type { RuntimeControlSettings } from "../game/runtimeControlSettings";
 import { GameClient } from "./GameClient";
+import type { GameWorkerFactory } from "./workerBridge";
 import type {
   ActiveShellMode,
   EditorPanelState,
@@ -31,6 +32,7 @@ interface GameHostProps {
   playerProfile?: PlayerProfile;
   presentation?: ShellPresentation;
   runtimeSettings?: RuntimeControlSettings;
+  workerFactory?: GameWorkerFactory;
   onDiagnostics?: (diagnostics: GameDiagnostics) => void;
   onEditorStateChange?: (editorState: EditorPanelState) => void;
   onHudStateChange?: (hudState: HudState | null) => void;
@@ -49,6 +51,7 @@ export const GameHost = forwardRef<GameHostHandle, GameHostProps>(function GameH
     playerProfile,
     presentation = "default",
     runtimeSettings,
+    workerFactory,
     onDiagnostics,
     onEditorStateChange,
     onHudStateChange,
@@ -78,6 +81,7 @@ export const GameHost = forwardRef<GameHostHandle, GameHostProps>(function GameH
       localPlayerPaletteName: playerProfile?.paletteName,
       presentation,
       runtimeSettings,
+      workerFactory,
       onDiagnostics,
       onEditorStateChange,
       onHudStateChange,
@@ -91,7 +95,7 @@ export const GameHost = forwardRef<GameHostHandle, GameHostProps>(function GameH
       client.dispose();
       clientRef.current = null;
     };
-  }, [matchColorSeed, onDiagnostics, onEditorStateChange, onHudStateChange, onPauseStateChange, onReadyToDisplay, onRuntimeOverlayChange, onStatus]);
+  }, [matchColorSeed, onDiagnostics, onEditorStateChange, onHudStateChange, onPauseStateChange, onReadyToDisplay, onRuntimeOverlayChange, onStatus, workerFactory]);
 
   useEffect(() => {
     clientRef.current?.setShellState({

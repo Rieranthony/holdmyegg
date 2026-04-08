@@ -27,10 +27,11 @@ const createHudState = (eggStatus: HudState["eggStatus"]): HudState => ({
 
 const inactiveOverlayState: RuntimeOverlayState = {
   matterPulseActive: false,
+  spaceFailPulseActive: false,
   spaceMistakePulseActive: false,
   spaceSuccessPulseActive: false,
-  spaceLocalPhrase: null,
-  spaceLocalTypedLength: 0
+  spaceLocalTargetKey: null,
+  spaceLocalHitCount: 0
 };
 
 describe("Hud", () => {
@@ -135,7 +136,7 @@ describe("Hud", () => {
     expect(screen.getByTestId("hud-matter-meter")).toHaveClass("hud-meter--pulse");
   });
 
-  it("renders the top typing strip with optimistic local progress", () => {
+  it("renders the centered mash challenge with optimistic local progress", () => {
     const { container } = render(
       <Hud
         hudState={{
@@ -152,25 +153,65 @@ describe("Hud", () => {
             canChargedThrow: true
           }),
           spaceChallenge: {
-            phrase: "go go",
-            typedLength: 2,
-            phase: "typing"
+            targetKey: "g",
+            hits: 2,
+            requiredHits: 5,
+            phase: "mash"
           }
         }}
         mode="explore"
         overlayState={{
           ...inactiveOverlayState,
-          spaceLocalPhrase: "go go",
-          spaceLocalTypedLength: 3
+          spaceLocalTargetKey: "g",
+          spaceLocalHitCount: 3
         }}
       />
     );
 
     expect(screen.getByTestId("space-typing-overlay")).toBeInTheDocument();
-    expect(screen.getByTestId("space-typing-phrase")).toHaveTextContent("go go");
-    expect(container.querySelectorAll('[data-state="done"]')).toHaveLength(3);
-    expect(container.querySelectorAll('[data-state="current"]')).toHaveLength(1);
+    expect(screen.getByText("MASH THIS KEY")).toBeInTheDocument();
+    expect(screen.getByTestId("space-typing-key")).toHaveTextContent("G");
+    expect(screen.getByText("BOMB CHARGE")).toBeInTheDocument();
     expect(screen.getByText("3 / 5")).toBeInTheDocument();
+    expect(screen.getByText("MASH LIKE A GREMLIN")).toBeInTheDocument();
+    expect(container.querySelectorAll(".space-typing-overlay__trail-chip")).toHaveLength(5);
+  });
+
+  it("adds the harsher arcade mistake state when local typing feedback flags an error", () => {
+    render(
+      <Hud
+        hudState={{
+          ...createHudState({
+            reason: "ready",
+            hasMatter: true,
+            ready: true,
+            activeCount: 0,
+            maxActiveCount: 2,
+            cost: 42,
+            cooldownRemaining: 0,
+            cooldownDuration: 1.6,
+            canQuickEgg: true,
+            canChargedThrow: true
+          }),
+          spaceChallenge: {
+            targetKey: "g",
+            hits: 1,
+            requiredHits: 5,
+            phase: "mash"
+          }
+        }}
+        mode="explore"
+        overlayState={{
+          ...inactiveOverlayState,
+          spaceMistakePulseActive: true,
+          spaceLocalTargetKey: "g",
+          spaceLocalHitCount: 1
+        }}
+      />
+    );
+
+    expect(screen.getByTestId("space-typing-overlay")).toHaveClass("space-typing-overlay--mistake");
+    expect(screen.getByText("WRONG KEY. HIT THE BIG ONE.")).toBeInTheDocument();
   });
 
   it("swaps the phrase strip for the super boom stamp during the dive", () => {
@@ -190,8 +231,9 @@ describe("Hud", () => {
             canChargedThrow: true
           }),
           spaceChallenge: {
-            phrase: "kiss the moon",
-            typedLength: 13,
+            targetKey: "g",
+            hits: 5,
+            requiredHits: 5,
             phase: "dive"
           }
         }}
@@ -200,7 +242,73 @@ describe("Hud", () => {
       />
     );
 
+    expect(screen.getByText("STAND CLEAR")).toBeInTheDocument();
     expect(screen.getByTestId("space-typing-stamp")).toHaveTextContent("SUPER BOOM");
-    expect(screen.queryByTestId("space-typing-phrase")).not.toBeInTheDocument();
+    expect(screen.getByText("DELIVERY EXPRESS")).toBeInTheDocument();
+    expect(screen.queryByTestId("space-typing-key")).not.toBeInTheDocument();
+  });
+
+  it("keeps the mash target visible when local success pulses arrive before the authoritative dive", () => {
+    render(
+      <Hud
+        hudState={{
+          ...createHudState({
+            reason: "ready",
+            hasMatter: true,
+            ready: true,
+            activeCount: 0,
+            maxActiveCount: 2,
+            cost: 42,
+            cooldownRemaining: 0,
+            cooldownDuration: 1.6,
+            canQuickEgg: true,
+            canChargedThrow: true
+          }),
+          spaceChallenge: {
+            targetKey: "g",
+            hits: 4,
+            requiredHits: 5,
+            phase: "mash"
+          }
+        }}
+        mode="explore"
+        overlayState={{
+          ...inactiveOverlayState,
+          spaceSuccessPulseActive: true,
+          spaceLocalTargetKey: "g",
+          spaceLocalHitCount: 5
+        }}
+      />
+    );
+
+    expect(screen.queryByTestId("space-typing-stamp")).not.toBeInTheDocument();
+    expect(screen.getByTestId("space-typing-key")).toHaveTextContent("G");
+  });
+
+  it("shows a fail flash after the mash challenge is missed", () => {
+    render(
+      <Hud
+        hudState={createHudState({
+          reason: "ready",
+          hasMatter: true,
+          ready: true,
+          activeCount: 0,
+          maxActiveCount: 2,
+          cost: 42,
+          cooldownRemaining: 0,
+          cooldownDuration: 1.6,
+          canQuickEgg: true,
+          canChargedThrow: true
+        })}
+        mode="explore"
+        overlayState={{
+          ...inactiveOverlayState,
+          spaceFailPulseActive: true
+        }}
+      />
+    );
+
+    expect(screen.getByTestId("space-typing-fail")).toHaveTextContent("MISS");
+    expect(screen.getByText("TOO SLOW")).toBeInTheDocument();
   });
 });

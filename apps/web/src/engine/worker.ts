@@ -14,7 +14,12 @@ import {
   type SimulationPerformanceDiagnostics
 } from "@out-of-bounds/sim";
 import { meshTerrainChunk } from "../game/terrainMesher";
-import { clearTransientRuntimeInputFlags, unpackRuntimeInputCommand, type RuntimeInputCommand } from "./runtimeInput";
+import {
+  clearTransientRuntimeInputFlags,
+  mergeRuntimeInputCommand,
+  unpackRuntimeInputCommand,
+  type RuntimeInputCommand
+} from "./runtimeInput";
 import type { WorkerRequestMessage, WorkerResponseMessage } from "./protocol";
 import type {
   ActiveShellMode,
@@ -419,7 +424,10 @@ const handleMessage = (message: WorkerRequestMessage) => {
       switchToMode(message.mode);
       return;
     case "set_runtime_input":
-      latestRuntimeInput = unpackRuntimeInputCommand(message.buffer);
+      latestRuntimeInput = mergeRuntimeInputCommand(
+        latestRuntimeInput,
+        unpackRuntimeInputCommand(message.buffer)
+      );
       return;
     case "set_editor_state":
       if (message.tool) {

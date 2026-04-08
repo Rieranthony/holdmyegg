@@ -246,6 +246,31 @@ describe("GameHost", () => {
     });
   });
 
+  it("forwards a custom worker factory to the mounted client", async () => {
+    const workerFactory = vi.fn(() => ({
+      onmessage: null,
+      postMessage: vi.fn(),
+      terminate: vi.fn()
+    }));
+
+    render(
+      <GameHost
+        initialDocument={createDefaultArenaMap()}
+        matchColorSeed={11}
+        mode="multiplayer"
+        workerFactory={workerFactory}
+      />
+    );
+
+    await waitFor(() => {
+      expect(gameClientState.mount).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workerFactory
+        })
+      );
+    });
+  });
+
   it("forwards imperative host methods to the mounted game client", async () => {
     const initialDocument = createDefaultArenaMap();
     const nextDocument = {

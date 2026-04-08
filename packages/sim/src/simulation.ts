@@ -52,7 +52,10 @@ import type {
 import { defaultSimulationConfig } from "./config";
 import { getHudEggStatus } from "./eggAvailability";
 import { getGroundedEggLaunchVelocity } from "./eggLaunch";
-import { createSpaceChallengePhrase } from "./spaceChallenge";
+import {
+  createSpaceChallengeRequiredHits,
+  createSpaceChallengeTargetKey
+} from "./spaceChallenge";
 
 const EPSILON = 0.0001;
 const RING_OUT_FALL_CULL_DEPTH = 12;
@@ -69,6 +72,7 @@ const SPACE_REENTRY_GRAVITY_MULTIPLIER = 1.9;
 const SPACE_FLOAT_DRIFT_SPEED = 1.4;
 const SPACE_FLOAT_MOVE_SPEED_MULTIPLIER = 0.38;
 const SPACE_FLOAT_ACCELERATION_MULTIPLIER = 0.55;
+const SPACE_FAIL_REENTRY_SPEED = -12;
 const ORBITAL_EGG_DROP_OFFSET_Y = 0.22;
 const ORBITAL_EGG_DOWNWARD_SPEED = 15;
 const ORBITAL_EGG_HORIZONTAL_INHERIT_FACTOR = 0.35;
@@ -134,9 +138,10 @@ interface SimPlayer {
   pushVisualRemaining: number;
   spacePhase: SpacePhase;
   spacePhaseRemaining: number;
-  spaceChallengePhrase: string | null;
-  spaceChallengeTypedLength: number;
-  spaceChallengePreviousPhrase: string | null;
+  spaceChallengeTargetKey: string | null;
+  spaceChallengeHits: number;
+  spaceChallengeRequiredHits: number;
+  spaceChallengePreviousKey: string | null;
   spaceTriggerArmed: boolean;
   eliminatedAt: number | null;
 }
@@ -1045,9 +1050,10 @@ export class OutOfBoundsSimulation {
       pushVisualRemaining: 0,
       spacePhase: "none",
       spacePhaseRemaining: 0,
-      spaceChallengePhrase: null,
-      spaceChallengeTypedLength: 0,
-      spaceChallengePreviousPhrase: null,
+      spaceChallengeTargetKey: null,
+      spaceChallengeHits: 0,
+      spaceChallengeRequiredHits: 0,
+      spaceChallengePreviousKey: null,
       spaceTriggerArmed: true,
       eliminatedAt: null
     };
@@ -1514,22 +1520,24 @@ export class OutOfBoundsSimulation {
   }
 
   private getSpaceChallengeHudState(player: SimPlayer): HudState["spaceChallenge"] {
-    if (!player.spaceChallengePhrase) {
+    if (!player.spaceChallengeTargetKey || player.spaceChallengeRequiredHits <= 0) {
       return null;
     }
 
     if (player.spacePhase === "float") {
       return {
-        phrase: player.spaceChallengePhrase,
-        typedLength: player.spaceChallengeTypedLength,
-        phase: "typing"
+        targetKey: player.spaceChallengeTargetKey,
+        hits: player.spaceChallengeHits,
+        requiredHits: player.spaceChallengeRequiredHits,
+        phase: "mash"
       };
     }
 
     if (player.spacePhase === "superBoomDive" || player.spacePhase === "superBoomImpact") {
       return {
-        phrase: player.spaceChallengePhrase,
-        typedLength: player.spaceChallengePhrase.length,
+        targetKey: player.spaceChallengeTargetKey,
+        hits: player.spaceChallengeRequiredHits,
+        requiredHits: player.spaceChallengeRequiredHits,
         phase: "dive"
       };
     }
@@ -1797,28 +1805,32 @@ export class OutOfBoundsSimulation {
     this.queueTerrainChangedEvent(source, voxels.length);
   }
 
-  private resetSpaceChallenge(player: SimPlayer, rememberCurrentPhrase = false) {
-    if (rememberCurrentPhrase && player.spaceChallengePhrase) {
-      player.spaceChallengePreviousPhrase = player.spaceChallengePhrase;
+  private resetSpaceChallenge(player: SimPlayer, rememberCurrentKey = false) {
+    if (rememberCurrentKey && player.spaceChallengeTargetKey) {
+      player.spaceChallengePreviousKey = player.spaceChallengeTargetKey;
     }
 
-    player.spaceChallengePhrase = null;
-    player.spaceChallengeTypedLength = 0;
+    player.spaceChallengeTargetKey = null;
+    player.spaceChallengeHits = 0;
+    player.spaceChallengeRequiredHits = 0;
   }
 
-  private consumeSpaceChallengeTyping(player: SimPlayer, typedText: string) {
-    const phrase = player.spaceChallengePhrase;
-    if (!phrase || typedText.length === 0) {
+  private consumeSpaceChallengeMash(player: SimPlayer, typedText: string) {
+    const targetKey = player.spaceChallengeTargetKey;
+    if (!targetKey || player.spaceChallengeRequiredHits <= 0 || typedText.length === 0) {
       return;
     }
 
     for (const character of typedText) {
-      if (character !== phrase[player.spaceChallengeTypedLength]) {
+      if (character !== targetKey) {
         continue;
       }
 
-      player.spaceChallengeTypedLength += 1;
-      if (player.spaceChallengeTypedLength >= phrase.length) {
+      player.spaceChallengeHits = Math.min(
+        player.spaceChallengeRequiredHits,
+        player.spaceChallengeHits + 1
+      );
+      if (player.spaceChallengeHits >= player.spaceChallengeRequiredHits) {
         this.startSuperBoomDive(player);
         return;
       }
@@ -1826,15 +1838,20 @@ export class OutOfBoundsSimulation {
   }
 
   private startSpaceReentry(player: SimPlayer) {
+    this.stopJetpack(player);
     player.spacePhase = "reentry";
     player.spacePhaseRemaining = 0;
-    player.jetpackEligible = true;
+    player.jumpBufferRemaining = 0;
+    player.jumpAssistRemaining = 0;
     player.jetpackHoldActivationRemaining = 0;
+    player.jetpackEligible = false;
+    player.jetpackOutsideBoundsGrace = false;
+    player.velocity.y = Math.min(player.velocity.y, SPACE_FAIL_REENTRY_SPEED);
     this.resetSpaceChallenge(player, true);
   }
 
   private startSuperBoomDive(player: SimPlayer) {
-    if (!player.spaceChallengePhrase) {
+    if (!player.spaceChallengeTargetKey || player.spaceChallengeRequiredHits <= 0) {
       return;
     }
 
@@ -1846,7 +1863,7 @@ export class OutOfBoundsSimulation {
     player.jetpackOutsideBoundsGrace = false;
     player.spacePhase = "superBoomDive";
     player.spacePhaseRemaining = 0;
-    player.spaceChallengeTypedLength = player.spaceChallengePhrase.length;
+    player.spaceChallengeHits = player.spaceChallengeRequiredHits;
     player.velocity.x = 0;
     player.velocity.y = SUPER_BOOM_DIVE_SPEED;
     player.velocity.z = 0;
@@ -1898,7 +1915,7 @@ export class OutOfBoundsSimulation {
       player.jumpBufferRemaining = this.config.jumpBufferDuration;
     }
     if (player.spacePhase === "float") {
-      this.consumeSpaceChallengeTyping(player, command.typedText);
+      this.consumeSpaceChallengeMash(player, command.typedText);
       if (player.spacePhase !== "float") {
         player.mass = clamp(player.mass, 0, this.config.maxMass);
         return;
@@ -1974,16 +1991,6 @@ export class OutOfBoundsSimulation {
       } else {
         player.jetpackHoldActivationRemaining = Math.max(0, player.jetpackHoldActivationRemaining - dt);
       }
-    }
-
-    if (
-      !stunned &&
-      player.spacePhase === "reentry" &&
-      command.jumpPressed &&
-      player.mass > EPSILON
-    ) {
-      this.cancelReentryForJetpack(player);
-      this.activateJetpack(player);
     }
 
     if (
@@ -2473,16 +2480,18 @@ export class OutOfBoundsSimulation {
   private startSpaceFloat(player: SimPlayer) {
     this.stopJetpack(player);
     player.jumpBufferRemaining = 0;
+    player.jumpAssistRemaining = 0;
     player.jetpackHoldActivationRemaining = 0;
     player.jetpackEligible = false;
     player.jetpackOutsideBoundsGrace = false;
     player.spacePhase = "float";
     player.spacePhaseRemaining = SPACE_FLOAT_DURATION;
-    player.spaceChallengePhrase = createSpaceChallengePhrase({
-      previousPhrase: player.spaceChallengePreviousPhrase,
+    player.spaceChallengeTargetKey = createSpaceChallengeTargetKey({
+      previousKey: player.spaceChallengePreviousKey,
       random: () => this.nextRandom()
     });
-    player.spaceChallengeTypedLength = 0;
+    player.spaceChallengeHits = 0;
+    player.spaceChallengeRequiredHits = createSpaceChallengeRequiredHits(() => this.nextRandom());
     player.spaceTriggerArmed = false;
     player.velocity.y = SPACE_FLOAT_DRIFT_SPEED;
   }
@@ -2501,12 +2510,6 @@ export class OutOfBoundsSimulation {
     player.jetpackActive = true;
     player.jumpBufferRemaining = 0;
     player.jetpackHoldActivationRemaining = 0;
-  }
-
-  private cancelReentryForJetpack(player: SimPlayer) {
-    player.spacePhase = "none";
-    player.spacePhaseRemaining = 0;
-    player.spaceTriggerArmed = false;
   }
 
   private integrateEliminatedPlayer(player: SimPlayer, dt: number) {

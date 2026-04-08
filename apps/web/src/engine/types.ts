@@ -16,7 +16,13 @@ import type {
 import type { BlockKind, MapDocumentV1, MapPropKind } from "@out-of-bounds/map";
 import type { ChickenPaletteName } from "../game/colors";
 
-export type ShellMode = "boot" | "menu" | "rules" | "editor" | GameMode;
+export type ShellMode =
+  | "boot"
+  | "menu"
+  | "multiplayerMenu"
+  | "rules"
+  | "editor"
+  | GameMode;
 export type ActiveShellMode = "editor" | GameMode;
 export type ShellPresentation = "default" | "menu";
 export type EditorTool = "add" | "erase" | "spawn" | "prop";
@@ -41,10 +47,11 @@ export interface RuntimePauseState {
 
 export interface RuntimeOverlayState {
   matterPulseActive: boolean;
+  spaceFailPulseActive: boolean;
   spaceMistakePulseActive: boolean;
   spaceSuccessPulseActive: boolean;
-  spaceLocalPhrase: string | null;
-  spaceLocalTypedLength: number;
+  spaceLocalTargetKey: string | null;
+  spaceLocalHitCount: number;
 }
 
 export const blockKindOptions: BlockKind[] = ["ground", "boundary", "hazard"];

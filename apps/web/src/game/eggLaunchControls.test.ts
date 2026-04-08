@@ -5,8 +5,8 @@ import {
 } from "./eggLaunchControls";
 
 describe("eggLaunchControls", () => {
-  it("lists E as the egg shortcut", () => {
-    expect(getEggLaunchShortcutLabels()).toEqual(["E"]);
+  it("lists RMB and E as the egg shortcuts", () => {
+    expect(getEggLaunchShortcutLabels()).toEqual(["RMB", "E"]);
   });
 
   it("accepts E while rejecting build and modifier keys", () => {

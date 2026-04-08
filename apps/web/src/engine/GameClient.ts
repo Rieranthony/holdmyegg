@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import {
+  MutableVoxelWorld,
   createDefaultArenaMap,
   getMapPropVoxels,
   normalizeArenaBudgetMapDocument,
@@ -12,6 +13,7 @@ import {
   getEggTrajectoryPosition,
   getGroundedEggLaunchVelocity,
   type HudState,
+  type RuntimeInteractionFocusState,
   type RuntimeEggScatterDebrisState,
   type RuntimeEggState,
   type RuntimePlayerState,
@@ -28,7 +30,9 @@ import {
   dampScalar,
   getAimRigState,
   getForwardSpeedRatio,
+  getLookDirection,
   getPlanarForwardBetweenPoints,
+  getPlanarVectorFromYaw,
   getSpeedCameraBlend,
   getYawFromPlanarVector,
   stepAngleToward
@@ -100,6 +104,11 @@ import type {
 } from "./protocol";
 import { AuthoritativeReplica } from "./authoritativeReplica";
 import { MAX_TYPED_TEXT_BYTES, packRuntimeInputCommand } from "./runtimeInput";
+import {
+  createLocalGameWorker,
+  type GameWorkerFactory,
+  type GameWorkerLike
+} from "./workerBridge";
 import type {
   ActiveShellMode,
   EditorPanelState,
@@ -132,6 +141,7 @@ interface GameClientMountOptions extends GameClientCallbacks {
   matchColorSeed: number;
   presentation?: ShellPresentation;
   runtimeSettings?: RuntimeControlSettings;
+  workerFactory?: GameWorkerFactory;
 }
 
 type GameShellIntent =
@@ -186,7 +196,7 @@ interface DynamicOpacityMeshResource {
   opacityAttribute: THREE.InstancedBufferAttribute;
 }
 
-type EggChargeInputSource = "key";
+type EggChargeInputSource = "key" | "pointer";
 
 interface EggChargeState {
   active: boolean;
@@ -203,6 +213,16 @@ interface HoldActionState {
   pressed: boolean;
   startedAt: number;
   holdTriggered: boolean;
+}
+
+interface RepeatingPointerActionState {
+  pressed: boolean;
+  nextPulseAt: number;
+}
+
+interface LocalFocusOverride {
+  focusState: RuntimeInteractionFocusState;
+  expiresAt: number;
 }
 
 interface EggTrajectoryPreviewResource {
@@ -268,6 +288,25 @@ const SPACE_STAR_COUNT = 220;
 const POINTER_CAPTURE_TIMEOUT_MS = 1_000;
 const INPUT_HOLD_THRESHOLD = 0.16;
 const DOUBLE_TAP_WINDOW_MS = 220;
+const HARVEST_REPEAT_INTERVAL = 0.1;
+const HARVEST_FOCUS_OVERRIDE_DURATION = 0.12;
+const PRIMARY_POINTER_BUTTON = 0;
+const SECONDARY_POINTER_BUTTON = 2;
+const HARVEST_SNAP_SAMPLE_OFFSETS = [
+  [0, 0],
+  [0.018, 0],
+  [-0.018, 0],
+  [0, 0.018],
+  [0, -0.018],
+  [0.018, 0.018],
+  [0.018, -0.018],
+  [-0.018, 0.018],
+  [-0.018, -0.018],
+  [0.036, 0],
+  [-0.036, 0],
+  [0, 0.036],
+  [0, -0.036]
+] as const;
 const MATTER_PULSE_DURATION = 0.72;
 const MATTER_BUBBLE_DURATION = 1.1;
 const MATTER_FEEDBACK_COOLDOWN = 0.5;
@@ -275,6 +314,7 @@ const SPACE_TYPING_PRIME_DURATION = 0.22;
 const SPACE_TYPING_MISFIRE_DURATION = 0.16;
 const SPACE_TYPING_MISTAKE_PULSE_DURATION = 0.18;
 const SPACE_TYPING_SUCCESS_PULSE_DURATION = 0.48;
+const SPACE_TYPING_FAIL_FLASH_DURATION = 0.52;
 const SUPER_BOOM_BOMB_SCALE = 2;
 const SUPER_BOOM_IMPACT_JOLT_DURATION = 0.22;
 const modifierSensitiveRuntimeKeyCodes = new Set([
@@ -342,7 +382,9 @@ const spacePlanetDescriptors = [
   }
 ] as const;
 
-const isRuntimeMode = (mode: ActiveShellMode) => mode === "explore" || mode === "playNpc";
+const isRuntimeMode = (mode: ActiveShellMode) =>
+  mode === "explore" || mode === "playNpc" || mode === "multiplayer";
+const MULTIPLAYER_SPECTATOR_CAMERA_SPEED = 16;
 
 const configureStaticInstancedMesh = (mesh: THREE.InstancedMesh, matrices: readonly THREE.Matrix4[]) => {
   mesh.count = matrices.length;
@@ -551,8 +593,6 @@ const getWorldNormalFromIntersection = (intersection: THREE.Intersection<THREE.O
   return faceNormal;
 };
 
-const isRuntimeDestroyPointerButton = (button: number) => button === 0 || button === 2;
-
 const isFormElement = (target: EventTarget | null) =>
   target instanceof HTMLInputElement ||
   target instanceof HTMLTextAreaElement ||
@@ -561,10 +601,6 @@ const isFormElement = (target: EventTarget | null) =>
 const getNormalizedTypedCharacter = (event: KeyboardEvent) => {
   if (event.metaKey || event.ctrlKey || event.altKey || event.repeat) {
     return null;
-  }
-
-  if (event.key === " ") {
-    return " ";
   }
 
   return /^[a-z]$/i.test(event.key) ? event.key.toLowerCase() : null;
@@ -673,7 +709,7 @@ export class GameClient {
 
   private readonly canvas: HTMLCanvasElement;
   private readonly callbacks: GameClientCallbacks;
-  private readonly worker: Worker;
+  private readonly worker: GameWorkerLike;
   private readonly renderer: THREE.WebGLRenderer;
   private readonly scene = new THREE.Scene();
   private readonly camera = new THREE.PerspectiveCamera(40, 1, 0.1, 1000);
@@ -699,7 +735,6 @@ export class GameClient {
   private readonly playerShadowRaycaster = new THREE.Raycaster();
   private readonly eggTrajectoryRaycaster = new THREE.Raycaster();
   private readonly eggTrajectoryPreview = createEggTrajectoryPreview(EGG_TRAJECTORY_MAX_POINTS);
-  private readonly centerRay = new THREE.Vector2(0, 0);
   private readonly clock = new THREE.Clock();
   private readonly chunkMeshes = new Map<string, THREE.Mesh>();
   private readonly playerVisuals = new Map<string, PlayerVisual>();
@@ -767,18 +802,29 @@ export class GameClient {
     startedAt: 0,
     holdTriggered: false
   };
+  private readonly eggPointerAction: HoldActionState = {
+    pressed: false,
+    startedAt: 0,
+    holdTriggered: false
+  };
+  private readonly harvestPointerAction: RepeatingPointerActionState = {
+    pressed: false,
+    nextPulseAt: 0
+  };
   private lastForwardTapAtMs = Number.NEGATIVE_INFINITY;
   private forwardTapReleased = true;
 
   private animationFrameId: number | null = null;
   private mode: ActiveShellMode;
   private worldDocument = normalizeArenaBudgetMapDocument(createDefaultArenaMap());
+  private runtimeWorld = new MutableVoxelWorld(this.worldDocument);
   private latestFrame: RuntimeRenderFrame | null = null;
   private readonly authoritativeReplica = new AuthoritativeReplica();
   private matchColorSeed: number;
   private cameraForward = { x: 1, z: 0 };
   private inputSequence = 0;
   private destroyQueued = false;
+  private queuedDestroyTarget: RuntimeFocusedTarget | null = null;
   private quickEggQueued = false;
   private quickEggPitch = 0;
   private pointerLocked = false;
@@ -795,6 +841,7 @@ export class GameClient {
   private lookPitch = aimCameraConfig.defaultPitch;
   private speedBlend = 0;
   private hasInitializedRuntimeCamera = false;
+  private hasInitializedSpectatorCamera = false;
   private localPushTraceBurstRemaining = 0;
   private previousLocalPushVisualRemaining = 0;
   private presentation: ShellPresentation;
@@ -805,6 +852,7 @@ export class GameClient {
   private eggExplosionBurstMesh: DynamicOpacityMeshResource | null = null;
   private eggExplosionShockwaveMesh: DynamicOpacityMeshResource | null = null;
   private focusedTarget: RuntimeFocusedTarget | null = null;
+  private harvestFocusOverride: LocalFocusOverride | null = null;
   private pendingReadyToDisplay = false;
   private baseFogNear = 36;
   private baseFogFar = 120;
@@ -814,13 +862,15 @@ export class GameClient {
   private matterFeedbackLockedUntil = 0;
   private spaceTypePrimeUntil = 0;
   private spaceTypeMisfireUntil = 0;
+  private spaceFailPulseUntil = 0;
   private spaceMistakePulseUntil = 0;
   private spaceSuccessPulseUntil = 0;
   private superBoomImpactJoltUntil = 0;
   private previousLocalSpacePhase: RuntimePlayerState["spacePhase"] | null = null;
-  private localSpaceChallengePhrase: string | null = null;
-  private localSpaceChallengeTypedLength = 0;
+  private localSpaceChallengeTargetKey: string | null = null;
+  private localSpaceChallengeHitCount = 0;
   private pendingTypedText = "";
+  private lastRuntimeInputMismatchWarningKey: string | null = null;
   private lastRuntimeOverlayState: RuntimeOverlayState | null = null;
   private resourceBubbleElement: HTMLDivElement | null = null;
 
@@ -834,6 +884,7 @@ export class GameClient {
     matchColorSeed,
     presentation = "default",
     runtimeSettings,
+    workerFactory,
     ...callbacks
   }: GameClientMountOptions) {
     this.canvas = canvas;
@@ -848,9 +899,8 @@ export class GameClient {
       ? normalizeRuntimeControlSettings(runtimeSettings)
       : createDefaultRuntimeControlSettings();
     this.worldDocument = normalizeArenaBudgetMapDocument(initialDocument ?? createDefaultArenaMap());
-    this.worker = new Worker(new URL("./worker.ts", import.meta.url), {
-      type: "module"
-    });
+    this.runtimeWorld = new MutableVoxelWorld(this.worldDocument);
+    this.worker = workerFactory ? workerFactory() : createLocalGameWorker();
     this.renderer = new THREE.WebGLRenderer({
       canvas,
       antialias: true,
@@ -925,23 +975,26 @@ export class GameClient {
 
   private emitRuntimeOverlayState(force = false, elapsedTime = this.clock.elapsedTime) {
     const matterPulseActive = elapsedTime < this.matterPulseUntil;
+    const spaceFailPulseActive = elapsedTime < this.spaceFailPulseUntil;
     const spaceMistakePulseActive = elapsedTime < this.spaceMistakePulseUntil;
     const spaceSuccessPulseActive = elapsedTime < this.spaceSuccessPulseUntil;
     const nextState: RuntimeOverlayState = {
       matterPulseActive,
+      spaceFailPulseActive,
       spaceMistakePulseActive,
       spaceSuccessPulseActive,
-      spaceLocalPhrase: this.localSpaceChallengePhrase,
-      spaceLocalTypedLength: this.localSpaceChallengeTypedLength
+      spaceLocalTargetKey: this.localSpaceChallengeTargetKey,
+      spaceLocalHitCount: this.localSpaceChallengeHitCount
     };
     const unchanged =
       !force &&
       this.lastRuntimeOverlayState !== null &&
       this.lastRuntimeOverlayState.matterPulseActive === nextState.matterPulseActive &&
+      this.lastRuntimeOverlayState.spaceFailPulseActive === nextState.spaceFailPulseActive &&
       this.lastRuntimeOverlayState.spaceMistakePulseActive === nextState.spaceMistakePulseActive &&
       this.lastRuntimeOverlayState.spaceSuccessPulseActive === nextState.spaceSuccessPulseActive &&
-      this.lastRuntimeOverlayState.spaceLocalPhrase === nextState.spaceLocalPhrase &&
-      this.lastRuntimeOverlayState.spaceLocalTypedLength === nextState.spaceLocalTypedLength;
+      this.lastRuntimeOverlayState.spaceLocalTargetKey === nextState.spaceLocalTargetKey &&
+      this.lastRuntimeOverlayState.spaceLocalHitCount === nextState.spaceLocalHitCount;
 
     if (unchanged) {
       return;
@@ -958,18 +1011,18 @@ export class GameClient {
   private syncLocalSpaceChallengeState() {
     const challenge = this.getLocalSpaceChallengeState();
     if (!challenge) {
-      this.localSpaceChallengePhrase = null;
-      this.localSpaceChallengeTypedLength = 0;
+      this.localSpaceChallengeTargetKey = null;
+      this.localSpaceChallengeHitCount = 0;
       return;
     }
 
-    if (this.localSpaceChallengePhrase !== challenge.phrase) {
-      this.localSpaceChallengePhrase = challenge.phrase;
-      this.localSpaceChallengeTypedLength = challenge.typedLength;
+    if (this.localSpaceChallengeTargetKey !== challenge.targetKey) {
+      this.localSpaceChallengeTargetKey = challenge.targetKey;
+      this.localSpaceChallengeHitCount = challenge.hits;
       return;
     }
 
-    this.localSpaceChallengeTypedLength = Math.max(this.localSpaceChallengeTypedLength, challenge.typedLength);
+    this.localSpaceChallengeHitCount = Math.max(this.localSpaceChallengeHitCount, challenge.hits);
   }
 
   private triggerSpaceMistakeFeedback(elapsedTime = this.clock.elapsedTime) {
@@ -988,8 +1041,46 @@ export class GameClient {
     this.emitRuntimeOverlayState(true, elapsedTime);
   }
 
+  private triggerSpaceFailFeedback(elapsedTime = this.clock.elapsedTime) {
+    this.spaceFailPulseUntil = elapsedTime + SPACE_TYPING_FAIL_FLASH_DURATION;
+    this.emitRuntimeOverlayState(true, elapsedTime);
+  }
+
   private triggerSuperBoomImpactJolt(elapsedTime = this.clock.elapsedTime) {
     this.superBoomImpactJoltUntil = elapsedTime + SUPER_BOOM_IMPACT_JOLT_DURATION;
+  }
+
+  private warnIfMissingLocalRuntimePlayer(
+    localPlayer: RuntimePlayerState | null,
+    frame: RuntimeRenderFrame | null = this.latestFrame
+  ) {
+    if (!import.meta.env.DEV) {
+      return;
+    }
+
+    if (!frame || localPlayer) {
+      this.lastRuntimeInputMismatchWarningKey = null;
+      return;
+    }
+
+    if (!frame.localPlayerId && !frame.hudState?.spaceChallenge) {
+      this.lastRuntimeInputMismatchWarningKey = null;
+      return;
+    }
+
+    const warningKey = `${frame.tick}:${frame.localPlayerId ?? "none"}:${frame.hudState?.spaceChallenge?.targetKey ?? "none"}`;
+    if (this.lastRuntimeInputMismatchWarningKey === warningKey) {
+      return;
+    }
+
+    this.lastRuntimeInputMismatchWarningKey = warningKey;
+    console.warn("[GameClient] Missing local runtime player while local overlay state is present.", {
+      mode: this.mode,
+      tick: frame.tick,
+      localPlayerId: frame.localPlayerId,
+      playerIds: frame.players.map((player) => player.id),
+      spaceChallenge: frame.hudState?.spaceChallenge ?? null
+    });
   }
 
   private queueTypedCharacter(character: string) {
@@ -1011,18 +1102,27 @@ export class GameClient {
     this.forwardTapReleased = true;
   }
 
+  private resetHarvestPointerAction() {
+    this.harvestPointerAction.pressed = false;
+    this.harvestPointerAction.nextPulseAt = 0;
+  }
+
   private clearEggInputState() {
     this.activeEggKeyCodes.clear();
     this.keyboardState.egg = false;
     this.quickEggQueued = false;
     this.quickEggPitch = 0;
     this.resetHoldAction(this.eggKeyAction);
+    this.resetHoldAction(this.eggPointerAction);
   }
 
   private clearPointerActionState() {
     this.destroyQueued = false;
+    this.queuedDestroyTarget = null;
     this.keyboardState.placePressed = false;
     this.keyboardState.pushPressed = false;
+    this.resetHarvestPointerAction();
+    this.harvestFocusOverride = null;
     this.resetForwardDoubleTapState();
   }
 
@@ -1062,12 +1162,13 @@ export class GameClient {
     this.matterFeedbackLockedUntil = 0;
     this.spaceTypePrimeUntil = 0;
     this.spaceTypeMisfireUntil = 0;
+    this.spaceFailPulseUntil = 0;
     this.spaceMistakePulseUntil = 0;
     this.spaceSuccessPulseUntil = 0;
     this.superBoomImpactJoltUntil = 0;
     this.previousLocalSpacePhase = null;
-    this.localSpaceChallengePhrase = null;
-    this.localSpaceChallengeTypedLength = 0;
+    this.localSpaceChallengeTargetKey = null;
+    this.localSpaceChallengeHitCount = 0;
     this.pendingTypedText = "";
     this.hideResourceBubble();
     this.emitRuntimeOverlayState(true);
@@ -1164,6 +1265,7 @@ export class GameClient {
     this.authoritativeReplica.reset();
     this.lookYaw = null;
     this.hasInitializedRuntimeCamera = false;
+    this.hasInitializedSpectatorCamera = false;
     this.resetPointerCaptureState();
     this.pendingResumeAfterPointerLock = false;
     this.clearPointerActionState();
@@ -1180,6 +1282,7 @@ export class GameClient {
   dispatchShellIntent(intent: GameShellIntent) {
     if (intent.type === "load_map") {
       this.worldDocument = normalizeArenaBudgetMapDocument(intent.document);
+      this.runtimeWorld = new MutableVoxelWorld(this.worldDocument);
       this.worker.postMessage({
         type: "load_map",
         document: this.worldDocument
@@ -1272,6 +1375,8 @@ export class GameClient {
     document.removeEventListener("pointerlockchange", this.handlePointerLockChange);
     document.removeEventListener("pointerlockerror", this.handlePointerLockError);
     this.canvas.removeEventListener("pointerdown", this.handlePointerDown);
+    window.removeEventListener("pointerup", this.handlePointerUp);
+    window.removeEventListener("pointercancel", this.handlePointerCancel);
     this.canvas.removeEventListener("pointermove", this.handlePointerMove);
     this.canvas.removeEventListener("contextmenu", this.handleContextMenu);
     this.clearPointerCaptureTimeout();
@@ -1445,6 +1550,8 @@ export class GameClient {
     document.addEventListener("pointerlockchange", this.handlePointerLockChange);
     document.addEventListener("pointerlockerror", this.handlePointerLockError);
     this.canvas.addEventListener("pointerdown", this.handlePointerDown);
+    window.addEventListener("pointerup", this.handlePointerUp);
+    window.addEventListener("pointercancel", this.handlePointerCancel);
     this.canvas.addEventListener("pointermove", this.handlePointerMove);
     this.canvas.addEventListener("contextmenu", this.handleContextMenu);
   }
@@ -1510,6 +1617,7 @@ export class GameClient {
           this.latestFrame = message.frame;
           if (message.frame.authoritative) {
             this.authoritativeReplica.applyFrame(message.frame.authoritative);
+            this.syncRuntimeWorldFromTerrainDeltaBatch(message.frame.authoritative.terrainDeltaBatch);
           }
           this.updateFocusedTargetVisuals();
           this.callbacks.onHudStateChange?.(message.frame.hudState);
@@ -1540,6 +1648,7 @@ export class GameClient {
 
   private applyWorldSync(document: MapDocumentV1, chunkPatches: TerrainChunkPatchPayload[]) {
     this.worldDocument = normalizeArenaBudgetMapDocument(document);
+    this.runtimeWorld = new MutableVoxelWorld(this.worldDocument);
     this.spaceBlend = 0;
     this.clearTerrain();
     this.clearRuntimeEntities();
@@ -1924,7 +2033,42 @@ export class GameClient {
   }
 
   private isEggChargeInputHeld() {
-    return this.eggChargeState.source === "key" && this.eggKeyAction.pressed;
+    return (
+      (this.eggChargeState.source === "key" && this.eggKeyAction.pressed) ||
+      (this.eggChargeState.source === "pointer" && this.eggPointerAction.pressed)
+    );
+  }
+
+  private startEggPointerAction() {
+    this.eggPointerAction.pressed = true;
+    this.eggPointerAction.startedAt = this.clock.elapsedTime;
+    this.eggPointerAction.holdTriggered = false;
+
+    if (this.pointerLocked && !this.runtimePaused && this.getLocalEggStatus()?.reason === "notEnoughMatter") {
+      this.triggerNotEnoughMatterFeedback();
+    }
+  }
+
+  private releaseEggAction(action: HoldActionState, source: EggChargeInputSource) {
+    if (!action.pressed) {
+      return;
+    }
+
+    const localPlayer = this.getLocalRuntimePlayer();
+    const eggStatus = this.getLocalEggStatus();
+    const tappedQuickEgg = !action.holdTriggered && this.pointerLocked && !this.runtimePaused;
+
+    if (this.eggChargeState.active && this.eggChargeState.source === source) {
+      this.queueGroundEggThrow();
+    } else if (tappedQuickEgg) {
+      if (eggStatus?.reason === "notEnoughMatter") {
+        this.triggerNotEnoughMatterFeedback();
+      } else if (eggStatus?.canQuickEgg) {
+        this.queueQuickEgg(localPlayer?.grounded ? this.lookPitch : 0);
+      }
+    }
+
+    this.resetHoldAction(action);
   }
 
   private updateHoldToThrowAction(
@@ -1958,6 +2102,7 @@ export class GameClient {
 
   private updateHoldToThrowState(localPlayer: RuntimePlayerState | null, elapsedTime: number) {
     this.updateHoldToThrowAction(this.eggKeyAction, "key", localPlayer, elapsedTime);
+    this.updateHoldToThrowAction(this.eggPointerAction, "pointer", localPlayer, elapsedTime);
   }
 
   private beginEggCharge(source: EggChargeInputSource) {
@@ -2162,23 +2307,29 @@ export class GameClient {
       isRuntimeMode(this.mode) && this.pointerLocked && !this.runtimePaused
         ? this.getLocalSpaceChallengeState()
         : null;
-    const typedCharacter = typingChallenge?.phase === "typing" ? getNormalizedTypedCharacter(event) : null;
-    if (typingChallenge?.phase === "typing" && typedCharacter !== null) {
+    const mashChallenge = typingChallenge?.phase === "mash" ? typingChallenge : null;
+    const challengeLetterKey = /^[a-z]$/i.test(event.key) ? event.key.toLowerCase() : null;
+    const typedCharacter = mashChallenge ? getNormalizedTypedCharacter(event) : null;
+    if (mashChallenge && (challengeLetterKey !== null || event.code === "Space")) {
       event.preventDefault();
-      this.syncLocalSpaceChallengeState();
-      if (this.localSpaceChallengeTypedLength >= typingChallenge.phrase.length) {
+      if (challengeLetterKey === null || typedCharacter === null) {
         return;
       }
 
-      if (typedCharacter === typingChallenge.phrase[this.localSpaceChallengeTypedLength]) {
-        this.localSpaceChallengePhrase = typingChallenge.phrase;
-        this.localSpaceChallengeTypedLength = Math.min(
-          typingChallenge.phrase.length,
-          this.localSpaceChallengeTypedLength + 1
+      this.syncLocalSpaceChallengeState();
+      if (this.localSpaceChallengeHitCount >= mashChallenge.requiredHits) {
+        return;
+      }
+
+      if (typedCharacter === mashChallenge.targetKey) {
+        this.localSpaceChallengeTargetKey = mashChallenge.targetKey;
+        this.localSpaceChallengeHitCount = Math.min(
+          mashChallenge.requiredHits,
+          this.localSpaceChallengeHitCount + 1
         );
         this.triggerSpacePrimeFeedback();
         this.queueTypedCharacter(typedCharacter);
-        if (this.localSpaceChallengeTypedLength >= typingChallenge.phrase.length) {
+        if (this.localSpaceChallengeHitCount >= mashChallenge.requiredHits) {
           this.triggerSpaceSuccessFeedback();
         } else {
           this.emitRuntimeOverlayState(true);
@@ -2264,7 +2415,7 @@ export class GameClient {
       isRuntimeMode(this.mode) && this.pointerLocked && !this.runtimePaused
         ? this.getLocalSpaceChallengeState()
         : null;
-    if (typingChallenge?.phase === "typing" && event.code === "Space") {
+    if (typingChallenge?.phase === "mash" && event.code === "Space") {
       event.preventDefault();
       return;
     }
@@ -2277,21 +2428,7 @@ export class GameClient {
       this.activeEggKeyCodes.delete(event.code);
       this.keyboardState.egg = this.activeEggKeyCodes.size > 0;
       if (this.activeEggKeyCodes.size === 0) {
-        const localPlayer = this.getLocalRuntimePlayer();
-        const eggStatus = this.getLocalEggStatus();
-        const tappedQuickEgg = !this.eggKeyAction.holdTriggered && isRuntimeMode(this.mode) && this.pointerLocked && !this.runtimePaused;
-
-        if (this.eggChargeState.active && this.eggChargeState.source === "key") {
-          this.queueGroundEggThrow();
-        } else if (tappedQuickEgg) {
-          if (eggStatus?.reason === "notEnoughMatter") {
-            this.triggerNotEnoughMatterFeedback();
-          } else if (eggStatus?.canQuickEgg) {
-            this.queueQuickEgg(localPlayer?.grounded ? this.lookPitch : 0);
-          }
-        }
-
-        this.resetHoldAction(this.eggKeyAction);
+        this.releaseEggAction(this.eggKeyAction, "key");
       }
       return;
     }
@@ -2360,6 +2497,12 @@ export class GameClient {
   };
 
   private readonly handleVisibilityChange = () => {
+    if (isRuntimeMode(this.mode) && document.hidden) {
+      this.clearEggInputState();
+      this.clearPointerActionState();
+      this.cancelEggCharge();
+    }
+
     if (!isRuntimeMode(this.mode) || !this.pointerCapturePending || !document.hidden) {
       return;
     }
@@ -2368,6 +2511,12 @@ export class GameClient {
   };
 
   private readonly handleWindowBlur = () => {
+    if (isRuntimeMode(this.mode)) {
+      this.clearEggInputState();
+      this.clearPointerActionState();
+      this.cancelEggCharge();
+    }
+
     if (!isRuntimeMode(this.mode) || !this.pointerCapturePending) {
       return;
     }
@@ -2414,10 +2563,18 @@ export class GameClient {
         return;
       }
 
-      if (isRuntimeDestroyPointerButton(event.button)) {
+      if (this.runtimePaused) {
+        return;
+      }
+
+      if (event.button === PRIMARY_POINTER_BUTTON) {
         event.preventDefault();
-        this.updateFocusedTarget();
-        this.destroyQueued = this.focusedTarget !== null;
+        this.harvestPointerAction.pressed = true;
+        this.harvestPointerAction.nextPulseAt = this.clock.elapsedTime + HARVEST_REPEAT_INTERVAL;
+        this.queueHarvestPulse();
+      } else if (event.button === SECONDARY_POINTER_BUTTON) {
+        event.preventDefault();
+        this.startEggPointerAction();
       }
       return;
     }
@@ -2436,9 +2593,224 @@ export class GameClient {
     this.pendingLookDeltaY += event.movementY;
   };
 
+  private readonly handlePointerUp = (event: PointerEvent) => {
+    if (!isRuntimeMode(this.mode) || this.presentation === "menu") {
+      return;
+    }
+
+    if (event.button === PRIMARY_POINTER_BUTTON) {
+      this.resetHarvestPointerAction();
+      return;
+    }
+
+    if (event.button === SECONDARY_POINTER_BUTTON) {
+      event.preventDefault();
+      this.releaseEggAction(this.eggPointerAction, "pointer");
+    }
+  };
+
+  private readonly handlePointerCancel = () => {
+    if (!isRuntimeMode(this.mode)) {
+      return;
+    }
+
+    this.resetHarvestPointerAction();
+    this.resetHoldAction(this.eggPointerAction);
+  };
+
   private readonly handleContextMenu = (event: MouseEvent) => {
     event.preventDefault();
   };
+
+  private syncRuntimeWorldFromTerrainDeltaBatch(batch = this.latestFrame?.authoritative?.terrainDeltaBatch ?? null) {
+    if (!batch) {
+      return;
+    }
+
+    for (const change of batch.changes) {
+      if (change.operation === "remove" || change.kind === null) {
+        this.runtimeWorld.removeVoxel(change.voxel.x, change.voxel.y, change.voxel.z);
+      } else {
+        this.runtimeWorld.setVoxel(change.voxel.x, change.voxel.y, change.voxel.z, change.kind);
+      }
+    }
+  }
+
+  private getTerrainTargetAtPointer(offsetX = 0, offsetY = 0) {
+    this.focusRaycaster.setFromCamera(new THREE.Vector2(offsetX, offsetY), this.camera);
+    const intersections = this.focusRaycaster.intersectObjects([this.terrainGroup], true);
+    const firstHit = intersections[0];
+    if (!firstHit) {
+      return null;
+    }
+
+    const worldNormal = getWorldNormalFromIntersection(firstHit);
+    const terrainHit = resolveTerrainRaycastHit(firstHit.point, worldNormal);
+    if (!terrainHit) {
+      return null;
+    }
+
+    return {
+      voxel: terrainHit.voxel,
+      normal: terrainHit.normal
+    } satisfies RuntimeFocusedTarget;
+  }
+
+  private isHarvestableTarget(target: RuntimeFocusedTarget) {
+    const kind = this.runtimeWorld.getVoxelKind(target.voxel.x, target.voxel.y, target.voxel.z);
+    return kind === "ground" || kind === "boundary";
+  }
+
+  private isHarvestTargetInRange(player: RuntimePlayerState, target: RuntimeFocusedTarget) {
+    const chest = {
+      x: player.position.x,
+      y: player.position.y + defaultSimulationConfig.playerHeight * 0.7,
+      z: player.position.z
+    };
+    const targetCenter = {
+      x: target.voxel.x + 0.5,
+      y: target.voxel.y + 0.5,
+      z: target.voxel.z + 0.5
+    };
+
+    return (
+      Math.hypot(
+        targetCenter.x - chest.x,
+        targetCenter.y - chest.y,
+        targetCenter.z - chest.z
+      ) <= defaultSimulationConfig.interactRange
+    );
+  }
+
+  private isValidHarvestTarget(player: RuntimePlayerState, target: RuntimeFocusedTarget) {
+    return this.isHarvestableTarget(target) && this.isHarvestTargetInRange(player, target);
+  }
+
+  private resolveHarvestTarget(localPlayer = this.getLocalRuntimePlayer()) {
+    const centerTarget = this.getTerrainTargetAtPointer();
+    if (!localPlayer) {
+      return centerTarget;
+    }
+
+    let bestTarget: RuntimeFocusedTarget | null = null;
+    let bestScore = Number.POSITIVE_INFINITY;
+    const seenTargets = new Set<string>();
+
+    for (const [offsetX, offsetY] of HARVEST_SNAP_SAMPLE_OFFSETS) {
+      const target = this.getTerrainTargetAtPointer(offsetX, offsetY);
+      if (!target) {
+        continue;
+      }
+
+      const targetKey = [
+        target.voxel.x,
+        target.voxel.y,
+        target.voxel.z,
+        target.normal.x,
+        target.normal.y,
+        target.normal.z
+      ].join(":");
+      if (seenTargets.has(targetKey)) {
+        continue;
+      }
+      seenTargets.add(targetKey);
+
+      if (!this.isValidHarvestTarget(localPlayer, target)) {
+        continue;
+      }
+
+      const targetCenter = {
+        x: target.voxel.x + 0.5,
+        y: target.voxel.y + 0.5,
+        z: target.voxel.z + 0.5
+      };
+      const score =
+        Math.hypot(offsetX, offsetY) * 100 +
+        Math.hypot(
+          targetCenter.x - localPlayer.position.x,
+          targetCenter.y - localPlayer.position.y,
+          targetCenter.z - localPlayer.position.z
+        ) * 0.1;
+      if (score >= bestScore) {
+        continue;
+      }
+
+      bestScore = score;
+      bestTarget = target;
+    }
+
+    return bestTarget ?? centerTarget;
+  }
+
+  private setHarvestFocusOverride(target: RuntimeFocusedTarget) {
+    const localPlayer = this.getLocalRuntimePlayer();
+    if (!localPlayer) {
+      return;
+    }
+
+    const destroyValid = this.isValidHarvestTarget(localPlayer, target);
+    this.harvestFocusOverride = {
+      focusState: {
+        focusedVoxel: target.voxel,
+        targetNormal: target.normal,
+        placeVoxel: {
+          x: target.voxel.x + target.normal.x,
+          y: target.voxel.y + target.normal.y,
+          z: target.voxel.z + target.normal.z
+        },
+        destroyValid,
+        placeValid: false,
+        invalidReason: destroyValid
+          ? null
+          : this.isHarvestableTarget(target)
+            ? "outOfRange"
+            : "hazard"
+      },
+      expiresAt: this.clock.elapsedTime + HARVEST_FOCUS_OVERRIDE_DURATION
+    };
+    this.updateFocusedTargetVisuals();
+  }
+
+  private getHarvestFocusOverride() {
+    if (!this.harvestFocusOverride) {
+      return null;
+    }
+
+    if (this.clock.elapsedTime > this.harvestFocusOverride.expiresAt) {
+      this.harvestFocusOverride = null;
+      return null;
+    }
+
+    return this.harvestFocusOverride.focusState;
+  }
+
+  private queueHarvestPulse(localPlayer = this.getLocalRuntimePlayer()) {
+    if (!this.pointerLocked || this.runtimePaused) {
+      return;
+    }
+
+    const target = this.resolveHarvestTarget(localPlayer);
+    this.queuedDestroyTarget = target;
+    this.destroyQueued = target !== null;
+    if (target) {
+      this.setHarvestFocusOverride(target);
+    }
+  }
+
+  private updateHeldHarvest(localPlayer: RuntimePlayerState | null, elapsedTime: number) {
+    if (
+      !localPlayer ||
+      !this.harvestPointerAction.pressed ||
+      !this.pointerLocked ||
+      this.runtimePaused ||
+      elapsedTime < this.harvestPointerAction.nextPulseAt
+    ) {
+      return;
+    }
+
+    this.queueHarvestPulse(localPlayer);
+    this.harvestPointerAction.nextPulseAt = elapsedTime + HARVEST_REPEAT_INTERVAL;
+  }
 
   private performEditorActionFromPointer(event: PointerEvent) {
     const rect = this.canvas.getBoundingClientRect();
@@ -2476,6 +2848,7 @@ export class GameClient {
       const localPlayer = this.getLocalRuntimePlayer();
       this.updateHoldToThrowState(localPlayer, elapsedTime);
       this.updateEggChargeState(localPlayer, delta, elapsedTime);
+      this.updateHeldHarvest(localPlayer, elapsedTime);
       this.sendRuntimeInput(localPlayer);
       this.applyRuntimeFrame(delta, elapsedTime);
     } else {
@@ -2498,15 +2871,21 @@ export class GameClient {
 
   private updateRuntimeCamera(delta: number) {
     const frame = this.latestFrame;
-    if (!frame || !frame.localPlayerId) {
+    if (!frame) {
       return;
     }
 
-    const player = frame.players.find((entry) => entry.id === frame.localPlayerId);
+    const player = frame.localPlayerId
+      ? frame.players.find((entry) => entry.id === frame.localPlayerId) ?? null
+      : null;
     if (!player || (!player.fallingOut && (!player.alive || player.respawning))) {
+      if (this.mode === "multiplayer") {
+        this.updateSpectatorCamera(delta, frame.players);
+      }
       return;
     }
 
+    this.hasInitializedSpectatorCamera = false;
     if (this.lookYaw === null) {
       this.lookYaw = getYawFromPlanarVector(player.facing);
       this.lookPitch = aimCameraConfig.defaultPitch;
@@ -2587,28 +2966,105 @@ export class GameClient {
     this.cameraForward = getPlanarForwardBetweenPoints(this.camera.position, this.currentLookTarget);
   }
 
-  private updateFocusedTarget() {
-    this.focusRaycaster.setFromCamera(this.centerRay, this.camera);
-    const intersections = this.focusRaycaster.intersectObjects([this.terrainGroup], true);
-    const firstHit = intersections[0];
-    if (!firstHit) {
-      this.focusedTarget = null;
-      this.updateFocusedTargetVisuals();
-      return;
+  private updateSpectatorCamera(delta: number, players: RuntimePlayerState[]) {
+    const referencePlayer =
+      players.find((player) => player.alive && !player.respawning) ?? players[0] ?? null;
+
+    if (this.lookYaw === null) {
+      this.lookYaw = referencePlayer
+        ? getYawFromPlanarVector(referencePlayer.facing)
+        : 0;
+      this.lookPitch = aimCameraConfig.defaultPitch;
     }
 
-    const worldNormal = getWorldNormalFromIntersection(firstHit);
-    const terrainHit = resolveTerrainRaycastHit(firstHit.point, worldNormal);
-    if (!terrainHit) {
-      this.focusedTarget = null;
-      this.updateFocusedTargetVisuals();
-      return;
+    if (this.pendingLookDeltaX !== 0 || this.pendingLookDeltaY !== 0) {
+      const nextLook = applyFreeLookDelta(
+        {
+          yaw: this.lookYaw ?? 0,
+          pitch: this.lookPitch
+        },
+        {
+          deltaX: this.pendingLookDeltaX,
+          deltaY: this.pendingLookDeltaY
+        },
+        this.runtimeControlSettings
+      );
+      this.lookYaw = nextLook.yaw;
+      this.lookPitch = nextLook.pitch;
+      this.pendingLookDeltaX = 0;
+      this.pendingLookDeltaY = 0;
     }
 
-    this.focusedTarget = {
-      voxel: terrainHit.voxel,
-      normal: terrainHit.normal
+    if (!this.hasInitializedSpectatorCamera) {
+      const anchor = referencePlayer?.position ?? {
+        x: this.worldDocument.size.x / 2,
+        y: this.worldDocument.size.y * 0.65,
+        z: this.worldDocument.size.z / 2
+      };
+      const backward = getPlanarVectorFromYaw((this.lookYaw ?? 0) + Math.PI);
+      this.camera.position.set(
+        anchor.x + backward.x * 12,
+        Math.max(anchor.y + 8, 10),
+        anchor.z + backward.z * 12
+      );
+      this.hasInitializedSpectatorCamera = true;
+    }
+
+    const lookDirection = getLookDirection(this.lookYaw ?? 0, this.lookPitch);
+    const planarForward = getPlanarVectorFromYaw(this.lookYaw ?? 0);
+    const right = new THREE.Vector3(planarForward.z, 0, -planarForward.x).normalize();
+    const move = new THREE.Vector3();
+    const forwardInput = (this.keyboardState.forward ? 1 : 0) - (this.keyboardState.backward ? 1 : 0);
+    const horizontalInput = (this.keyboardState.right ? 1 : 0) - (this.keyboardState.left ? 1 : 0);
+
+    if (forwardInput !== 0) {
+      move.x += lookDirection.x * forwardInput;
+      move.y += lookDirection.y * forwardInput;
+      move.z += lookDirection.z * forwardInput;
+    }
+
+    if (horizontalInput !== 0) {
+      move.addScaledVector(right, horizontalInput);
+    }
+
+    if (this.keyboardState.jump) {
+      move.y += 1;
+    }
+
+    if (move.lengthSq() > 0) {
+      move.normalize().multiplyScalar(MULTIPLAYER_SPECTATOR_CAMERA_SPEED * delta);
+      this.camera.position.add(move);
+      this.camera.position.x = THREE.MathUtils.clamp(
+        this.camera.position.x,
+        -24,
+        this.worldDocument.size.x + 24
+      );
+      this.camera.position.y = THREE.MathUtils.clamp(
+        this.camera.position.y,
+        4,
+        this.worldDocument.size.y + 48
+      );
+      this.camera.position.z = THREE.MathUtils.clamp(
+        this.camera.position.z,
+        -24,
+        this.worldDocument.size.z + 24
+      );
+    }
+
+    this.currentLookTarget.set(
+      this.camera.position.x + lookDirection.x * 24,
+      this.camera.position.y + lookDirection.y * 24,
+      this.camera.position.z + lookDirection.z * 24
+    );
+    this.camera.lookAt(this.currentLookTarget);
+    this.cameraForward = {
+      x: lookDirection.x,
+      z: lookDirection.z
     };
+  }
+
+  private updateFocusedTarget() {
+    this.focusedTarget = this.getTerrainTargetAtPointer();
     this.updateFocusedTargetVisuals();
   }
 
@@ -2630,7 +3086,7 @@ export class GameClient {
 
   private updateFocusedTargetVisuals() {
     const showRuntimeFocus = this.pointerLocked && isRuntimeMode(this.mode);
-    const focusState = this.getAuthoritativeFocusedTargetState();
+    const focusState = this.getHarvestFocusOverride() ?? this.getAuthoritativeFocusedTargetState();
     const actionable = focusState !== null && (focusState.destroyValid || focusState.placeValid);
 
     this.focusOutline.visible = showRuntimeFocus && actionable;
@@ -2736,9 +3192,15 @@ export class GameClient {
       return;
     }
 
+    this.warnIfMissingLocalRuntimePlayer(localPlayer);
     const spaceChallenge = this.getLocalSpaceChallengeState();
     const nextCommand = buildPlayerCommand(this.keyboardState, this.cameraForward);
-    nextCommand.destroy = this.destroyQueued && this.focusedTarget !== null;
+    const commandTarget =
+      this.destroyQueued && this.queuedDestroyTarget
+        ? this.queuedDestroyTarget
+        : this.focusedTarget;
+
+    nextCommand.destroy = this.destroyQueued && this.queuedDestroyTarget !== null;
     nextCommand.place = nextCommand.place && this.focusedTarget !== null;
     nextCommand.layEgg = this.eggChargeState.pendingThrow || this.quickEggQueued;
     nextCommand.eggCharge = this.eggChargeState.pendingThrow ? this.eggChargeState.pendingThrowCharge : 0;
@@ -2747,17 +3209,18 @@ export class GameClient {
       : this.quickEggQueued
         ? this.quickEggPitch
         : 0;
-    nextCommand.targetVoxel = this.focusedTarget?.voxel ?? null;
-    nextCommand.targetNormal = this.focusedTarget?.normal ?? null;
+    nextCommand.targetVoxel = commandTarget?.voxel ?? null;
+    nextCommand.targetNormal = commandTarget?.normal ?? null;
     nextCommand.typedText = this.pendingTypedText;
 
-    if (spaceChallenge?.phase === "typing") {
+    if (spaceChallenge?.phase === "mash") {
       nextCommand.jump = false;
       nextCommand.jumpPressed = false;
       nextCommand.jumpReleased = false;
     }
 
     this.destroyQueued = false;
+    this.queuedDestroyTarget = null;
     this.quickEggQueued = false;
     this.quickEggPitch = 0;
     this.pendingTypedText = "";
@@ -2801,6 +3264,9 @@ export class GameClient {
       ? frame.players.find((player) => player.id === frame.localPlayerId) ?? null
       : null;
     this.syncLocalSpaceChallengeState();
+    if (localPlayer?.spacePhase === "reentry" && this.previousLocalSpacePhase === "float") {
+      this.triggerSpaceFailFeedback(elapsedTime);
+    }
     if (localPlayer?.spacePhase === "superBoomImpact" && this.previousLocalSpacePhase !== "superBoomImpact") {
       this.triggerSuperBoomImpactJolt(elapsedTime);
     }
@@ -2872,6 +3338,7 @@ export class GameClient {
       const visualState = player.alive
         ? getPlayerAvatarVisualState(player.stunRemaining, elapsedTime)
         : eliminatedVisualState;
+      visual.avatar.scale.setScalar(1);
       visual.shell.scale.set(visualState.scaleX, visualState.scaleY, visualState.scaleZ);
       visual.shell.visible = visualState.blinkVisible;
 
@@ -3007,11 +3474,11 @@ export class GameClient {
       if (
         isLocal &&
         player.spacePhase === "float" &&
-        this.localSpaceChallengePhrase &&
-        this.localSpaceChallengePhrase.length > 0
+        this.localSpaceChallengeTargetKey
       ) {
-        const typingProgress = THREE.MathUtils.clamp(
-          this.localSpaceChallengeTypedLength / this.localSpaceChallengePhrase.length,
+        const localSpaceChallenge = this.getLocalSpaceChallengeState();
+        const mashProgress = THREE.MathUtils.clamp(
+          this.localSpaceChallengeHitCount / Math.max(1, localSpaceChallenge?.requiredHits ?? 1),
           0,
           1
         );
@@ -3020,22 +3487,54 @@ export class GameClient {
           0,
           1
         );
+        const successAlpha = THREE.MathUtils.clamp(
+          (this.spaceSuccessPulseUntil - elapsedTime) / SPACE_TYPING_SUCCESS_PULSE_DURATION,
+          0,
+          1
+        );
         const misfireAlpha = THREE.MathUtils.clamp(
           (this.spaceTypeMisfireUntil - elapsedTime) / SPACE_TYPING_MISFIRE_DURATION,
           0,
           1
         );
-        const misfireWobble = Math.sin(elapsedTime * 30 + visual.motionSeed * 8) * 0.08 * misfireAlpha;
-        visual.shell.rotation.x += typingProgress * 0.4 + primeAlpha * 0.18 - misfireAlpha * 0.04;
-        visual.shell.rotation.z += typingProgress * 0.05 + primeAlpha * 0.08 + misfireWobble;
-        visual.body.rotation.y += typingProgress * 0.08 + primeAlpha * 0.16 - misfireAlpha * 0.2;
-        visual.avatar.position.z -= typingProgress * 0.16 + primeAlpha * 0.08;
-        visual.avatar.position.y += primeAlpha * 0.08;
-        visual.avatar.rotation.x += typingProgress * 0.12 + primeAlpha * 0.1;
+        const misfireWobble = Math.sin(elapsedTime * 30 + visual.motionSeed * 8) * 0.16 * misfireAlpha;
+        const avatarScale = 1 + mashProgress * 0.34 + primeAlpha * 0.08 + successAlpha * 0.12;
+        visual.avatar.scale.setScalar(avatarScale);
+        visual.shell.rotation.x +=
+          mashProgress * 0.82 +
+          primeAlpha * 0.32 +
+          successAlpha * 0.28 -
+          misfireAlpha * 0.08;
+        visual.shell.rotation.z +=
+          mashProgress * 0.14 +
+          primeAlpha * 0.16 +
+          successAlpha * 0.06 +
+          misfireWobble;
+        visual.body.rotation.x +=
+          mashProgress * 0.24 +
+          primeAlpha * 0.14 +
+          successAlpha * 0.08 -
+          misfireAlpha * 0.04;
+        visual.body.rotation.y +=
+          mashProgress * 0.18 +
+          primeAlpha * 0.28 +
+          successAlpha * 0.14 -
+          misfireAlpha * 0.32;
+        visual.avatar.position.z -=
+          mashProgress * 0.32 +
+          primeAlpha * 0.12 +
+          successAlpha * 0.16;
+        visual.avatar.position.y += mashProgress * 0.08 + primeAlpha * 0.12 + successAlpha * 0.1;
+        visual.avatar.rotation.x +=
+          mashProgress * 0.28 +
+          primeAlpha * 0.18 +
+          successAlpha * 0.12;
+        visual.avatar.rotation.z += mashProgress * 0.03 + misfireWobble * 0.5 + successAlpha * 0.04;
         visual.shell.scale.set(
-          visual.shell.scale.x * (1 + typingProgress * 0.02 + primeAlpha * 0.08),
-          visual.shell.scale.y * (1 - typingProgress * 0.1 - primeAlpha * 0.12 + misfireAlpha * 0.04),
-          visual.shell.scale.z * (1 + typingProgress * 0.03 + primeAlpha * 0.08)
+          visual.shell.scale.x * (1 + mashProgress * 0.3 + primeAlpha * 0.12 + successAlpha * 0.1),
+          visual.shell.scale.y *
+            (1 - mashProgress * 0.22 - primeAlpha * 0.16 - successAlpha * 0.08 + misfireAlpha * 0.07),
+          visual.shell.scale.z * (1 + mashProgress * 0.3 + primeAlpha * 0.12 + successAlpha * 0.1)
         );
       }
 

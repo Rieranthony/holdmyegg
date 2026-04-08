@@ -30,12 +30,21 @@ describe("ShortcutLegend", () => {
     expect(screen.queryByText("+")).not.toBeInTheDocument();
   });
 
-  it("describes harvest as click-based in the runtime bindings", () => {
+  it("describes harvest as held LMB in the runtime bindings", () => {
     const binding = getRuntimeShortcutBindings().find((entry) => entry.action === "Harvest");
 
     expect(binding).toMatchObject({
-      detail: "click to eat terrain for matter",
-      keys: ["Click"]
+      detail: "hold LMB to eat terrain for matter",
+      keys: ["LMB"]
+    });
+  });
+
+  it("lists both RMB and E for egg launches", () => {
+    const binding = getRuntimeShortcutBindings().find((entry) => entry.action === "Launch Eggs");
+
+    expect(binding).toMatchObject({
+      detail: "tap RMB or E to egg, hold to throw, costs matter",
+      keys: ["RMB", "E"]
     });
   });
 });

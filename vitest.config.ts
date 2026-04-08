@@ -3,7 +3,9 @@ import { defineConfig, defineProject } from "vitest/config";
 
 const rootDir = path.resolve(__dirname);
 const alias = {
+  "@out-of-bounds/db": path.resolve(rootDir, "packages/db/src/index.ts"),
   "@out-of-bounds/map": path.resolve(rootDir, "packages/map/src/index.ts"),
+  "@out-of-bounds/netcode": path.resolve(rootDir, "packages/netcode/src/index.ts"),
   "@out-of-bounds/sim": path.resolve(rootDir, "packages/sim/src/index.ts"),
   "@test": path.resolve(rootDir, "test")
 };
@@ -33,6 +35,52 @@ export default defineConfig({
     maxWorkers: 1,
     minWorkers: 1,
     projects: [
+      defineProject({
+        resolve: {
+          alias
+        },
+        test: {
+          name: "netcode",
+          environment: "node",
+          include: ["packages/netcode/src/**/*.test.ts"],
+          coverage: {
+            ...sharedCoverage,
+            reportsDirectory: "./coverage/netcode",
+            all: true,
+            include: ["packages/netcode/src/**/*.ts"],
+            exclude: [...sharedCoverage.exclude, "packages/netcode/src/index.ts"],
+            thresholds: {
+              lines: 90,
+              functions: 90,
+              statements: 90,
+              branches: 80
+            }
+          }
+        }
+      }),
+      defineProject({
+        resolve: {
+          alias
+        },
+        test: {
+          name: "db",
+          environment: "node",
+          include: ["packages/db/src/**/*.test.ts"],
+          coverage: {
+            ...sharedCoverage,
+            reportsDirectory: "./coverage/db",
+            all: true,
+            include: ["packages/db/src/**/*.ts"],
+            exclude: [...sharedCoverage.exclude, "packages/db/src/index.ts", "packages/db/drizzle.config.ts"],
+            thresholds: {
+              lines: 80,
+              functions: 80,
+              statements: 80,
+              branches: 70
+            }
+          }
+        }
+      }),
       defineProject({
         resolve: {
           alias
@@ -84,6 +132,38 @@ export default defineConfig({
           alias
         },
         test: {
+          name: "server",
+          environment: "node",
+          include: ["apps/server/src/**/*.test.ts"],
+          coverage: {
+            ...sharedCoverage,
+            reportsDirectory: "./coverage/server",
+            all: true,
+            include: ["apps/server/src/**/*.ts"],
+            exclude: [
+              ...sharedCoverage.exclude,
+              "apps/server/src/index.ts",
+              "apps/server/src/runtime.ts",
+              "apps/server/src/lib/auth.ts",
+              "apps/server/src/lib/env.ts",
+              "apps/server/src/lib/avatar.ts",
+              "apps/server/src/lib/maps.ts",
+              "apps/server/src/lib/postgresPlayerRepository.ts"
+            ],
+            thresholds: {
+              lines: 80,
+              functions: 80,
+              statements: 80,
+              branches: 70
+            }
+          }
+        }
+      }),
+      defineProject({
+        resolve: {
+          alias
+        },
+        test: {
           name: "web",
           environment: "jsdom",
           setupFiles: ["./test/setup/web.ts"],
@@ -108,7 +188,19 @@ export default defineConfig({
               "apps/web/src/game/voxelMaterials.ts",
               "apps/web/src/hooks/useKeyboardInput.ts",
               "apps/web/src/engine/GameHost.tsx",
-              "apps/web/src/engine/runtimeInput.ts"
+              "apps/web/src/engine/multiplayerTerrain.ts",
+              "apps/web/src/engine/multiplayerWorker.ts",
+              "apps/web/src/engine/runtimeInput.ts",
+              "apps/web/src/components/MultiplayerRoomCards.tsx",
+              "apps/web/src/components/MultiplayerRoomOverlay.tsx",
+              "apps/web/src/components/PlayerAvatar.tsx",
+              "apps/web/src/multiplayer/**/*.ts",
+              "apps/web/src/multiplayer/**/*.tsx"
+            ],
+            exclude: [
+              ...sharedCoverage.exclude,
+              "apps/web/src/engine/runtimeInput.ts",
+              "apps/web/src/multiplayer/authClient.ts"
             ],
             thresholds: {
               lines: 85,

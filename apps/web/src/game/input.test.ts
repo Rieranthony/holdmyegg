@@ -13,7 +13,8 @@ describe("initialKeyboardInputState", () => {
       jumpReleased: false,
       egg: false,
       placePressed: false,
-      pushPressed: false
+      pushPressed: false,
+      typedText: ""
     });
   });
 });
