@@ -75,6 +75,7 @@ const createRoomManager = (): RoomManagerLike => ({
   listRooms: vi.fn(() => [roomSummary]),
   quickJoin: vi.fn(() => joinTicket),
   joinRoom: vi.fn(() => joinTicket),
+  leaveRoom: vi.fn(() => true),
   connect: vi.fn(() => null),
   disconnect: vi.fn(() => null),
   receiveControl: vi.fn(),
@@ -222,6 +223,21 @@ describe("createApp", () => {
       join: {
         roomId: "warm-1"
       }
+    });
+
+    const leaveResponse = await app.fetch(
+      new Request("http://localhost/rooms/warm-1/leave", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json"
+        },
+        body: "{}"
+      })
+    );
+
+    expect(roomManager.leaveRoom).toHaveBeenCalledWith("warm-1", "user-1");
+    await expect(leaveResponse.json()).resolves.toMatchObject({
+      ok: true
     });
   });
 

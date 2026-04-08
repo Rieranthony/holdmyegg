@@ -1,14 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
+  createEmptyRuntimeInputCommand,
   decodeClientControlMessage,
   decodeRuntimeInputPacket,
   decodeServerControlMessage,
   decodeServerStateMessage,
   encodeClientControlMessage,
   encodeRuntimeInputPacket,
+  packRuntimeInputCommand,
   encodeServerControlMessage,
   encodeServerStateMessage
-} from "./wire";
+} from "./index";
 
 describe("wire helpers", () => {
   it("round-trips control and state payloads through msgpack envelopes", () => {
@@ -99,8 +101,20 @@ describe("wire helpers", () => {
   });
 
   it("wraps raw runtime input bytes with a packet header", () => {
-    const raw = Uint8Array.from([1, 2, 3, 4]).buffer;
+    const raw = packRuntimeInputCommand(createEmptyRuntimeInputCommand());
     const unpacked = decodeRuntimeInputPacket(encodeRuntimeInputPacket(raw));
-    expect(Array.from(new Uint8Array(unpacked))).toEqual([1, 2, 3, 4]);
+    expect(unpacked.byteLength).toBe(raw.byteLength);
+  });
+
+  it("rejects invalid control packet kinds", () => {
+    expect(() => decodeClientControlMessage(new Uint8Array([3, 1, 2, 3]))).toThrow(
+      "Invalid client control packet kind."
+    );
+  });
+
+  it("rejects runtime input packets with the wrong payload length", () => {
+    expect(() => decodeRuntimeInputPacket(new Uint8Array([1, 0, 0]))).toThrow(
+      "Invalid runtime input packet length."
+    );
   });
 });

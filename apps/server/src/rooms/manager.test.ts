@@ -17,6 +17,24 @@ class FakeSocket {
   }
 }
 
+const findLastControlPacket = (
+  messages: (string | ArrayBufferView | ArrayBuffer)[]
+) => {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!(message instanceof Uint8Array || message instanceof ArrayBuffer)) {
+      continue;
+    }
+
+    const bytes = message instanceof Uint8Array ? message : new Uint8Array(message);
+    if (bytes[0] === 3) {
+      return message;
+    }
+  }
+
+  return null;
+};
+
 const createManager = () =>
   new RoomManager({
     region: "local-us",
@@ -74,22 +92,46 @@ describe("RoomManager", () => {
     const socket = new FakeSocket();
     const reconnectSocket = new FakeSocket();
 
-    expect(manager.connect(join.ticket, "user-1", socket)).not.toBeNull();
+    const session = manager.connect(join.ticket, "user-1", socket);
+    expect(session).not.toBeNull();
 
-    manager.receiveControl("user-1", {
+    manager.receiveControl("user-1", session!.connectionId, {
       type: "chat_send",
       text: "hello room"
     });
     const chatMessage = decodeServerControlMessage(
-      socket.sent.at(-1) as ArrayBuffer | Uint8Array
+      findLastControlPacket(socket.sent) as ArrayBuffer | Uint8Array
     );
     expect(chatMessage).toMatchObject({
       type: "chat_message"
     });
 
-    const reconnect = manager.disconnect("user-1");
+    const reconnect = manager.disconnect("user-1", session!.connectionId);
     expect(reconnect?.roomId).toBe("warm-1");
     expect(manager.connect(reconnect!.ticket, "user-1", reconnectSocket)).not.toBeNull();
+  });
+
+  it("keeps one active room membership per user when they join a different room", () => {
+    const manager = createManager();
+
+    manager.joinRoom("warm-1", createProfile(1));
+    manager.joinRoom("warm-2", createProfile(1));
+
+    const rooms = manager.listRooms();
+    expect(rooms.find((room) => room.id === "warm-1")?.connected).toBe(0);
+    expect(rooms.find((room) => room.id === "warm-2")?.humans).toBe(1);
+  });
+
+  it("removes indexed membership when a player explicitly leaves a room", () => {
+    const manager = createManager();
+
+    manager.joinRoom("warm-1", createProfile(1));
+    expect(manager.leaveRoom("warm-1", "user-1")).toBe(true);
+    manager.joinRoom("warm-2", createProfile(1));
+
+    const rooms = manager.listRooms();
+    expect(rooms.find((room) => room.id === "warm-1")?.humans).toBe(0);
+    expect(rooms.find((room) => room.id === "warm-2")?.humans).toBe(1);
   });
 
   it("starts and stops the room tick loop without duplicating timers and accepts runtime input", () => {
@@ -99,9 +141,11 @@ describe("RoomManager", () => {
 
     manager.start();
     manager.start();
-    expect(manager.connect(join.ticket, "user-1", socket)).not.toBeNull();
+    const session = manager.connect(join.ticket, "user-1", socket);
+    expect(session).not.toBeNull();
     manager.receiveRuntimeInput(
       "user-1",
+      session!.connectionId,
       encodeRuntimeInputPacket(packRuntimeInputCommand(createEmptyRuntimeInputCommand()))
     );
 

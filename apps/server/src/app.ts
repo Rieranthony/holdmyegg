@@ -40,12 +40,14 @@ export interface RoomManagerLike {
   listRooms(): ReturnType<RoomManager["listRooms"]>;
   quickJoin(profile: RoomProfile): ReturnType<RoomManager["quickJoin"]>;
   joinRoom(roomId: string, profile: RoomProfile): ReturnType<RoomManager["joinRoom"]>;
-  connect(ticket: string, userId: string, socket: RoomSocket): ServerBootstrapFrame | null;
-  disconnect(roomPlayerId: string): ReturnType<RoomManager["disconnect"]>;
-  receiveControl(roomPlayerId: string, message: ClientControlMessage): void;
+  leaveRoom(roomId: string, roomPlayerId: string): ReturnType<RoomManager["leaveRoom"]>;
+  connect(ticket: string, userId: string, socket: RoomSocket): ReturnType<RoomManager["connect"]>;
+  disconnect(roomPlayerId: string, connectionId: string): ReturnType<RoomManager["disconnect"]>;
+  receiveControl(roomPlayerId: string, connectionId: string, message: ClientControlMessage): void;
   receiveRuntimeInput(
     roomPlayerId: string,
-    packet: Parameters<RoomManager["receiveRuntimeInput"]>[1]
+    connectionId: string,
+    packet: Parameters<RoomManager["receiveRuntimeInput"]>[2]
   ): void;
   createReconnectTicket(roomId: string, roomPlayerId: string): ReconnectTicket | null;
 }
@@ -70,7 +72,7 @@ export const createApp = ({
   roomManager,
   playerRepository
 }: AppDependencies): CreatedApp => {
-  const socketMeta = new WeakMap<object, { roomPlayerId: string; roomId: string }>();
+  const socketMeta = new WeakMap<object, { roomPlayerId: string; roomId: string; connectionId: string }>();
   const app = new Hono<AppBindings>();
 
   app.use(
@@ -208,6 +210,12 @@ export const createApp = ({
     });
   });
 
+  app.post("/rooms/:roomId/leave", requireSession, (c) =>
+    c.json({
+      ok: roomManager.leaveRoom(c.req.param("roomId"), c.get("authUserId"))
+    })
+  );
+
   app.post("/reconnect", requireSession, async (c) => {
     const body = await c.req.json<{ roomId?: string; roomPlayerId?: string }>();
     if (!body.roomId || !body.roomPlayerId || body.roomPlayerId !== c.get("authUserId")) {
@@ -241,8 +249,8 @@ export const createApp = ({
 
       return {
         onOpen(_event, ws) {
-          const bootstrap = roomManager.connect(ticket, userId, ws);
-          if (!bootstrap) {
+          const session = roomManager.connect(ticket, userId, ws);
+          if (!session) {
             ws.send(
               encodeServerControlMessage({
                 type: "error",
@@ -256,9 +264,10 @@ export const createApp = ({
 
           socketMeta.set(ws, {
             roomPlayerId: userId,
-            roomId: bootstrap.room.roomId
+            roomId: session.bootstrap.room.roomId,
+            connectionId: session.connectionId
           });
-          ws.send(encodeServerStateMessage(bootstrap));
+          ws.send(encodeServerStateMessage(session.bootstrap));
         },
         onMessage(event, ws) {
           if (!(event.data instanceof Uint8Array || event.data instanceof ArrayBuffer)) {
@@ -272,7 +281,7 @@ export const createApp = ({
               return;
             }
 
-            roomManager.receiveRuntimeInput(meta.roomPlayerId, bytes);
+            roomManager.receiveRuntimeInput(meta.roomPlayerId, meta.connectionId, bytes);
             return;
           }
 
@@ -282,8 +291,18 @@ export const createApp = ({
               return;
             }
 
-            const control = decodeClientControlMessage(bytes);
-            roomManager.receiveControl(meta.roomPlayerId, control);
+            try {
+              const control = decodeClientControlMessage(bytes);
+              roomManager.receiveControl(meta.roomPlayerId, meta.connectionId, control);
+            } catch {
+              ws.send(
+                encodeServerControlMessage({
+                  type: "error",
+                  code: "invalid_control",
+                  message: "Client control packet was malformed."
+                })
+              );
+            }
           }
         },
         onClose(_event, ws) {
@@ -292,7 +311,7 @@ export const createApp = ({
             return;
           }
 
-          roomManager.disconnect(meta.roomPlayerId);
+          roomManager.disconnect(meta.roomPlayerId, meta.connectionId);
           socketMeta.delete(ws);
         }
       };

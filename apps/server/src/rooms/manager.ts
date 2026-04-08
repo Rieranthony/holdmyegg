@@ -6,7 +6,13 @@ import type {
 } from "@out-of-bounds/netcode";
 import type { PlayerRepository } from "../lib/playerRepository";
 import type { PlaylistMap } from "../lib/maps";
-import { Room, type RoomConfig, type RoomProfile, type RoomSocket } from "./room";
+import {
+  Room,
+  type ConnectedRoomSession,
+  type RoomConfig,
+  type RoomProfile,
+  type RoomSocket
+} from "./room";
 
 const ROOM_CAPACITY = 24;
 
@@ -55,6 +61,7 @@ export class RoomManager {
       for (const room of this.rooms.values()) {
         room.tick(1 / 60);
       }
+      this.rebuildPlayerRoomIndex();
     }, 1000 / 60);
   }
 
@@ -71,8 +78,9 @@ export class RoomManager {
 
   quickJoin(profile: RoomProfile): JoinTicket {
     const room = this.pickQuickJoinRoom();
+    this.ensureExclusiveMembership(profile.userId, room.id);
     const join = room.issueJoinTicket(profile);
-    this.playerRoomIndex.set(profile.userId, room.id);
+    this.rebuildPlayerRoomIndex();
     return join;
   }
 
@@ -82,58 +90,93 @@ export class RoomManager {
       throw new Error("Room not found.");
     }
 
+    this.ensureExclusiveMembership(profile.userId, room.id);
     const join = room.issueJoinTicket(profile);
-    this.playerRoomIndex.set(profile.userId, room.id);
+    this.rebuildPlayerRoomIndex();
     return join;
   }
 
-  connect(ticket: string, userId: string, socket: RoomSocket) {
+  leaveRoom(roomId: string, roomPlayerId: string) {
+    const room = this.rooms.get(roomId);
+    const didLeave = room?.leave(roomPlayerId) ?? false;
+    this.rebuildPlayerRoomIndex();
+    return didLeave;
+  }
+
+  connect(ticket: string, userId: string, socket: RoomSocket): ConnectedRoomSession | null {
     const indexedRoomId = this.playerRoomIndex.get(userId);
     if (indexedRoomId) {
       const indexedRoom = this.rooms.get(indexedRoomId);
-      const bootstrap = indexedRoom?.connect(ticket, userId, socket) ?? null;
-      if (bootstrap) {
-        return bootstrap;
+      const session = indexedRoom?.connect(ticket, userId, socket) ?? null;
+      if (session) {
+        this.rebuildPlayerRoomIndex();
+        return session;
       }
     }
 
     for (const [roomId, room] of this.rooms) {
-      const bootstrap = room.connect(ticket, userId, socket);
-      if (bootstrap) {
+      const session = room.connect(ticket, userId, socket);
+      if (session) {
         this.playerRoomIndex.set(userId, roomId);
-        return bootstrap;
+        return session;
       }
     }
 
     return null;
   }
 
-  disconnect(roomPlayerId: string) {
+  disconnect(roomPlayerId: string, connectionId: string) {
     const roomId = this.playerRoomIndex.get(roomPlayerId);
     if (!roomId) {
       return null;
     }
 
-    return this.rooms.get(roomId)?.disconnect(roomPlayerId) ?? null;
+    return this.rooms.get(roomId)?.disconnect(roomPlayerId, connectionId) ?? null;
   }
 
-  receiveControl(roomPlayerId: string, message: Parameters<Room["receiveControl"]>[1]) {
+  receiveControl(
+    roomPlayerId: string,
+    connectionId: string,
+    message: Parameters<Room["receiveControl"]>[2]
+  ) {
     const roomId = this.playerRoomIndex.get(roomPlayerId);
     if (roomId) {
-      this.rooms.get(roomId)?.receiveControl(roomPlayerId, message);
+      this.rooms.get(roomId)?.receiveControl(roomPlayerId, connectionId, message);
     }
   }
 
-  receiveRuntimeInput(roomPlayerId: string, packet: Parameters<Room["receiveRuntimeInput"]>[1]) {
+  receiveRuntimeInput(
+    roomPlayerId: string,
+    connectionId: string,
+    packet: Parameters<Room["receiveRuntimeInput"]>[2]
+  ) {
     const roomId = this.playerRoomIndex.get(roomPlayerId);
     if (roomId) {
-      this.rooms.get(roomId)?.receiveRuntimeInput(roomPlayerId, packet);
+      this.rooms.get(roomId)?.receiveRuntimeInput(roomPlayerId, connectionId, packet);
     }
   }
 
   createReconnectTicket(roomId: string, roomPlayerId: string): ReconnectTicket | null {
     const room = this.rooms.get(roomId);
     return room ? room.issueReconnectTicket(roomPlayerId) : null;
+  }
+
+  private ensureExclusiveMembership(roomPlayerId: string, nextRoomId: string) {
+    const currentRoomId = this.playerRoomIndex.get(roomPlayerId);
+    if (!currentRoomId || currentRoomId === nextRoomId) {
+      return;
+    }
+
+    this.rooms.get(currentRoomId)?.leave(roomPlayerId);
+  }
+
+  private rebuildPlayerRoomIndex() {
+    this.playerRoomIndex.clear();
+    for (const room of this.rooms.values()) {
+      for (const roomPlayerId of room.getMemberIds()) {
+        this.playerRoomIndex.set(roomPlayerId, room.id);
+      }
+    }
   }
 
   private pickQuickJoinRoom() {

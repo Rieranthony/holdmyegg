@@ -22,7 +22,6 @@ import {
   clearTransientRuntimeInputFlags,
   createEmptyRuntimeInputCommand,
   decodeRuntimeInputPacket as decodeRuntimeInputPayload,
-  decodeClientControlMessage,
   encodeServerControlMessage,
   encodeServerStateMessage,
   mergeRuntimeInputCommand,
@@ -43,7 +42,6 @@ import { buildCountdownState, buildRoomSummary, getQueuedHumanCount } from "./se
 
 const COUNTDOWN_SECONDS = 20;
 const FULL_ROOM_COUNTDOWN_SECONDS = 5;
-const MAX_WAIT_MS = 120_000;
 const ROUND_DURATION_MS = 5 * 60_000;
 const POST_ROUND_MS = 5_000;
 const RECONNECT_GRACE_MS = 20_000;
@@ -54,6 +52,12 @@ const CHAT_RATE_LIMIT_COUNT = 5;
 
 export interface RoomSocket {
   send(data: string | ArrayBufferView | ArrayBuffer): unknown;
+  close?(code?: number, reason?: string): unknown;
+}
+
+export interface ConnectedRoomSession {
+  bootstrap: ServerBootstrapFrame;
+  connectionId: string;
 }
 
 export interface RoomProfile {
@@ -77,8 +81,11 @@ interface RoomMember {
   presence: JoinedRoomPlayer["presence"];
   joinMode: "active" | "spectator";
   socket: RoomSocket | null;
+  connectionId: string | null;
   chatRate: ChatRateState;
   reconnectExpiresAt: number | null;
+  lastSeenAt: number;
+  lastPingAt: number;
   lastInput: RuntimeInputCommand;
 }
 
@@ -139,6 +146,7 @@ export class Room {
   private currentMap: PlaylistMap;
   private currentMatchId: string | null = null;
   private lastBroadcastAt = 0;
+  private finishPromise: Promise<void> | null = null;
 
   constructor(
     private readonly config: RoomConfig,
@@ -153,6 +161,10 @@ export class Room {
 
   get id() {
     return this.config.id;
+  }
+
+  getMemberIds() {
+    return [...this.members.keys()];
   }
 
   getSummary(): RoomSummary {
@@ -207,11 +219,21 @@ export class Room {
 
   issueReconnectTicket(roomPlayerId: string) {
     const member = this.members.get(roomPlayerId);
-    if (!member) {
+    if (
+      !member ||
+      member.connected ||
+      member.reconnectExpiresAt === null ||
+      member.reconnectExpiresAt < now()
+    ) {
       return null;
     }
 
-    const ticket = this.createTicket(this.reconnectTickets, member.userId, roomPlayerId);
+    const ticket = this.createTicket(
+      this.reconnectTickets,
+      member.userId,
+      roomPlayerId,
+      Math.min(now() + 60_000, member.reconnectExpiresAt)
+    );
     return {
       ticket: ticket.ticket,
       roomId: this.config.id,
@@ -220,7 +242,7 @@ export class Room {
     } satisfies ReconnectTicket;
   }
 
-  connect(ticket: string, userId: string, socket: RoomSocket): ServerBootstrapFrame | null {
+  connect(ticket: string, userId: string, socket: RoomSocket): ConnectedRoomSession | null {
     const ticketRecord = this.consumeTicket(ticket, userId);
     if (!ticketRecord) {
       return null;
@@ -231,9 +253,15 @@ export class Room {
       return null;
     }
 
+    const currentTime = now();
+    const previousSocket = member.socket;
     member.socket = socket;
     member.connected = true;
+    member.connectionId = randomUUID();
     member.reconnectExpiresAt = null;
+    member.lastSeenAt = currentTime;
+    member.lastPingAt = currentTime;
+    member.lastInput = createEmptyRuntimeInputCommand(member.lastInput.seq);
     if (this.phase === "live") {
       member.presence =
         member.joinMode === "spectator" ? "mid_round_spectating" : member.presence === "dead_spectating" ? "dead_spectating" : "alive";
@@ -244,31 +272,68 @@ export class Room {
 
     this.pushSystemMessage(`${member.displayName} joined the room.`);
     this.broadcastRoomState();
-    return this.createBootstrapFrame(member.roomPlayerId);
+    if (previousSocket && previousSocket !== socket) {
+      previousSocket.close?.(4001, "replaced_connection");
+    }
+
+    return {
+      bootstrap: this.createBootstrapFrame(member.roomPlayerId),
+      connectionId: member.connectionId
+    };
   }
 
-  disconnect(roomPlayerId: string) {
+  disconnect(roomPlayerId: string, connectionId: string) {
     const member = this.members.get(roomPlayerId);
-    if (!member) {
+    if (!member || member.connectionId !== connectionId) {
       return null;
     }
 
     member.connected = false;
     member.socket = null;
+    member.connectionId = null;
     member.presence = this.phase === "live" ? "reconnecting" : "waiting";
     member.reconnectExpiresAt = now() + RECONNECT_GRACE_MS;
+    member.lastInput = createEmptyRuntimeInputCommand(member.lastInput.seq);
     this.pushSystemMessage(`${member.displayName} disconnected.`);
     this.broadcastRoomState();
     return this.issueReconnectTicket(roomPlayerId);
   }
 
-  receiveControl(roomPlayerId: string, message: ClientControlMessage) {
-    if (message.type !== "chat_send") {
+  leave(roomPlayerId: string) {
+    const member = this.members.get(roomPlayerId);
+    if (!member) {
+      return false;
+    }
+
+    if (this.phase === "live" && member.joinMode === "active") {
+      this.simulation.forfeitPlayer(roomPlayerId);
+      const roundStat = this.roundStats.get(roomPlayerId);
+      if (roundStat && roundStat.eliminatedAtMs === null) {
+        roundStat.eliminatedAtMs = now();
+      }
+    }
+
+    this.removeMember(roomPlayerId, {
+      closeSocket: true,
+      keepRoundStats: this.phase === "live",
+      systemMessage: `${member.displayName} left the room.`
+    });
+    this.broadcastRoomState();
+    return true;
+  }
+
+  receiveControl(roomPlayerId: string, connectionId: string, message: ClientControlMessage) {
+    const member = this.members.get(roomPlayerId);
+    if (!member || !member.connected || member.connectionId !== connectionId) {
       return;
     }
 
-    const member = this.members.get(roomPlayerId);
-    if (!member || !member.connected) {
+    member.lastSeenAt = now();
+    if (message.type === "pong") {
+      return;
+    }
+
+    if (message.type !== "chat_send") {
       return;
     }
 
@@ -306,17 +371,26 @@ export class Room {
     this.pushChatMessage(chatMessage);
   }
 
-  receiveRuntimeInput(roomPlayerId: string, packet: ArrayBuffer | Uint8Array) {
+  receiveRuntimeInput(roomPlayerId: string, connectionId: string, packet: ArrayBuffer | Uint8Array) {
     const member = this.members.get(roomPlayerId);
-    if (!member) {
+    if (!member || !member.connected || member.connectionId !== connectionId) {
       return;
     }
 
-    const raw = decodeRuntimeInputPayload(packet);
-    member.lastInput = mergeRuntimeInputCommand(
-      member.lastInput,
-      unpackRuntimeInputCommand(raw)
-    );
+    member.lastSeenAt = now();
+    try {
+      const raw = decodeRuntimeInputPayload(packet);
+      member.lastInput = mergeRuntimeInputCommand(
+        member.lastInput,
+        unpackRuntimeInputCommand(raw)
+      );
+    } catch {
+      this.sendControl(member.socket, {
+        type: "error",
+        code: "invalid_runtime_input",
+        message: "Runtime input packet was malformed."
+      });
+    }
   }
 
   tick(dtSeconds: number) {
@@ -359,10 +433,13 @@ export class Room {
       presence: this.phase === "live" ? "mid_round_spectating" : "waiting",
       joinMode: this.phase === "live" ? "spectator" : "active",
       socket: null,
+      connectionId: null,
       chatRate: {
         sentAt: []
       },
       reconnectExpiresAt: null,
+      lastSeenAt: now(),
+      lastPingAt: now(),
       lastInput: createEmptyRuntimeInputCommand()
     };
     this.members.set(member.roomPlayerId, member);
@@ -372,13 +449,14 @@ export class Room {
   private createTicket(
     store: Map<string, TicketRecord>,
     userId: string,
-    roomPlayerId: string
+    roomPlayerId: string,
+    expiresAt = now() + 60_000
   ) {
     const record: TicketRecord = {
       ticket: randomUUID(),
       roomPlayerId,
       userId,
-      expiresAt: now() + 60_000
+      expiresAt
     };
     store.set(record.ticket, record);
     return record;
@@ -412,15 +490,77 @@ export class Room {
     }
   }
 
-  private pruneDisconnectedMembers(currentTime: number) {
-    for (const member of this.members.values()) {
-      if (
-        member.reconnectExpiresAt !== null &&
-        member.reconnectExpiresAt < currentTime &&
-        this.phase !== "live"
-      ) {
-        member.reconnectExpiresAt = null;
+  private revokeTicketsForMember(roomPlayerId: string) {
+    for (const [ticket, record] of this.joinTickets) {
+      if (record.roomPlayerId === roomPlayerId) {
+        this.joinTickets.delete(ticket);
       }
+    }
+
+    for (const [ticket, record] of this.reconnectTickets) {
+      if (record.roomPlayerId === roomPlayerId) {
+        this.reconnectTickets.delete(ticket);
+      }
+    }
+  }
+
+  private removeMember(
+    roomPlayerId: string,
+    options: {
+      closeSocket?: boolean;
+      keepRoundStats?: boolean;
+      systemMessage?: string;
+    } = {}
+  ) {
+    const member = this.members.get(roomPlayerId);
+    if (!member) {
+      return null;
+    }
+
+    this.revokeTicketsForMember(roomPlayerId);
+    this.members.delete(roomPlayerId);
+    if (!options.keepRoundStats) {
+      this.roundStats.delete(roomPlayerId);
+    }
+
+    const socket = member.socket;
+    member.socket = null;
+    member.connected = false;
+    member.connectionId = null;
+    member.reconnectExpiresAt = null;
+    member.lastInput = createEmptyRuntimeInputCommand(member.lastInput.seq);
+
+    if (options.closeSocket) {
+      socket?.close?.(1000, "leave_room");
+    }
+
+    if (options.systemMessage) {
+      this.pushSystemMessage(options.systemMessage);
+    }
+
+    return member;
+  }
+
+  private pruneDisconnectedMembers(currentTime: number) {
+    const expiredMembers = [...this.members.values()].filter(
+      (member) =>
+        member.reconnectExpiresAt !== null && member.reconnectExpiresAt < currentTime
+    );
+
+    for (const member of expiredMembers) {
+      if (this.phase === "live" && member.joinMode === "active") {
+        this.simulation.forfeitPlayer(member.roomPlayerId);
+        const roundStat = this.roundStats.get(member.roomPlayerId);
+        if (roundStat && roundStat.eliminatedAtMs === null) {
+          roundStat.eliminatedAtMs = currentTime;
+        }
+      }
+
+      this.removeMember(member.roomPlayerId, {
+        keepRoundStats: this.phase === "live",
+        systemMessage: `${member.displayName} timed out and left the room.`
+      });
+      this.broadcastRoomState();
     }
   }
 
@@ -438,19 +578,16 @@ export class Room {
     if (this.phase === "waiting") {
       if (queuedHumans >= 2) {
         const fullRoom = queuedHumans >= this.config.capacity;
-        const waitedLongEnough = currentTime - this.phaseEnteredAt >= MAX_WAIT_MS;
-        if (fullRoom || waitedLongEnough || queuedHumans >= 2) {
-          this.phase = "countdown";
-          this.phaseEnteredAt = currentTime;
-          this.countdownEndsAt =
-            currentTime + (fullRoom ? FULL_ROOM_COUNTDOWN_SECONDS : COUNTDOWN_SECONDS) * 1000;
-          this.pushSystemMessage(
-            fullRoom
-              ? `Room full. Starting in ${FULL_ROOM_COUNTDOWN_SECONDS}s.`
-              : `Countdown started. Match begins in ${COUNTDOWN_SECONDS}s.`
-          );
-          this.broadcastRoomState();
-        }
+        this.phase = "countdown";
+        this.phaseEnteredAt = currentTime;
+        this.countdownEndsAt =
+          currentTime + (fullRoom ? FULL_ROOM_COUNTDOWN_SECONDS : COUNTDOWN_SECONDS) * 1000;
+        this.pushSystemMessage(
+          fullRoom
+            ? `Room full. Starting in ${FULL_ROOM_COUNTDOWN_SECONDS}s.`
+            : `Countdown started. Match begins in ${COUNTDOWN_SECONDS}s.`
+        );
+        this.broadcastRoomState();
       }
       return;
     }
@@ -514,6 +651,7 @@ export class Room {
 
     for (const member of this.members.values()) {
       member.lastInput = createEmptyRuntimeInputCommand();
+      member.reconnectExpiresAt = null;
       if (participants.some((participant) => participant.roomPlayerId === member.roomPlayerId)) {
         member.presence = "alive";
         member.joinMode = "active";
@@ -549,13 +687,15 @@ export class Room {
     this.currentMap = this.config.playlist[this.playlistIndex] ?? this.currentMap;
     this.currentMatchId = null;
     this.liveStartedAt = null;
+    this.finishPromise = null;
     this.phase = "waiting";
     this.phaseEnteredAt = currentTime;
     this.countdownEndsAt = null;
     for (const member of this.members.values()) {
       member.lastInput = createEmptyRuntimeInputCommand();
-      member.presence = member.connected ? "waiting" : "waiting";
+      member.presence = "waiting";
       member.joinMode = "active";
+      member.reconnectExpiresAt = member.connected ? null : currentTime + RECONNECT_GRACE_MS;
     }
     this.pushSystemMessage(`Map selected: ${this.currentMap.document.meta.name}`);
     this.pushSystemMessage("Room reset. Waiting for players.");
@@ -567,7 +707,7 @@ export class Room {
     const commands: Record<string, RuntimeInputCommand> = {};
     const activeRoomPlayerIds: string[] = [];
     for (const member of this.members.values()) {
-      if (member.joinMode === "active") {
+      if (member.joinMode === "active" && member.connected) {
         commands[member.roomPlayerId] = member.lastInput;
         activeRoomPlayerIds.push(member.roomPlayerId);
       }
@@ -613,7 +753,7 @@ export class Room {
   }
 
   private async finishRound(currentTime: number, outcome: "winner" | "timeout" | "abandoned") {
-    if (this.phase !== "live" || !this.liveStartedAt || !this.currentMatchId) {
+    if (this.finishPromise || this.phase !== "live" || !this.liveStartedAt || !this.currentMatchId) {
       return;
     }
     const roundStartedAt = this.liveStartedAt;
@@ -680,18 +820,30 @@ export class Room {
       }),
       participants
     };
-    await this.playerRepository.recordCompletedMatch(record);
     this.phase = "post_round";
     this.phaseEnteredAt = currentTime;
     this.pushSystemMessage("Round finished.");
     this.broadcastRoomState();
     this.broadcastState();
+    const persistPromise = this.playerRepository
+      .recordCompletedMatch(record)
+      .catch((error) => {
+        console.error(`[Room ${this.config.id}] Could not persist completed match ${record.id}.`, error);
+      })
+      .finally(() => {
+        if (this.finishPromise === persistPromise) {
+          this.finishPromise = null;
+        }
+      });
+    this.finishPromise = persistPromise;
+    await persistPromise;
   }
 
   private broadcastRoomState() {
+    const room = this.getJoinedRoomState();
     const control: ServerControlMessage = {
       type: "room_state",
-      room: this.getJoinedRoomState()
+      room
     };
     const payload = encodeServerControlMessage(control);
     for (const member of this.members.values()) {
@@ -701,7 +853,7 @@ export class Room {
     }
   }
 
-  private createSharedFrame(): RoomSharedFrame {
+  private createSharedFrame(options: { consumeBatches: boolean }): RoomSharedFrame {
     if (this.phase !== "live") {
       return {
         tick: 0,
@@ -735,14 +887,18 @@ export class Room {
       };
     }
 
-    const gameplayEventBatch = this.simulation.consumeGameplayEventBatch();
+    const gameplayEventBatch = options.consumeBatches
+      ? this.simulation.consumeGameplayEventBatch()
+      : null;
     if (gameplayEventBatch) {
       this.applyGameplayEvents(gameplayEventBatch);
     }
 
+    const matchState = this.simulation.getMatchState(null);
+
     return {
-      tick: this.simulation.getMatchState(null).tick,
-      time: this.simulation.getMatchState(null).time,
+      tick: matchState.tick,
+      time: matchState.time,
       mode: "multiplayer",
       players: this.simulation
         .getPlayerIds()
@@ -757,7 +913,9 @@ export class Room {
       skyDrops: this.simulation.getSkyDrops(),
       fallingClusters: this.simulation.getFallingClusters(),
       authoritativeState: this.simulation.getAuthoritativeMatchState(null),
-      terrainDeltaBatch: this.simulation.consumeTerrainDeltaBatch(),
+      terrainDeltaBatch: options.consumeBatches
+        ? this.simulation.consumeTerrainDeltaBatch()
+        : null,
       gameplayEventBatch
     };
   }
@@ -779,24 +937,33 @@ export class Room {
   }
 
   private createBootstrapFrame(roomPlayerId: string): ServerBootstrapFrame {
+    const liveWorldDocument =
+      this.phase === "live"
+        ? cloneDocument(this.simulation.getWorld().toDocument())
+        : cloneDocument(this.currentMap.document);
     return {
       kind: "bootstrap",
       room: this.getJoinedRoomState(),
       world: {
-        document: cloneDocument(this.currentMap.document),
+        document: liveWorldDocument,
         terrainRevision:
           this.phase === "live"
             ? this.simulation.getWorld().getTerrainRevision()
             : this.currentMap.document.voxels.length
       },
-      sharedFrame: this.createSharedFrame(),
+      sharedFrame: this.createSharedFrame({
+        consumeBatches: false
+      }),
       localOverlay: this.createLocalOverlay(roomPlayerId),
       recentChat: [...this.chatHistory]
     };
   }
 
   private broadcastState() {
-    const sharedFrame = this.createSharedFrame();
+    const sharedFrame = this.createSharedFrame({
+      consumeBatches: true
+    });
+    const room = this.getJoinedRoomState();
     for (const member of this.members.values()) {
       if (!member.socket) {
         continue;
@@ -804,7 +971,7 @@ export class Room {
 
       const payload = encodeServerStateMessage({
         kind: "delta",
-        room: this.getJoinedRoomState(),
+        room,
         sharedFrame,
         localOverlay: this.createLocalOverlay(member.roomPlayerId)
       } satisfies ServerStateDeltaFrame);

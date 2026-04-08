@@ -1526,7 +1526,7 @@ describe("GameClient", () => {
     expect((client as any).quickEggQueued).toBe(true);
     expect((client as any).destroyQueued).toBe(false);
 
-    (client as any).sendRuntimeInput((client as any).getLocalRuntimePlayer());
+    (client as any).sendRuntimeInput((client as any).getLocalRuntimePlayer(), 0);
     const lastMessage = worker.postMessage.mock.calls.at(-1)?.[0];
     const command = unpackRuntimeInputCommand(lastMessage.buffer);
     expect(command.layEgg).toBe(true);
@@ -1564,7 +1564,7 @@ describe("GameClient", () => {
       normal: { x: 0, y: 1, z: 0 }
     });
 
-    (client as any).sendRuntimeInput((client as any).getLocalRuntimePlayer());
+    (client as any).sendRuntimeInput((client as any).getLocalRuntimePlayer(), 0.04);
     const lastMessage = worker.postMessage.mock.calls.at(-1)?.[0];
     const command = unpackRuntimeInputCommand(lastMessage.buffer);
     expect(command.destroy).toBe(true);
@@ -1602,7 +1602,7 @@ describe("GameClient", () => {
       repeat: false
     });
 
-    (client as any).sendRuntimeInput((client as any).getLocalRuntimePlayer());
+    (client as any).sendRuntimeInput((client as any).getLocalRuntimePlayer(), 0);
     const lastMessage = worker.postMessage.mock.calls.at(-1)?.[0];
     const command = unpackRuntimeInputCommand(lastMessage.buffer);
 
@@ -1636,7 +1636,7 @@ describe("GameClient", () => {
       repeat: false
     });
 
-    (client as any).sendRuntimeInput((client as any).getLocalRuntimePlayer());
+    (client as any).sendRuntimeInput((client as any).getLocalRuntimePlayer(), 0.04);
     const lastMessage = worker.postMessage.mock.calls.at(-1)?.[0];
     const command = unpackRuntimeInputCommand(lastMessage.buffer);
 
@@ -1700,7 +1700,7 @@ describe("GameClient", () => {
     expect((client as any).destroyQueued).toBe(true);
     expect((client as any).harvestFocusOverride?.focusState.focusedVoxel).toEqual({ x: 4, y: 2, z: 5 });
 
-    (client as any).sendRuntimeInput((client as any).getLocalRuntimePlayer());
+    (client as any).sendRuntimeInput((client as any).getLocalRuntimePlayer(), 0);
     const lastMessage = worker.postMessage.mock.calls.at(-1)?.[0];
     const command = unpackRuntimeInputCommand(lastMessage.buffer);
 
@@ -1774,7 +1774,7 @@ describe("GameClient", () => {
     expect((client as any).keyboardState.jumpPressed).toBe(true);
     expect((client as any).keyboardState.jumpReleased).toBe(true);
 
-    (client as any).sendRuntimeInput((client as any).getLocalRuntimePlayer());
+    (client as any).sendRuntimeInput((client as any).getLocalRuntimePlayer(), 0.04);
 
     const lastMessage = worker.postMessage.mock.calls.at(-1)?.[0];
     const command = unpackRuntimeInputCommand(lastMessage.buffer);
@@ -1783,6 +1783,53 @@ describe("GameClient", () => {
     expect(command.jumpReleased).toBe(true);
     expect((client as any).keyboardState.jumpPressed).toBe(false);
     expect((client as any).keyboardState.jumpReleased).toBe(false);
+
+    client.dispose();
+  });
+
+  it("throttles steady runtime input changes to the network cadence but still sends immediate actions right away", () => {
+    const client = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 44
+    });
+
+    const worker = MockWorker.instances[0]!;
+    (client as any).pointerLocked = true;
+    (client as any).runtimePaused = false;
+    (client as any).latestFrame = createReadyRuntimeFrame();
+    const localPlayer = (client as any).getLocalRuntimePlayer();
+    const initialMessageCount = worker.postMessage.mock.calls.length;
+
+    (client as any).keyboardState.forward = true;
+    (client as any).sendRuntimeInput(localPlayer, 0);
+
+    expect(worker.postMessage.mock.calls).toHaveLength(initialMessageCount + 1);
+    const firstMessage = worker.postMessage.mock.calls.at(-1)?.[0];
+    const firstCommand = unpackRuntimeInputCommand(firstMessage.buffer);
+    expect(firstCommand.seq).toBe(0);
+
+    (client as any).keyboardState.right = true;
+    (client as any).sendRuntimeInput(localPlayer, 0.01);
+    expect(worker.postMessage.mock.calls).toHaveLength(initialMessageCount + 1);
+
+    (client as any).sendRuntimeInput(localPlayer, 0.04);
+    expect(worker.postMessage.mock.calls).toHaveLength(initialMessageCount + 2);
+    const secondMessage = worker.postMessage.mock.calls.at(-1)?.[0];
+    const secondCommand = unpackRuntimeInputCommand(secondMessage.buffer);
+    expect(secondCommand.seq).toBe(1);
+    expect(secondCommand.moveX).not.toBe(firstCommand.moveX);
+
+    (client as any).keyboardState.jump = true;
+    (client as any).keyboardState.jumpPressed = true;
+    (client as any).sendRuntimeInput(localPlayer, 0.05);
+
+    expect(worker.postMessage.mock.calls).toHaveLength(initialMessageCount + 3);
+    const thirdMessage = worker.postMessage.mock.calls.at(-1)?.[0];
+    const thirdCommand = unpackRuntimeInputCommand(thirdMessage.buffer);
+    expect(thirdCommand.seq).toBe(2);
+    expect(thirdCommand.jumpPressed).toBe(true);
 
     client.dispose();
   });
@@ -2276,7 +2323,7 @@ describe("GameClient", () => {
     });
 
     expect((client as any).keyboardState.forward).toBe(false);
-    (client as any).sendRuntimeInput((client as any).getLocalRuntimePlayer());
+    (client as any).sendRuntimeInput((client as any).getLocalRuntimePlayer(), 0);
 
     let lastMessage = worker.postMessage.mock.calls.at(-1)?.[0];
     expect(unpackRuntimeInputCommand(lastMessage.buffer).typedText).toBe("w");
@@ -2305,7 +2352,7 @@ describe("GameClient", () => {
     });
 
     expect((client as any).keyboardState.jump).toBe(false);
-    (client as any).sendRuntimeInput((client as any).getLocalRuntimePlayer());
+    (client as any).sendRuntimeInput((client as any).getLocalRuntimePlayer(), 0.04);
 
     lastMessage = worker.postMessage.mock.calls.at(-1)?.[0];
     const spaceCommand = unpackRuntimeInputCommand(lastMessage.buffer);
@@ -2585,6 +2632,26 @@ describe("GameClient", () => {
     expect(visual.root.visible).toBe(false);
     expect(visual.bomb.visible).toBe(true);
     expect(visual.bomb.position.y).toBeLessThan(0.82);
+
+    (client as any).syncPlayers(
+      [
+        {
+          ...(createReadyRuntimeFrame().players[0] as object),
+          spacePhase: "none" as const,
+          position: { x: 5.2, y: 3.3, z: 6.1 },
+          velocity: { x: 1.6, y: 6.2, z: 0.8 },
+          facing: { x: 0, z: 1 }
+        }
+      ],
+      "human-1",
+      1 / 60,
+      1.55
+    );
+
+    expect(visual.root.visible).toBe(true);
+    expect(visual.bomb.visible).toBe(false);
+    expect(visual.body.rotation.x).toBe(0);
+    expect(visual.avatar.rotation.z).toBe(0);
 
     client.dispose();
   });

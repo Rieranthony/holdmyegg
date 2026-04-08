@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  PACKED_RUNTIME_INPUT_BYTES,
   MAX_TYPED_TEXT_BYTES,
   clearTransientRuntimeInputFlags,
   mergeRuntimeInputCommand,
@@ -68,6 +69,12 @@ describe("packRuntimeInputCommand", () => {
 
     expect(unpacked.typedText).toBe("abcdefghijklmnopqrstuvwx".slice(0, MAX_TYPED_TEXT_BYTES));
     expect(unpacked.typedText).toHaveLength(MAX_TYPED_TEXT_BYTES);
+  });
+
+  it("rejects buffers shorter than the packed runtime payload size", () => {
+    expect(() =>
+      unpackRuntimeInputCommand(new ArrayBuffer(PACKED_RUNTIME_INPUT_BYTES - 1))
+    ).toThrow("Runtime input payload is shorter than expected.");
   });
 });
 

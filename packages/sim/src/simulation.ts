@@ -566,6 +566,20 @@ export class OutOfBoundsSimulation {
     return player ? (player as RuntimePlayerState) : null;
   }
 
+  forfeitPlayer(playerId: string) {
+    const player = this.players.get(playerId);
+    if (!player || player.kind !== "human" || !player.alive) {
+      return false;
+    }
+
+    player.livesRemaining = 0;
+    this.eliminatePlayer(player, false, {
+      sourceEntityId: null,
+      sourceKind: "ringOut"
+    });
+    return true;
+  }
+
   getPlayerState(playerId: string) {
     const player = this.players.get(playerId);
     return player ? this.toViewState(player) : null;
@@ -1856,6 +1870,7 @@ export class OutOfBoundsSimulation {
     }
 
     this.stopJetpack(player);
+    player.mass = 0;
     player.jumpBufferRemaining = 0;
     player.jumpAssistRemaining = 0;
     player.jetpackHoldActivationRemaining = 0;
@@ -3177,6 +3192,7 @@ export class OutOfBoundsSimulation {
 
     this.spawnDetachedComponentsNearMutations(explodedVoxels);
     this.stopJetpack(player);
+    player.mass = 0;
     player.velocity = { x: 0, y: 0, z: 0 };
     player.grounded = true;
     player.jumpBufferRemaining = 0;

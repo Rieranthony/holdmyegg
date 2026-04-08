@@ -34,6 +34,6 @@ describe("runDatabaseMigrations", () => {
   });
 
   it("exports the local default database URL used by docker compose", () => {
-    expect(DEFAULT_DATABASE_URL).toBe("postgres://postgres:postgres@localhost:5432/out_of_bounds");
+    expect(DEFAULT_DATABASE_URL).toBe("postgres://postgres:postgres@localhost:55432/out_of_bounds");
   });
 });

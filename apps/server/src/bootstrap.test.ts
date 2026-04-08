@@ -10,7 +10,7 @@ import { bootstrapServerApp } from "./bootstrap";
 
 const env: ServerEnv = {
   port: 3000,
-  databaseUrl: "postgres://postgres:postgres@localhost:5432/out_of_bounds",
+  databaseUrl: "postgres://postgres:postgres@localhost:55432/out_of_bounds",
   betterAuthSecret: "secret",
   betterAuthUrl: "http://localhost:3000",
   publicServerUrl: "http://localhost:3000",

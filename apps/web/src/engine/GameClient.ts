@@ -103,7 +103,11 @@ import type {
   WorkerResponseMessage
 } from "./protocol";
 import { AuthoritativeReplica } from "./authoritativeReplica";
-import { MAX_TYPED_TEXT_BYTES, packRuntimeInputCommand } from "./runtimeInput";
+import {
+  MAX_TYPED_TEXT_BYTES,
+  packRuntimeInputCommand,
+  type RuntimeInputCommand
+} from "./runtimeInput";
 import {
   createLocalGameWorker,
   type GameWorkerFactory,
@@ -283,6 +287,7 @@ const PLAYER_DETAIL_DISTANCE = 18;
 const SPEED_TRACE_DEPTH = 2.4;
 const SPEED_TRACE_PUSH_BURST_DURATION = 0.2;
 const SPEED_TRACE_MIN_AIR_SPEED = 3.6;
+const RUNTIME_INPUT_SEND_INTERVAL = 1 / 30;
 const SPACE_BLEND_DAMPING = 4.4;
 const SPACE_STAR_COUNT = 220;
 const POINTER_CAPTURE_TIMEOUT_MS = 1_000;
@@ -606,6 +611,36 @@ const getNormalizedTypedCharacter = (event: KeyboardEvent) => {
   return /^[a-z]$/i.test(event.key) ? event.key.toLowerCase() : null;
 };
 
+const vec3iEqual = (
+  left: { x: number; y: number; z: number } | null,
+  right: { x: number; y: number; z: number } | null
+) =>
+  left?.x === right?.x &&
+  left?.y === right?.y &&
+  left?.z === right?.z;
+
+const runtimeInputCommandsEqual = (
+  left: RuntimeInputCommand | null,
+  right: RuntimeInputCommand
+) =>
+  left !== null &&
+  left.moveX === right.moveX &&
+  left.moveZ === right.moveZ &&
+  left.lookX === right.lookX &&
+  left.lookZ === right.lookZ &&
+  left.eggCharge === right.eggCharge &&
+  left.eggPitch === right.eggPitch &&
+  left.typedText === right.typedText &&
+  left.jump === right.jump &&
+  left.jumpPressed === right.jumpPressed &&
+  left.jumpReleased === right.jumpReleased &&
+  left.destroy === right.destroy &&
+  left.place === right.place &&
+  left.push === right.push &&
+  left.layEgg === right.layEgg &&
+  vec3iEqual(left.targetVoxel, right.targetVoxel) &&
+  vec3iEqual(left.targetNormal, right.targetNormal);
+
 const addPlayerPart = (
   parent: THREE.Object3D,
   geometry: THREE.BufferGeometry,
@@ -823,6 +858,8 @@ export class GameClient {
   private matchColorSeed: number;
   private cameraForward = { x: 1, z: 0 };
   private inputSequence = 0;
+  private lastRuntimeInputSentAt = Number.NEGATIVE_INFINITY;
+  private lastSentRuntimeInput: RuntimeInputCommand | null = null;
   private destroyQueued = false;
   private queuedDestroyTarget: RuntimeFocusedTarget | null = null;
   private quickEggQueued = false;
@@ -1263,6 +1300,8 @@ export class GameClient {
     this.mode = nextState.mode;
     this.latestFrame = null;
     this.authoritativeReplica.reset();
+    this.lastRuntimeInputSentAt = Number.NEGATIVE_INFINITY;
+    this.lastSentRuntimeInput = null;
     this.lookYaw = null;
     this.hasInitializedRuntimeCamera = false;
     this.hasInitializedSpectatorCamera = false;
@@ -1649,6 +1688,8 @@ export class GameClient {
   private applyWorldSync(document: MapDocumentV1, chunkPatches: TerrainChunkPatchPayload[]) {
     this.worldDocument = normalizeArenaBudgetMapDocument(document);
     this.runtimeWorld = new MutableVoxelWorld(this.worldDocument);
+    this.lastRuntimeInputSentAt = Number.NEGATIVE_INFINITY;
+    this.lastSentRuntimeInput = null;
     this.spaceBlend = 0;
     this.clearTerrain();
     this.clearRuntimeEntities();
@@ -2849,7 +2890,7 @@ export class GameClient {
       this.updateHoldToThrowState(localPlayer, elapsedTime);
       this.updateEggChargeState(localPlayer, delta, elapsedTime);
       this.updateHeldHarvest(localPlayer, elapsedTime);
-      this.sendRuntimeInput(localPlayer);
+      this.sendRuntimeInput(localPlayer, elapsedTime);
       this.applyRuntimeFrame(delta, elapsedTime);
     } else {
       this.updateSpeedTraces(null, delta, elapsedTime);
@@ -3187,7 +3228,10 @@ export class GameClient {
     });
   }
 
-  private sendRuntimeInput(localPlayer: RuntimePlayerState | null = this.getLocalRuntimePlayer()) {
+  private sendRuntimeInput(
+    localPlayer: RuntimePlayerState | null = this.getLocalRuntimePlayer(),
+    elapsedTime = this.clock.elapsedTime
+  ) {
     if (!isRuntimeMode(this.mode) || !this.pointerLocked) {
       return;
     }
@@ -3219,6 +3263,30 @@ export class GameClient {
       nextCommand.jumpReleased = false;
     }
 
+    const command = {
+      seq: this.inputSequence,
+      ...nextCommand
+    } satisfies RuntimeInputCommand;
+    const hasImmediateAction =
+      command.jumpPressed ||
+      command.jumpReleased ||
+      command.destroy ||
+      command.place ||
+      command.push ||
+      command.layEgg ||
+      command.typedText.length > 0;
+    const sendDue =
+      elapsedTime - this.lastRuntimeInputSentAt >= RUNTIME_INPUT_SEND_INTERVAL;
+    const inputChanged = !runtimeInputCommandsEqual(this.lastSentRuntimeInput, command);
+
+    if (!inputChanged && !hasImmediateAction) {
+      return;
+    }
+
+    if (!hasImmediateAction && !sendDue) {
+      return;
+    }
+
     this.destroyQueued = false;
     this.queuedDestroyTarget = null;
     this.quickEggQueued = false;
@@ -3228,11 +3296,10 @@ export class GameClient {
     this.eggChargeState.pendingThrowCharge = 0;
     this.eggChargeState.pendingThrowPitch = 0;
 
-    const buffer = packRuntimeInputCommand({
-      seq: this.inputSequence,
-      ...nextCommand
-    });
+    const buffer = packRuntimeInputCommand(command);
     this.inputSequence += 1;
+    this.lastRuntimeInputSentAt = elapsedTime;
+    this.lastSentRuntimeInput = command;
     this.worker.postMessage(
       {
         type: "set_runtime_input",
@@ -3427,7 +3494,9 @@ export class GameClient {
         AVATAR_BOB_BASE_Y + Math.sin(elapsedTime * 10 + (isLocal ? 0 : 1.2)) * 0.05 * stride + struggleHop * 0.52;
       visual.avatar.position.z = poseState.bodyForwardOffset;
       visual.avatar.rotation.x = struggleHop * 0.22;
+      visual.avatar.rotation.z = 0;
 
+      visual.body.rotation.x = 0;
       visual.body.rotation.y = poseState.bodyYaw;
       visual.headPivot.rotation.x = poseState.headPitch;
       visual.headPivot.rotation.y = poseState.headYaw;

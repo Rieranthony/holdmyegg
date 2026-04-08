@@ -5,6 +5,7 @@ import type {
   ServerControlMessage,
   ServerStateDeltaFrame
 } from "./types";
+import { PACKED_RUNTIME_INPUT_BYTES } from "./runtimeInput";
 
 export const WS_PACKET_KIND_RUNTIME_INPUT = 1;
 export const WS_PACKET_KIND_CLIENT_CONTROL = 2;
@@ -74,6 +75,10 @@ export const decodeRuntimeInputPacket = (packet: ArrayBuffer | Uint8Array) => {
   const bytes = toUint8Array(packet);
   if (bytes[0] !== WS_PACKET_KIND_RUNTIME_INPUT) {
     throw new Error("Invalid runtime input packet kind.");
+  }
+
+  if (bytes.byteLength !== PACKED_RUNTIME_INPUT_BYTES + 1) {
+    throw new Error("Invalid runtime input packet length.");
   }
 
   return bytes.slice(1).buffer;

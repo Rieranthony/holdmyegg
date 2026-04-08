@@ -26,7 +26,7 @@ HoldMyEgg is a voxel arena game built with Bun, React, Three.js, and an authorit
 docker compose up -d
 ```
 
-This starts a local Postgres instance on `localhost:5432` with:
+This starts a local Postgres instance on `localhost:55432` by default with:
 
 - database: `out_of_bounds`
 - user: `postgres`
@@ -36,8 +36,11 @@ This starts a local Postgres instance on `localhost:5432` with:
 
 Copy these examples into real env files before starting the app:
 
+- [`.env.example`](.env.example)
 - [`apps/server/.env.example`](apps/server/.env.example)
 - [`apps/web/.env.example`](apps/web/.env.example)
+
+The root `.env` is used by Docker Compose for local infra defaults like `POSTGRES_PORT`.
 
 Required server env vars:
 
@@ -50,7 +53,8 @@ Required server env vars:
 Local default values:
 
 ```env
-DATABASE_URL=postgres://postgres:postgres@localhost:5432/out_of_bounds
+POSTGRES_PORT=55432
+DATABASE_URL=postgres://postgres:postgres@localhost:55432/out_of_bounds
 BETTER_AUTH_URL=http://localhost:3000
 PUBLIC_SERVER_URL=http://localhost:3000
 WEB_ORIGIN=http://localhost:5173
@@ -63,21 +67,18 @@ VITE_SERVER_URL=http://localhost:3000
 bun install
 ```
 
-### 4. Start the multiplayer server
-
-```bash
-bun run dev:server
-```
-
-Important: the server runs pending Drizzle migrations automatically before it starts serving HTTP or websocket traffic. This is the same fail-fast behavior used for local dev and Railway startup.
-
-### 5. Start the web app
+### 4. Start the web app and multiplayer server together
 
 ```bash
 bun run dev
 ```
 
-The web app runs on `http://localhost:5173` and the Bun server runs on `http://localhost:3000`.
+This starts both local processes:
+
+- web app on `http://localhost:5173`
+- Bun server on `http://localhost:3000`
+
+Important: the server still runs pending Drizzle migrations automatically before it starts serving HTTP or websocket traffic. This is the same fail-fast behavior used for local dev and Railway startup.
 
 ## Database and Migration Commands
 
@@ -91,7 +92,8 @@ Committed migrations live in [`packages/db/drizzle`](packages/db/drizzle).
 
 ## Development Commands
 
-- `bun run dev`: start the web app
+- `bun run dev`: start the web app and server together
+- `bun run dev:web`: start only the web app
 - `bun run dev:server`: start the Bun server with automatic migrations
 - `bun run test`: run the full test suite
 - `bun run test:mechanics`: run map and simulation tests
@@ -135,3 +137,5 @@ The multiplayer, auth, server, and DB layers all have direct test coverage. Usef
 - The server boot path runs migrations before startup, so there is no separate migration release step
 - `PUBLIC_SERVER_URL` and `BETTER_AUTH_URL` should match the deployed server URL
 - `WEB_ORIGIN` should match the deployed web client origin
+- The root [`Dockerfile`](Dockerfile) is the Railway server image and does not package the web app
+- Railway should probe the existing `/health` route externally; the container does not define a Docker `HEALTHCHECK`

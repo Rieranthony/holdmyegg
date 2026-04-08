@@ -349,6 +349,11 @@ describe("MultiplayerClient", () => {
           }
         });
       }
+      if (path === "/rooms/warm-1/leave") {
+        return createResponse({
+          ok: true
+        });
+      }
       throw new Error(`Unhandled fetch path ${path}`);
     });
     const client = new MultiplayerClient({
@@ -459,11 +464,18 @@ describe("MultiplayerClient", () => {
     });
     expect(new Uint8Array(socket.sent[2] as ArrayBuffer | Uint8Array)[0]).toBe(1);
 
-    client.leaveRoom();
+    await client.leaveRoom();
     expect(client.getSnapshot()).toMatchObject({
       activeRoom: null,
       connectionStatus: "idle"
     });
+    expect(
+      fetchImpl.mock.calls.some(
+        ([input, init]) =>
+          new URL(input.toString()).pathname === "/rooms/warm-1/leave" &&
+          init?.method === "POST"
+      )
+    ).toBe(true);
     expect(socket.closeCalls.at(-1)).toMatchObject({
       reason: "leave_room"
     });

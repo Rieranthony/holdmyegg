@@ -665,7 +665,7 @@ export function App({
     cancelLaunchSequence();
     setRulesOrigin(null);
     if (activePlayMode === "multiplayer") {
-      multiplayerClient.leaveRoom();
+      await multiplayerClient.leaveRoom();
     }
     const nextDocument = await hostRef.current?.getEditorDocument();
     if (nextDocument) {

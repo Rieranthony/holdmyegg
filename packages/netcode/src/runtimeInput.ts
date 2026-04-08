@@ -6,7 +6,7 @@ export interface RuntimeInputCommand extends PlayerCommand {
 
 export const MAX_TYPED_TEXT_BYTES = 24;
 
-const PACKED_INPUT_BYTES = 4 + 4 * 6 + 2 + 2 * 6 + 1 + MAX_TYPED_TEXT_BYTES;
+export const PACKED_RUNTIME_INPUT_BYTES = 4 + 4 * 6 + 2 + 2 * 6 + 1 + MAX_TYPED_TEXT_BYTES;
 const FLAG_JUMP = 1 << 0;
 const FLAG_JUMP_PRESSED = 1 << 1;
 const FLAG_JUMP_RELEASED = 1 << 2;
@@ -60,7 +60,7 @@ export const createEmptyRuntimeInputCommand = (seq = 0): RuntimeInputCommand => 
 });
 
 export const packRuntimeInputCommand = (command: RuntimeInputCommand) => {
-  const buffer = new ArrayBuffer(PACKED_INPUT_BYTES);
+  const buffer = new ArrayBuffer(PACKED_RUNTIME_INPUT_BYTES);
   const view = new DataView(buffer);
   const typedText = normalizeTypedText(command.typedText);
   view.setUint32(0, command.seq, true);
@@ -92,6 +92,10 @@ export const packRuntimeInputCommand = (command: RuntimeInputCommand) => {
 };
 
 export const unpackRuntimeInputCommand = (buffer: ArrayBuffer): RuntimeInputCommand => {
+  if (buffer.byteLength < PACKED_RUNTIME_INPUT_BYTES) {
+    throw new Error("Runtime input payload is shorter than expected.");
+  }
+
   const view = new DataView(buffer);
   const flags = view.getUint16(28, true);
   const typedTextLength = Math.min(view.getUint8(42), MAX_TYPED_TEXT_BYTES);

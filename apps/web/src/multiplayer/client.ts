@@ -319,9 +319,24 @@ export class MultiplayerClient {
     }
   }
 
-  leaveRoom() {
+  async leaveRoom() {
+    const activeRoomId = this.snapshot.activeRoom?.roomId;
     this.leaveRequested = true;
     this.clearReconnectTimer();
+    if (activeRoomId && this.snapshot.sessionUserId) {
+      try {
+        await this.fetchJson<{ ok: boolean }>(
+          `/rooms/${encodeURIComponent(activeRoomId)}/leave`,
+          {
+            method: "POST",
+            body: JSON.stringify({})
+          }
+        );
+      } catch {
+        // If the explicit leave fails, still close locally and let reconnect grace clean up.
+      }
+    }
+
     if (this.websocket) {
       this.websocket.close(1000, "leave_room");
       this.websocket = null;
@@ -368,7 +383,7 @@ export class MultiplayerClient {
   }
 
   dispose() {
-    this.leaveRoom();
+    void this.leaveRoom();
     this.clearAvailabilityPollTimer();
     this.clearRoomPollTimer();
     this.clearReconnectTimer();

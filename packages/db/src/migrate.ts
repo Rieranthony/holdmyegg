@@ -5,7 +5,7 @@ import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { migrate as drizzleMigrate } from "drizzle-orm/postgres-js/migrator";
 
 export const DEFAULT_DATABASE_URL =
-  "postgres://postgres:postgres@localhost:5432/out_of_bounds";
+  "postgres://postgres:postgres@localhost:55432/out_of_bounds";
 export const DRIZZLE_MIGRATIONS_FOLDER = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../drizzle"

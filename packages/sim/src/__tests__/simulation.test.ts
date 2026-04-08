@@ -2267,6 +2267,7 @@ describe("OutOfBoundsSimulation", () => {
 
     expect(localPlayer.spaceChallengeHits).toBe(5);
     expect(localPlayer.spacePhase).toBe("superBoomDive");
+    expect(localPlayer.mass).toBe(0);
     expect(localPlayer.velocity.y).toBeLessThanOrEqual(-44);
     expect(simulation.getHudState().spaceChallenge).toEqual({
       targetKey: "g",
@@ -2514,6 +2515,7 @@ describe("OutOfBoundsSimulation", () => {
     expect(damagedNpc.livesRemaining).toBe(damagedNpc.maxLives - 1);
     expect(damagedNpc.velocity.y).toBeGreaterThan(simulation.config.eggBlastLift);
     expect(damagedNpc.stunRemaining).toBeGreaterThan(simulation.config.eggBlastStunDuration);
+    expect(impactPlayer.mass).toBe(0);
     expect(impactPlayer.spacePhase).toBe("superBoomImpact");
     expect(impactPlayer.spacePhaseRemaining).toBeGreaterThan(0);
     expect(impactPlayer.velocity).toEqual({ x: 0, y: 0, z: 0 });
@@ -2534,6 +2536,7 @@ describe("OutOfBoundsSimulation", () => {
     expect(reboundGameplayBatch).toBeNull();
     expect(simulation.getPlayerState(npcId)!.livesRemaining).toBe(damagedNpc.maxLives - 1);
     expect(reboundPlayer.spacePhase).toBe("none");
+    expect(reboundPlayer.mass).toBe(0);
     expect(reboundPlayer.spaceTriggerArmed).toBe(false);
     expect(reboundPlayer.position.y).toBeGreaterThanOrEqual(PLAYER_GROUND_Y);
     expect(reboundDistance).toBeGreaterThanOrEqual(4);
