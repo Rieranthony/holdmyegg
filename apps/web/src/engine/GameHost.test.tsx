@@ -162,13 +162,15 @@ describe("GameHost", () => {
     );
 
     await waitFor(() => {
-      expect(gameClientState.mockClient.setShellState).toHaveBeenCalledWith({
-        mode: "explore",
-        initialSpawnStyle: "sky",
-        localPlayerName: "Anthony",
-        localPlayerPaletteName: "gold",
-        presentation: "default"
-      });
+      expect(gameClientState.mockClient.setShellState).toHaveBeenCalledWith(
+        expect.objectContaining({
+          mode: "explore",
+          initialSpawnStyle: "sky",
+          localPlayerName: "Anthony",
+          localPlayerPaletteName: "gold",
+          presentation: "default"
+        })
+      );
     });
   });
 

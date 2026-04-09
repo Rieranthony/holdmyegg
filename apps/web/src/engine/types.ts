@@ -119,6 +119,10 @@ export interface GameDiagnostics {
   terrainRevision: number;
   dirtyChunkCount: number;
   runtime: SimulationPerformanceDiagnostics;
+  render?: {
+    sunShadowsEnabled: boolean;
+    shadowMapRefreshCount: number;
+  };
 }
 
 export interface GameOverlayUpdate {

@@ -49,6 +49,7 @@ import {
   MultiplayerClient,
   type MultiplayerSnapshot,
 } from "../multiplayer/client";
+import { useRendererQualityProfile } from "../game/quality";
 import { useMapPersistence } from "./useMapPersistence";
 
 const defaultStatus =
@@ -244,6 +245,7 @@ export function App({
   const [menuControlsOpen, setMenuControlsOpen] = useState(false);
   const [matchColorSeed, setMatchColorSeed] = useState(0);
   const [diagnostics, setDiagnostics] = useState<GameDiagnostics | null>(null);
+  const rendererQualityProfile = useRendererQualityProfile();
   const [playerProfile, setPlayerProfile] = useState<PlayerProfile>({
     name: "",
     paletteName: chickenPalettes[0]!.name,
@@ -763,6 +765,7 @@ export function App({
             onReadyToDisplay={handleMenuReadyToDisplay}
             playerProfile={playerProfile}
             presentation="menu"
+            qualityTier={rendererQualityProfile.tier}
             runtimeSettings={runtimeControlSettings}
           />
         </div>
@@ -1025,6 +1028,7 @@ export function App({
             onPauseStateChange={setPauseState}
             onRuntimeOverlayChange={setRuntimeOverlayState}
             onStatus={updateStatus}
+            qualityTier={rendererQualityProfile.tier}
             ref={hostRef}
             runtimeSettings={runtimeControlSettings}
             workerFactory={
@@ -1312,6 +1316,7 @@ export function App({
             onHudStateChange={setHudState}
             onPauseStateChange={setPauseState}
             onStatus={updateStatus}
+            qualityTier={rendererQualityProfile.tier}
             ref={hostRef}
             runtimeSettings={runtimeControlSettings}
           />
@@ -1322,6 +1327,18 @@ export function App({
               <p>Tick {diagnostics.tick.toLocaleString()}</p>
               <p>Terrain Rev {diagnostics.terrainRevision.toLocaleString()}</p>
               <p>Dirty Chunks {diagnostics.dirtyChunkCount.toLocaleString()}</p>
+              {diagnostics.render && (
+                <>
+                  <p>
+                    Sun Shadows{" "}
+                    {diagnostics.render.sunShadowsEnabled ? "ON" : "OFF"}
+                  </p>
+                  <p>
+                    Shadow Refreshes{" "}
+                    {diagnostics.render.shadowMapRefreshCount.toLocaleString()}
+                  </p>
+                </>
+              )}
               <p>
                 Sky Update {diagnostics.runtime.skyDropUpdateMs.toFixed(2)}ms
               </p>

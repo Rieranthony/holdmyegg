@@ -1,6 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef } from "react";
 import type { MapDocumentV1 } from "@out-of-bounds/map";
 import type { HudState, SimulationInitialSpawnStyle } from "@out-of-bounds/sim";
+import type { QualityTier } from "../game/quality";
 import type { RuntimeControlSettings } from "../game/runtimeControlSettings";
 import { GameClient } from "./GameClient";
 import type { GameWorkerFactory } from "./workerBridge";
@@ -31,6 +32,7 @@ interface GameHostProps {
   mode: ActiveShellMode;
   playerProfile?: PlayerProfile;
   presentation?: ShellPresentation;
+  qualityTier?: QualityTier;
   runtimeSettings?: RuntimeControlSettings;
   workerFactory?: GameWorkerFactory;
   onDiagnostics?: (diagnostics: GameDiagnostics) => void;
@@ -50,6 +52,7 @@ export const GameHost = forwardRef<GameHostHandle, GameHostProps>(function GameH
     mode,
     playerProfile,
     presentation = "default",
+    qualityTier = "medium",
     runtimeSettings,
     workerFactory,
     onDiagnostics,
@@ -80,6 +83,7 @@ export const GameHost = forwardRef<GameHostHandle, GameHostProps>(function GameH
       localPlayerName: playerProfile?.name,
       localPlayerPaletteName: playerProfile?.paletteName,
       presentation,
+      qualityTier,
       runtimeSettings,
       workerFactory,
       onDiagnostics,
@@ -104,6 +108,7 @@ export const GameHost = forwardRef<GameHostHandle, GameHostProps>(function GameH
       localPlayerName: playerProfile?.name,
       localPlayerPaletteName: playerProfile?.paletteName,
       presentation,
+      qualityTier,
       runtimeSettings
     });
   }, [
@@ -112,6 +117,7 @@ export const GameHost = forwardRef<GameHostHandle, GameHostProps>(function GameH
     playerProfile?.name,
     playerProfile?.paletteName,
     presentation,
+    qualityTier,
     runtimeSettings?.invertLookX,
     runtimeSettings?.invertLookY,
     runtimeSettings?.lookSensitivity

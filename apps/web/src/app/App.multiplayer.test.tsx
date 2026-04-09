@@ -4,6 +4,12 @@ import { describe, expect, it, vi } from "vitest";
 import { createDefaultArenaMap } from "@out-of-bounds/map";
 import type { MultiplayerSnapshot } from "../multiplayer/client";
 
+vi.mock("../game/quality", () => ({
+  useRendererQualityProfile: () => ({
+    tier: "medium"
+  })
+}));
+
 const hostState = vi.hoisted(() => ({
   props: [] as Array<Record<string, unknown>>,
   reset() {

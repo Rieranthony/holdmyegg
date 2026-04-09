@@ -23,6 +23,7 @@ import {
   type SimulationInitialSpawnStyle
 } from "@out-of-bounds/sim";
 import { propMaterials } from "../game/propMaterials";
+import type { QualityTier } from "../game/quality";
 import {
   aimCameraConfig,
   applyFreeLookDelta,
@@ -90,6 +91,11 @@ import {
   type ChickenMaterialBundle
 } from "../game/sceneAssets";
 import { getSkyDropVisualState } from "../game/skyDrops";
+import {
+  SunShadows,
+  enableSunShadowLayer,
+  syncDirectionalLightSunLayer
+} from "../game/sunShadows";
 import { resolveTerrainRaycastHit } from "../game/terrainRaycast";
 import {
   type BlockRenderProfile,
@@ -144,6 +150,7 @@ interface GameClientMountOptions extends GameClientCallbacks {
   localPlayerPaletteName?: ChickenPaletteName | null;
   matchColorSeed: number;
   presentation?: ShellPresentation;
+  qualityTier?: QualityTier;
   runtimeSettings?: RuntimeControlSettings;
   workerFactory?: GameWorkerFactory;
 }
@@ -397,6 +404,25 @@ const configureStaticInstancedMesh = (mesh: THREE.InstancedMesh, matrices: reado
     mesh.setMatrixAt(index, matrices[index]!);
   }
   finalizeStaticInstancedMesh(mesh, matrices.length);
+};
+
+const configureSunShadowObject = (
+  object: THREE.Object3D,
+  {
+    castShadow,
+    receiveShadow
+  }: {
+    castShadow: boolean;
+    receiveShadow: boolean;
+  }
+) => {
+  object.traverse((child) => {
+    enableSunShadowLayer(child);
+    if (child instanceof THREE.Mesh) {
+      child.castShadow = castShadow;
+      child.receiveShadow = receiveShadow;
+    }
+  });
 };
 
 const buildCloudMatrices = (preset: VoxelCloudPreset) => {
@@ -752,6 +778,7 @@ export class GameClient {
   private readonly ambientLight = new THREE.AmbientLight(0xffffff, 0.45);
   private readonly directionalLight = new THREE.DirectionalLight(0xffffff, 1.36);
   private readonly hemisphereLight = new THREE.HemisphereLight("#fef7df", "#4c6156", 0.22);
+  private readonly sunShadows: SunShadows;
   private readonly cloudsGroup = new THREE.Group();
   private readonly spaceBackdropGroup = new THREE.Group();
   private readonly terrainGroup = new THREE.Group();
@@ -910,6 +937,7 @@ export class GameClient {
   private lastRuntimeInputMismatchWarningKey: string | null = null;
   private lastRuntimeOverlayState: RuntimeOverlayState | null = null;
   private resourceBubbleElement: HTMLDivElement | null = null;
+  private qualityTier: QualityTier;
 
   private constructor({
     canvas,
@@ -920,6 +948,7 @@ export class GameClient {
     localPlayerPaletteName = null,
     matchColorSeed,
     presentation = "default",
+    qualityTier = "medium",
     runtimeSettings,
     workerFactory,
     ...callbacks
@@ -932,6 +961,7 @@ export class GameClient {
     this.localPlayerPaletteName = localPlayerPaletteName;
     this.matchColorSeed = matchColorSeed;
     this.presentation = presentation;
+    this.qualityTier = qualityTier;
     this.runtimeControlSettings = runtimeSettings
       ? normalizeRuntimeControlSettings(runtimeSettings)
       : createDefaultRuntimeControlSettings();
@@ -943,6 +973,7 @@ export class GameClient {
       antialias: true,
       powerPreference: "high-performance"
     });
+    this.sunShadows = new SunShadows(this.scene, this.camera, this.renderer);
     this.resourceBubbleElement = this.createResourceBubbleElement();
 
     this.focusOutline = new THREE.LineSegments(
@@ -989,6 +1020,32 @@ export class GameClient {
     bubble.style.display = "none";
     host.appendChild(bubble);
     return bubble;
+  }
+
+  private trackSunShadowMaterials() {
+    this.sunShadows.trackMaterial(runtimeGroundMaterial);
+    this.sunShadows.trackMaterial(getTerrainChunkMaterials());
+    this.sunShadows.trackMaterial([propMaterials.bark, propMaterials.leaves]);
+  }
+
+  private syncSunShadowWorld(document = this.worldDocument) {
+    const arenaSpan = Math.max(document.size.x, document.size.z);
+    this.sunShadows.syncWorld({
+      maxFar: Math.min(this.baseFogFar, arenaSpan + 44),
+      lightFar: Math.max(160, this.baseFogFar + document.size.y + 32),
+      lightMargin: Math.max(18, document.size.y * 0.75)
+    });
+  }
+
+  private shouldUseSunShadows() {
+    return isRuntimeMode(this.mode) && this.presentation !== "menu" && this.qualityTier === "high";
+  }
+
+  private syncSunShadowMode() {
+    const enabled = this.shouldUseSunShadows();
+    syncDirectionalLightSunLayer(this.directionalLight, enabled);
+    this.sunShadows.setEnabled(enabled);
+    this.sunShadows.setLightIntensity(this.directionalLight.intensity);
   }
 
   private updateResourceBubbleMessage(message: string | null) {
@@ -1266,6 +1323,7 @@ export class GameClient {
     localPlayerName?: string;
     localPlayerPaletteName?: ChickenPaletteName | null;
     presentation?: ShellPresentation;
+    qualityTier?: QualityTier;
     runtimeSettings?: RuntimeControlSettings;
   }) {
     const nextPresentation = nextState.presentation ?? this.presentation;
@@ -1273,6 +1331,7 @@ export class GameClient {
     const nextLocalPlayerName = "localPlayerName" in nextState ? nextState.localPlayerName : this.localPlayerName;
     const nextLocalPlayerPaletteName =
       "localPlayerPaletteName" in nextState ? nextState.localPlayerPaletteName ?? null : this.localPlayerPaletteName;
+    const nextQualityTier = nextState.qualityTier ?? this.qualityTier;
     const nextRuntimeControlSettings =
       "runtimeSettings" in nextState && nextState.runtimeSettings
         ? normalizeRuntimeControlSettings(nextState.runtimeSettings)
@@ -1280,18 +1339,24 @@ export class GameClient {
     const modeChanged = this.mode !== nextState.mode;
     const presentationChanged = this.presentation !== nextPresentation;
     const localPaletteChanged = this.localPlayerPaletteName !== nextLocalPlayerPaletteName;
+    const qualityTierChanged = this.qualityTier !== nextQualityTier;
 
     this.localPlayerName = nextLocalPlayerName;
     this.localPlayerPaletteName = nextLocalPlayerPaletteName;
     this.presentation = nextPresentation;
+    this.qualityTier = nextQualityTier;
     this.initialSpawnStyle = nextInitialSpawnStyle;
     this.runtimeControlSettings = nextRuntimeControlSettings;
 
     if (!modeChanged) {
+      if (presentationChanged) {
+        this.updateGroundPlaneAppearance();
+        this.syncSunShadowWorld();
+      }
+      if (presentationChanged || qualityTierChanged) {
+        this.syncSunShadowMode();
+      }
       if ((presentationChanged || localPaletteChanged) && this.mode === "editor") {
-        if (presentationChanged) {
-          this.updateGroundPlaneAppearance();
-        }
         this.applyEditorCameraPosition();
       }
       return;
@@ -1310,6 +1375,7 @@ export class GameClient {
     this.clearPointerActionState();
     this.cancelEggCharge();
     this.setRuntimePaused(true);
+    this.syncSunShadowMode();
     this.worker.postMessage({
       type: "set_mode",
       mode: nextState.mode,
@@ -1457,6 +1523,7 @@ export class GameClient {
     (this.focusOutline.material as THREE.Material).dispose();
     this.focusGhost.geometry.dispose();
     (this.focusGhost.material as THREE.Material).dispose();
+    this.sunShadows.dispose();
     this.resourceBubbleElement?.remove();
     this.resourceBubbleElement = null;
     this.renderer.dispose();
@@ -1466,15 +1533,28 @@ export class GameClient {
     this.scene.background = this.sceneBackgroundColor;
     this.scene.fog = new THREE.Fog(backgroundColor, this.baseFogNear, this.baseFogFar);
     this.directionalLight.position.set(36, 56, 24);
+    enableSunShadowLayer(this.camera);
+    enableSunShadowLayer(this.ambientLight);
+    enableSunShadowLayer(this.hemisphereLight);
+    enableSunShadowLayer(this.focusRaycaster);
+    enableSunShadowLayer(this.clickRaycaster);
+    enableSunShadowLayer(this.playerShadowRaycaster);
+    enableSunShadowLayer(this.eggTrajectoryRaycaster);
     this.spaceBackdropGroup.visible = false;
     this.spaceStars.frustumCulled = false;
     this.spaceBackdropGroup.add(this.spaceStars);
     this.buildSpaceBackdrop();
+    this.trackSunShadowMaterials();
 
     const ground = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), runtimeGroundMaterial);
     ground.rotation.x = -Math.PI / 2;
     ground.position.y = -0.01;
     ground.name = "ground-plane";
+    ground.receiveShadow = true;
+    configureSunShadowObject(ground, {
+      castShadow: false,
+      receiveShadow: true
+    });
 
     this.scene.add(
       this.camera,
@@ -1575,6 +1655,7 @@ export class GameClient {
     this.focusOutline.visible = false;
     this.focusGhost.visible = false;
     this.applyWorldDocument(this.worldDocument);
+    this.syncSunShadowMode();
     if (this.mode === "editor") {
       this.applyEditorCameraPosition();
     }
@@ -1679,7 +1760,10 @@ export class GameClient {
           return;
         }
         case "diagnostics":
-          this.callbacks.onDiagnostics?.(message.diagnostics);
+          this.callbacks.onDiagnostics?.({
+            ...message.diagnostics,
+            render: this.sunShadows.getDiagnostics()
+          });
           return;
       }
     };
@@ -1722,6 +1806,8 @@ export class GameClient {
     }
 
     this.updateGroundPlaneAppearance();
+    this.syncSunShadowWorld(document);
+    this.syncSunShadowMode();
 
     this.directionalLight.position.set(
       document.size.x * 0.72,
@@ -1844,6 +1930,7 @@ export class GameClient {
     this.ambientLight.intensity = THREE.MathUtils.lerp(0.45, 0.28, this.spaceBlend);
     this.directionalLight.intensity = THREE.MathUtils.lerp(1.36, 0.56, this.spaceBlend);
     this.hemisphereLight.intensity = THREE.MathUtils.lerp(0.22, 0.04, this.spaceBlend);
+    this.sunShadows.setLightIntensity(this.directionalLight.intensity);
 
     this.spaceBackdropGroup.visible = this.spaceBlend > 0.01;
     this.spaceBackdropGroup.position.copy(this.camera.position);
@@ -1880,6 +1967,10 @@ export class GameClient {
       mesh.frustumCulled = true;
       mesh.geometry = geometry;
       mesh.position.set(...patch.position);
+      configureSunShadowObject(mesh, {
+        castShadow: true,
+        receiveShadow: true
+      });
       if (!existing) {
         this.terrainGroup.add(mesh);
         this.chunkMeshes.set(patch.key, mesh);
@@ -1889,6 +1980,9 @@ export class GameClient {
     this.currentTerrainStats.chunkCount = this.chunkMeshes.size;
     this.currentTerrainStats.drawCallCount = patches.reduce((sum, patch) => sum + patch.drawCallCount, 0);
     this.currentTerrainStats.triangleCount = patches.reduce((sum, patch) => sum + patch.triangleCount, 0);
+    if (patches.length > 0) {
+      this.sunShadows.markDirty();
+    }
   }
 
   private rebuildProps(document: MapDocumentV1) {
@@ -1914,13 +2008,23 @@ export class GameClient {
     if (barkMatrices.length > 0) {
       const barkMesh = new THREE.InstancedMesh(sharedVoxelGeometry, propMaterials.bark, barkMatrices.length);
       configureStaticInstancedMesh(barkMesh, barkMatrices);
+      configureSunShadowObject(barkMesh, {
+        castShadow: true,
+        receiveShadow: true
+      });
       this.propsGroup.add(barkMesh);
     }
     if (leafMatrices.length > 0) {
       const leafMesh = new THREE.InstancedMesh(sharedVoxelGeometry, propMaterials.leaves, leafMatrices.length);
       configureStaticInstancedMesh(leafMesh, leafMatrices);
+      configureSunShadowObject(leafMesh, {
+        castShadow: true,
+        receiveShadow: true
+      });
       this.propsGroup.add(leafMesh);
     }
+
+    this.sunShadows.markDirty();
   }
 
   private rebuildSpawns(document: MapDocumentV1) {
@@ -1984,6 +2088,7 @@ export class GameClient {
 
     this.camera.fov = nextFov;
     this.camera.updateProjectionMatrix();
+    this.sunShadows.handleCameraProjectionChange();
   }
 
   private clearTerrain() {
@@ -1992,6 +2097,7 @@ export class GameClient {
       this.terrainGroup.remove(mesh);
     }
     this.chunkMeshes.clear();
+    this.sunShadows.markDirty();
   }
 
   private clearRuntimeEntities() {
@@ -2328,6 +2434,7 @@ export class GameClient {
     this.renderer.setSize(width, height, false);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
+    this.sunShadows.handleCameraProjectionChange();
   }
 
   private readonly handleKeyDown = (event: KeyboardEvent) => {
@@ -2902,6 +3009,9 @@ export class GameClient {
       this.focusGhost.visible = false;
     }
 
+    if (this.shouldUseSunShadows()) {
+      this.sunShadows.update();
+    }
     this.renderer.render(this.scene, this.camera);
     if (this.pendingReadyToDisplay) {
       this.pendingReadyToDisplay = false;

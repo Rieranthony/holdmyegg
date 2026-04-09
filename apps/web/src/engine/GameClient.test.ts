@@ -31,6 +31,12 @@ const animationFrameState = vi.hoisted(() => {
 const threeTestState = vi.hoisted(() => {
   class MockWebGLRenderer {
     static constructorCalls: Array<unknown> = [];
+    shadowMap = {
+      enabled: false,
+      type: null as unknown,
+      autoUpdate: true,
+      needsUpdate: false
+    };
 
     constructor(options: unknown) {
       MockWebGLRenderer.constructorCalls.push(options);
@@ -57,6 +63,73 @@ const threeTestState = vi.hoisted(() => {
   };
 });
 
+const csmTestState = vi.hoisted(() => {
+  const instances: Array<{
+    data: Record<string, unknown>;
+    lights: Array<{
+      intensity: number;
+      layers: { set: ReturnType<typeof vi.fn> };
+      position: { x: number; y: number; z: number };
+      shadow: { normalBias: number };
+      target: {
+        position: { x: number; y: number; z: number };
+      };
+    }>;
+    dispose: ReturnType<typeof vi.fn>;
+    remove: ReturnType<typeof vi.fn>;
+    setupMaterial: ReturnType<typeof vi.fn>;
+    update: ReturnType<typeof vi.fn>;
+    updateFrustums: ReturnType<typeof vi.fn>;
+  }> = [];
+
+  class CSM {
+    readonly lights = [
+      {
+        intensity: 0,
+        layers: { set: vi.fn() },
+        position: { x: 0, y: 0, z: 0 },
+        shadow: { normalBias: 0 },
+        target: {
+          position: { x: 0, y: 0, z: 0 }
+        }
+      },
+      {
+        intensity: 0,
+        layers: { set: vi.fn() },
+        position: { x: 0, y: 0, z: 0 },
+        shadow: { normalBias: 0 },
+        target: {
+          position: { x: 0, y: 0, z: 0 }
+        }
+      }
+    ];
+    readonly setupMaterial = vi.fn();
+    readonly update = vi.fn();
+    readonly updateFrustums = vi.fn();
+    readonly remove = vi.fn();
+    readonly dispose = vi.fn();
+    fade = false;
+    maxFar: number;
+    lightFar: number;
+    lightMargin: number;
+
+    constructor(readonly data: Record<string, unknown>) {
+      this.maxFar = data.maxFar as number;
+      this.lightFar = data.lightFar as number;
+      this.lightMargin = data.lightMargin as number;
+      instances.push(this);
+    }
+  }
+
+  return {
+    CSM,
+    instances,
+    reset() {
+      instances.length = 0;
+    }
+  };
+});
+
 vi.mock("three", async () => {
   const actual = await vi.importActual<typeof import("three")>("three");
   return {
@@ -64,6 +137,10 @@ vi.mock("three", async () => {
     WebGLRenderer: threeTestState.WebGLRenderer
   };
 });
+
+vi.mock("three/examples/jsm/csm/CSM.js", () => ({
+  CSM: csmTestState.CSM
+}));
 
 import { GameClient } from "./GameClient";
 
@@ -215,6 +292,7 @@ describe("GameClient", () => {
     animationFrameState.reset();
     threeTestState.rendererInstances.length = 0;
     threeTestState.MockWebGLRenderer.constructorCalls.length = 0;
+    csmTestState.reset();
     vi.stubGlobal("Worker", MockWorker);
     vi.stubGlobal(
       "requestAnimationFrame",
@@ -309,6 +387,103 @@ describe("GameClient", () => {
         terrainRevision: 1
       })
     );
+
+    client.dispose();
+  });
+
+  it("enables manual CSM shadows for high-tier runtime mode", () => {
+    const onDiagnostics = vi.fn();
+    const canvas = createCanvas();
+    const client = GameClient.mount({
+      canvas,
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 31,
+      onDiagnostics,
+      qualityTier: "high"
+    });
+
+    const worker = MockWorker.instances[0]!;
+    const renderer = threeTestState.rendererInstances[0]!;
+
+    expect(csmTestState.instances).toHaveLength(1);
+    expect(renderer.shadowMap.enabled).toBe(true);
+    expect(renderer.shadowMap.autoUpdate).toBe(false);
+    expect(renderer.shadowMap.type).toBe(THREE.BasicShadowMap);
+
+    animationFrameState.runNext();
+    worker.emit({
+      type: "diagnostics",
+      diagnostics: {
+        mode: "explore",
+        tick: 2,
+        terrainRevision: 1,
+        dirtyChunkCount: 0,
+        runtime: {
+          skyDropUpdateMs: 0,
+          skyDropLandingMs: 0,
+          detachedComponentMs: 0,
+          fallingClusterLandingMs: 0,
+          fixedStepMaxStepsPerFrame: 0,
+          fixedStepClampedFrames: 0,
+          fixedStepDroppedMs: 0
+        }
+      }
+    });
+
+    expect(onDiagnostics).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        render: {
+          sunShadowsEnabled: true,
+          shadowMapRefreshCount: 1
+        }
+      })
+    );
+
+    client.dispose();
+    expect(csmTestState.instances[0]?.remove).toHaveBeenCalledTimes(1);
+    expect(csmTestState.instances[0]?.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps CSM shadows disabled on non-high quality tiers", () => {
+    const canvas = createCanvas();
+    const client = GameClient.mount({
+      canvas,
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 12,
+      qualityTier: "medium"
+    });
+
+    const renderer = threeTestState.rendererInstances[0]!;
+
+    expect(csmTestState.instances).toHaveLength(0);
+    expect(renderer.shadowMap.enabled).toBe(false);
+    expect(renderer.shadowMap.autoUpdate).toBe(true);
+
+    client.dispose();
+  });
+
+  it("turns CSM shadows back off when leaving runtime mode", () => {
+    const canvas = createCanvas();
+    const client = GameClient.mount({
+      canvas,
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 19,
+      qualityTier: "high"
+    });
+
+    const renderer = threeTestState.rendererInstances[0]!;
+    const csm = csmTestState.instances[0]!;
+
+    client.setShellState({
+      mode: "editor"
+    });
+
+    expect(csm.remove).toHaveBeenCalledTimes(1);
+    expect(csm.dispose).toHaveBeenCalledTimes(1);
+    expect(renderer.shadowMap.enabled).toBe(false);
 
     client.dispose();
   });

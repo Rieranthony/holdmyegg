@@ -5,6 +5,12 @@ import { createDefaultArenaMap, serializeMapDocument } from "@out-of-bounds/map"
 import type { HudState } from "@out-of-bounds/sim";
 import { RUNTIME_CONTROL_SETTINGS_STORAGE_KEY } from "../data/runtimeControlSettingsStorage";
 
+vi.mock("../game/quality", () => ({
+  useRendererQualityProfile: () => ({
+    tier: "medium"
+  })
+}));
+
 const createHudState = (mode: "explore" | "playNpc", playerName = "You"): HudState => ({
   mode,
   localPlayerId: "human-1",
