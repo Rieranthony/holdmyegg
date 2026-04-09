@@ -17,7 +17,9 @@ export const propTexturePalette = {
   y: "#f4cf4c",
   p: "#ef8fb8",
   w: "#f4f3ef",
-  c: "#f5d95b"
+  c: "#f5d95b",
+  u: "#8cbcff",
+  U: "#6296ea"
 } as const;
 
 const hexToRgb = (hex: string) => {
@@ -29,10 +31,14 @@ const hexToRgb = (hex: string) => {
   };
 };
 
-const createPixelTexture = (rows: string[]) => {
+const createPixelTexture = (
+  rows: string[],
+  { flipRowsVertically = false }: { flipRowsVertically?: boolean } = {}
+) => {
   const data = new Uint8Array(PIXEL_TEXTURE_SIZE * PIXEL_TEXTURE_SIZE * 4);
+  const sourceRows = flipRowsVertically ? [...rows].reverse() : rows;
 
-  rows.forEach((row, y) => {
+  sourceRows.forEach((row, y) => {
     [...row].forEach((token, x) => {
       if (token === ".") {
         return;
@@ -225,12 +231,32 @@ export const propTextureRows = {
     "................",
     "................",
     ".......w........",
-    ".....wwwww......",
-    "......wcw.......",
+    "......www.......",
+    ".....wwcww......",
     "....wwcwcww.....",
-    "......wcw.......",
-    ".....wwwww......",
+    ".....wwcww......",
+    "......www.......",
     ".......w........",
+    "......www.......",
+    ".......w........",
+    ".......s........",
+    ".......S........",
+    ".......s........",
+    "......sS........",
+    "......Ss........",
+    ".......s........",
+    "................"
+  ],
+  flowerBlue: [
+    "................",
+    "................",
+    ".......u........",
+    "......uuu.......",
+    ".....uuUuu......",
+    "....uuUcUuu.....",
+    ".....uuUuu......",
+    "......uuu.......",
+    ".......u........",
     ".......s........",
     ".......S........",
     ".......s........",
@@ -245,12 +271,13 @@ const textures = {
   bark: createPixelTexture(propTextureRows.bark),
   leaves: createPixelTexture(propTextureRows.leaves),
   nest: createPixelTexture(propTextureRows.nest),
-  grass: createPixelTexture(propTextureRows.grass),
-  stem: createPixelTexture(propTextureRows.stem),
+  grass: createPixelTexture(propTextureRows.grass, { flipRowsVertically: true }),
+  stem: createPixelTexture(propTextureRows.stem, { flipRowsVertically: true }),
   egg: createPixelTexture(propTextureRows.egg),
-  flowerYellow: createPixelTexture(propTextureRows.flowerYellow),
-  flowerPink: createPixelTexture(propTextureRows.flowerPink),
-  flowerWhite: createPixelTexture(propTextureRows.flowerWhite)
+  flowerYellow: createPixelTexture(propTextureRows.flowerYellow, { flipRowsVertically: true }),
+  flowerPink: createPixelTexture(propTextureRows.flowerPink, { flipRowsVertically: true }),
+  flowerWhite: createPixelTexture(propTextureRows.flowerWhite, { flipRowsVertically: true }),
+  flowerBlue: createPixelTexture(propTextureRows.flowerBlue, { flipRowsVertically: true })
 };
 
 export const propMaterials = {
@@ -262,5 +289,6 @@ export const propMaterials = {
   egg: createStandardMaterial(textures.egg),
   flowerYellow: createStandardMaterial(textures.flowerYellow, { transparent: true, alphaTest: 0.5, side: THREE.DoubleSide }),
   flowerPink: createStandardMaterial(textures.flowerPink, { transparent: true, alphaTest: 0.5, side: THREE.DoubleSide }),
-  flowerWhite: createStandardMaterial(textures.flowerWhite, { transparent: true, alphaTest: 0.5, side: THREE.DoubleSide })
+  flowerWhite: createStandardMaterial(textures.flowerWhite, { transparent: true, alphaTest: 0.5, side: THREE.DoubleSide }),
+  flowerBlue: createStandardMaterial(textures.flowerBlue, { transparent: true, alphaTest: 0.5, side: THREE.DoubleSide })
 };

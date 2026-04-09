@@ -4,7 +4,13 @@ import {
   type PlayerCommand,
   OutOfBoundsSimulation
 } from "@out-of-bounds/sim";
-import { DEFAULT_SURFACE_Y, SEA_LEVEL_Y, getMapPropVoxels } from "@out-of-bounds/map";
+import {
+  DEFAULT_SURFACE_Y,
+  DEFAULT_WATERLINE_Y,
+  SEA_LEVEL_Y,
+  WORLD_FLOOR_Y,
+  getMapPropVoxels
+} from "@out-of-bounds/map";
 import { createArenaDocument } from "@test/fixtures/maps";
 import { destroy, idle, jump, layEgg, move, place, push } from "@test/helpers/commands";
 import { advanceSimulation, advanceUntilGrounded, createTestSimulation } from "@test/helpers/simulation";
@@ -73,6 +79,7 @@ const getSimulationInternals = (simulation: OutOfBoundsSimulation) =>
     waterFlood: {
       active: boolean;
       breachSeedKeys: Set<string>;
+      autoFloodVoxelKeys: Set<string>;
     };
   };
 
@@ -269,7 +276,7 @@ describe("OutOfBoundsSimulation", () => {
     expect(respawnedPlayer.velocity.y).toBeLessThan(0);
   });
 
-  it("fills sea-level breaches immediately and expands as the cavity grows", () => {
+  it("fills waterline breaches immediately and expands as the cavity grows", () => {
     const simulation = createTestSimulation("explore");
     const localPlayerId = simulation.getLocalPlayerId()!;
     const localPlayer = getInternalPlayer(simulation, localPlayerId);
@@ -287,47 +294,44 @@ describe("OutOfBoundsSimulation", () => {
       });
     }
 
-    expect(simulation.getSnapshot().waterFlood.active).toBe(false);
-    localPlayer.position = { x: 11.5, y: 1.05, z: 10.5 };
-    localPlayer.velocity = { x: 0, y: 0, z: 0 };
-    localPlayer.grounded = true;
-
-    simulation.step({
-      [localPlayerId]: destroy({
-        targetVoxel: { x: 12, y: 0, z: 10 }
-      })
-    });
-
     expect(simulation.getSnapshot().waterFlood).toEqual({
       active: true,
-      breachLevelY: 0,
-      currentLevelY: 0,
-      targetLevelY: 0
+      breachLevelY: DEFAULT_WATERLINE_Y,
+      currentLevelY: DEFAULT_WATERLINE_Y,
+      targetLevelY: DEFAULT_WATERLINE_Y
     });
-    expect(simulation.getWorld().getVoxelKind(12, SEA_LEVEL_Y, 10)).toBe("water");
-    expect(simulation.getWorld().getVoxelKind(12, SEA_LEVEL_Y + 1, 10)).not.toBe("water");
+    expect(simulation.getWorld().getVoxelKind(12, DEFAULT_WATERLINE_Y, 10)).toBe("water");
+    expect(simulation.getWorld().getVoxelKind(12, DEFAULT_WATERLINE_Y - 1, 10)).toBe("water");
 
-    localPlayer.position = { x: 12.5, y: 1.05, z: 10.5 };
+    localPlayer.position = { x: 11.5, y: DEFAULT_WATERLINE_Y - 0.95, z: 10.5 };
     localPlayer.velocity = { x: 0, y: 0, z: 0 };
     localPlayer.grounded = true;
 
     simulation.step({
       [localPlayerId]: destroy({
-        targetVoxel: { x: 13, y: 0, z: 10 }
+        targetVoxel: { x: 13, y: DEFAULT_WATERLINE_Y, z: 10 }
       })
     });
 
-    expect(simulation.getWorld().getVoxelKind(13, SEA_LEVEL_Y, 10)).toBe("water");
-    expect(simulation.getSnapshot().waterFlood.currentLevelY).toBe(SEA_LEVEL_Y);
+    localPlayer.position = { x: 11.5, y: DEFAULT_WATERLINE_Y - 1.95, z: 10.5 };
+    localPlayer.velocity = { x: 0, y: 0, z: 0 };
+    localPlayer.grounded = true;
 
-    advanceSimulation(simulation, 120);
-    expect(simulation.getSnapshot().waterFlood.currentLevelY).toBe(SEA_LEVEL_Y);
-    expect(simulation.getWorld().getVoxelKind(13, SEA_LEVEL_Y + 1, 10)).not.toBe("water");
+    simulation.step({
+      [localPlayerId]: destroy({
+        targetVoxel: { x: 13, y: DEFAULT_WATERLINE_Y - 1, z: 10 }
+      })
+    });
+
+    expect(simulation.getWorld().getVoxelKind(13, DEFAULT_WATERLINE_Y, 10)).toBe("water");
+    expect(simulation.getWorld().getVoxelKind(13, DEFAULT_WATERLINE_Y - 1, 10)).toBe("water");
+    expect(simulation.getSnapshot().waterFlood.currentLevelY).toBe(DEFAULT_WATERLINE_Y);
+    expect(simulation.getWorld().getVoxelKind(13, WORLD_FLOOR_Y, 10)).not.toBe("water");
   });
 
-  it("fills sea-level gaps after projectile explosions", () => {
+  it("fills waterline gaps after projectile explosions", () => {
     const simulation = createTestSimulation("explore", (world) => {
-      for (const y of [SURFACE_TOP_Y, SURFACE_TOP_Y - 1, SURFACE_TOP_Y - 2, SURFACE_TOP_Y - 3]) {
+      for (const y of [SURFACE_TOP_Y, DEFAULT_WATERLINE_Y]) {
         world.removeVoxel(12, y, 10);
       }
     });
@@ -342,7 +346,7 @@ describe("OutOfBoundsSimulation", () => {
       orbital: false,
       explodeOnGroundContact: false,
       fuseArmedBelowY: null,
-      position: { x: 12.5, y: 0.5, z: 10.5 },
+      position: { x: 12.5, y: DEFAULT_WATERLINE_Y - 0.5, z: 10.5 },
       velocity: { x: 0, y: 0, z: 0 }
     };
 
@@ -352,20 +356,20 @@ describe("OutOfBoundsSimulation", () => {
     const terrainBatch = simulation.consumeTerrainDeltaBatch();
     expect(terrainBatch?.changes.some((change) => change.source === "projectile_explosion")).toBe(true);
     expect(terrainBatch?.changes.some((change) => change.source === "water_flood")).toBe(true);
-    expect(simulation.getWorld().getVoxelKind(12, SEA_LEVEL_Y, 10)).toBe("water");
-    expect(simulation.getWorld().getVoxelKind(12, SEA_LEVEL_Y + 1, 10)).toBeUndefined();
+    expect(simulation.getWorld().getVoxelKind(12, DEFAULT_WATERLINE_Y, 10)).toBe("water");
+    expect(simulation.getWorld().getVoxelKind(12, DEFAULT_WATERLINE_Y - 1, 10)).toBe("water");
   });
 
-  it("fills sea-level gaps after super boom explosions", () => {
+  it("fills waterline gaps after super boom explosions", () => {
     const simulation = createTestSimulation("explore", (world) => {
-      for (const y of [SURFACE_TOP_Y, SURFACE_TOP_Y - 1, SURFACE_TOP_Y - 2, SURFACE_TOP_Y - 3]) {
+      for (const y of [SURFACE_TOP_Y, DEFAULT_WATERLINE_Y]) {
         world.removeVoxel(12, y, 10);
       }
     });
     const localPlayerId = simulation.getLocalPlayerId()!;
     const localPlayer = getInternalPlayer(simulation, localPlayerId);
 
-    localPlayer.position = { x: 12.5, y: SEA_LEVEL_Y, z: 10.5 };
+    localPlayer.position = { x: 12.5, y: DEFAULT_WATERLINE_Y - 0.5, z: 10.5 };
     localPlayer.velocity = { x: 0, y: 0, z: 0 };
     localPlayer.grounded = false;
 
@@ -374,40 +378,95 @@ describe("OutOfBoundsSimulation", () => {
     const terrainBatch = simulation.consumeTerrainDeltaBatch();
     expect(terrainBatch?.changes.some((change) => change.source === "super_boom_explosion")).toBe(true);
     expect(terrainBatch?.changes.some((change) => change.source === "water_flood")).toBe(true);
-    expect(simulation.getWorld().getVoxelKind(12, SEA_LEVEL_Y, 10)).toBe("water");
-    expect(simulation.getWorld().getVoxelKind(12, SEA_LEVEL_Y + 1, 10)).toBeUndefined();
+    expect(simulation.getWorld().getVoxelKind(12, DEFAULT_WATERLINE_Y, 10)).toBe("water");
+    expect(simulation.getWorld().getVoxelKind(12, DEFAULT_WATERLINE_Y - 1, 10)).toBe("water");
   });
 
-  it("ignores above-sea authored water as an automatic flood source", () => {
+  it("keeps water voxels intact during explosions", () => {
     const simulation = createTestSimulation("explore", (world) => {
-      world.removeVoxel(20, SEA_LEVEL_Y, 20);
-      world.setVoxel(20, SEA_LEVEL_Y + 1, 20, "water");
+      world.removeVoxel(12, SURFACE_TOP_Y, 10);
+      world.setVoxel(12, DEFAULT_WATERLINE_Y, 10, "water");
+      world.setVoxel(12, DEFAULT_WATERLINE_Y - 1, 10, "water");
+    });
+    const localPlayerId = simulation.getLocalPlayerId()!;
+    const egg = {
+      id: "water-safe-egg",
+      ownerId: localPlayerId,
+      spawnTick: 0,
+      visualSeed: 1,
+      fuseRemaining: 0,
+      grounded: false,
+      orbital: false,
+      explodeOnGroundContact: false,
+      fuseArmedBelowY: null,
+      position: { x: 12.5, y: DEFAULT_WATERLINE_Y - 0.2, z: 10.5 },
+      velocity: { x: 0, y: 0, z: 0 }
+    };
+
+    getInternalEggMap(simulation).set(egg.id, egg);
+    getSimulationInternals(simulation).explodeEgg(egg);
+
+    expect(simulation.getWorld().getVoxelKind(12, DEFAULT_WATERLINE_Y, 10)).toBe("water");
+    expect(simulation.getWorld().getVoxelKind(12, DEFAULT_WATERLINE_Y - 1, 10)).toBe("water");
+  });
+
+  it("ignores authored water above the waterline as an automatic flood source", () => {
+    const simulation = createTestSimulation("explore", (world) => {
+      world.removeVoxel(20, DEFAULT_WATERLINE_Y, 20);
+      world.setVoxel(20, DEFAULT_WATERLINE_Y + 1, 20, "water");
     });
     const internals = getSimulationInternals(simulation);
 
     internals.waterFlood.active = true;
     internals.fillWaterFloodReachableCells();
 
-    expect(simulation.getWorld().getVoxelKind(20, SEA_LEVEL_Y, 20)).toBeUndefined();
+    expect(simulation.getWorld().getVoxelKind(20, DEFAULT_WATERLINE_Y, 20)).toBeUndefined();
   });
 
-  it("does not fill tree prop voxels at sea level", () => {
+  it("does not fill tree prop voxels inside the water band", () => {
     const simulation = createTestSimulation("explore", (world) => {
-      const treeOrigin = { kind: "tree-oak" as const, x: 20, y: SEA_LEVEL_Y, z: 20 };
+      const treeOrigin = { kind: "tree-oak" as const, x: 20, y: WORLD_FLOOR_Y, z: 20 };
       for (const voxel of getMapPropVoxels(treeOrigin)) {
         world.removeVoxel(voxel.x, voxel.y, voxel.z);
       }
-      world.removeVoxel(19, SEA_LEVEL_Y, 20);
+      world.removeVoxel(19, DEFAULT_WATERLINE_Y - 1, 20);
       world.setProp("tree-oak", treeOrigin.x, treeOrigin.y, treeOrigin.z);
     });
     const internals = getSimulationInternals(simulation);
 
-    internals.triggerWaterFloodAt({ x: 19, y: SEA_LEVEL_Y, z: 20 });
+    internals.triggerWaterFloodAt({ x: 19, y: DEFAULT_WATERLINE_Y - 1, z: 20 });
     internals.fillWaterFloodReachableCells();
 
-    expect(simulation.getWorld().getVoxelKind(19, SEA_LEVEL_Y, 20)).toBe("water");
-    expect(simulation.getWorld().getVoxelKind(20, SEA_LEVEL_Y, 20)).toBeUndefined();
-    expect(simulation.getWorld().getPropAtVoxel(20, SEA_LEVEL_Y, 20)?.kind).toBe("tree-oak");
+    expect(simulation.getWorld().getVoxelKind(19, DEFAULT_WATERLINE_Y - 1, 20)).toBe("water");
+    expect(simulation.getWorld().getVoxelKind(20, DEFAULT_WATERLINE_Y - 1, 20)).toBeUndefined();
+    expect(simulation.getWorld().getPropAtVoxel(20, DEFAULT_WATERLINE_Y - 1, 20)?.kind).toBe("tree-oak");
+  });
+
+  it("treats the deepest water band as lethal", () => {
+    const simulation = createTestSimulation("explore", (world) => {
+      world.removeVoxel(10, SURFACE_TOP_Y, 10);
+      world.removeVoxel(10, DEFAULT_WATERLINE_Y, 10);
+      world.removeVoxel(10, DEFAULT_WATERLINE_Y - 1, 10);
+      world.removeVoxel(10, DEFAULT_WATERLINE_Y - 2, 10);
+      world.setVoxel(10, DEFAULT_WATERLINE_Y, 10, "water");
+      world.setVoxel(10, DEFAULT_WATERLINE_Y - 1, 10, "water");
+      world.setVoxel(10, DEFAULT_WATERLINE_Y - 2, 10, "water");
+    });
+    const localPlayerId = simulation.getLocalPlayerId()!;
+    const localPlayer = getInternalPlayer(simulation, localPlayerId);
+
+    localPlayer.position = { x: 10.5, y: WORLD_FLOOR_Y + 0.35, z: 10.5 };
+    localPlayer.velocity = { x: 0, y: 0, z: 0 };
+    localPlayer.grounded = false;
+
+    simulation.step({
+      [localPlayerId]: idle()
+    });
+
+    expect(simulation.getPlayerState(localPlayerId)!.livesRemaining).toBe(
+      simulation.config.startingLives - 1
+    );
+    expect(simulation.getPlayerViewState(localPlayerId)!.respawning).toBe(true);
   });
 
   it("slows players while they move through water", () => {

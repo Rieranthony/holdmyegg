@@ -1,6 +1,11 @@
 import { getMapPropFootprint, type MutableVoxelWorld } from "@out-of-bounds/map";
 
-export type SurfaceDecorationKind = "grass" | "flower-yellow" | "flower-pink" | "flower-white";
+export type SurfaceDecorationKind =
+  | "grass"
+  | "flower-yellow"
+  | "flower-pink"
+  | "flower-white"
+  | "flower-blue";
 
 export interface SurfaceDecoration {
   id: string;
@@ -31,10 +36,11 @@ interface AcceptedDecorationEntry {
   spacing: number;
 }
 
-const DECORATION_DENSITY = 0.11;
-const MIN_GRASS_SPACING = 1.55;
-const MIN_FLOWER_SPACING = 1.95;
+const DECORATION_DENSITY = 0.102;
+const MIN_GRASS_SPACING = 1.6;
+const MIN_FLOWER_SPACING = 2.02;
 const DECORATION_SPATIAL_HASH_CELL_SIZE = MIN_GRASS_SPACING;
+const FLOWER_PATCH_SCALE = 5.5;
 
 const hashString = (value: string) => {
   let hash = 2166136261;
@@ -48,6 +54,8 @@ const hashString = (value: string) => {
 };
 
 const normalizedHash = (value: string) => hashString(value) / 4294967295;
+const lerp = (start: number, end: number, alpha: number) => start + (end - start) * alpha;
+const smoothstep01 = (value: number) => value * value * (3 - 2 * value);
 
 const addBufferedColumn = (blockedColumns: Set<string>, x: number, z: number, buffer: number) => {
   for (let dx = -buffer; dx <= buffer; dx += 1) {
@@ -58,10 +66,43 @@ const addBufferedColumn = (blockedColumns: Set<string>, x: number, z: number, bu
 };
 
 const flowerKindByHash = (value: number): SurfaceDecorationKind =>
-  value < 0.333 ? "flower-yellow" : value < 0.666 ? "flower-pink" : "flower-white";
+  value < 0.25
+    ? "flower-yellow"
+    : value < 0.5
+      ? "flower-pink"
+      : value < 0.75
+        ? "flower-white"
+        : "flower-blue";
+
+const samplePatchNoise = (seed: string, x: number, z: number, scale: number) => {
+  const scaledX = x / scale;
+  const scaledZ = z / scale;
+  const originX = Math.floor(scaledX);
+  const originZ = Math.floor(scaledZ);
+  const localX = smoothstep01(scaledX - originX);
+  const localZ = smoothstep01(scaledZ - originZ);
+
+  const sample = (sampleX: number, sampleZ: number) =>
+    normalizedHash(`${seed}:${sampleX}:${sampleZ}`);
+
+  const top = lerp(sample(originX, originZ), sample(originX + 1, originZ), localX);
+  const bottom = lerp(sample(originX, originZ + 1), sample(originX + 1, originZ + 1), localX);
+  return lerp(top, bottom, localZ);
+};
 
 const getDecorationCellCoord = (value: number) => Math.floor(value / DECORATION_SPATIAL_HASH_CELL_SIZE);
 const getDecorationCellKey = (x: number, z: number) => `${x}:${z}`;
+
+export const filterSurfaceDecorationsByDensity = (
+  decorations: SurfaceDecoration[],
+  density: number
+) => {
+  if (density >= 0.999) {
+    return decorations;
+  }
+
+  return decorations.filter((decoration) => hashString(decoration.id) / 4294967295 <= density);
+};
 
 const canPlaceDecoration = (
   acceptedByCell: Map<string, AcceptedDecorationEntry[]>,
@@ -109,26 +150,30 @@ const addAcceptedDecoration = (
 };
 
 const createDecorationCandidate = (x: number, y: number, z: number): DecorationCandidate | null => {
+  const patchNoise = samplePatchNoise("flora-patch", x + 0.5, z + 0.5, FLOWER_PATCH_SCALE);
   const placementRoll = normalizedHash(`flora-placement:${x}:${z}`);
-  if (placementRoll > DECORATION_DENSITY) {
+  const placementDensity = DECORATION_DENSITY * lerp(0.78, 1.18, patchNoise);
+  if (placementRoll > placementDensity) {
     return null;
   }
 
   const flowerRoll = normalizedHash(`flora-flower-roll:${x}:${z}`);
+  const flowerChance = lerp(0.28, 0.66, patchNoise);
   const kind =
-    flowerRoll < 0.52
-      ? "grass"
-      : flowerKindByHash(normalizedHash(`flora-flower-kind:${x}:${z}`));
+    flowerRoll < flowerChance
+      ? flowerKindByHash(normalizedHash(`flora-flower-kind:${x}:${z}`))
+      : "grass";
+  const basePriority = normalizedHash(`flora-priority:${x}:${z}`);
 
   return {
     x,
     y,
     z,
-    priority: normalizedHash(`flora-priority:${x}:${z}`),
+    priority: kind === "grass" ? basePriority : basePriority * 0.78,
     offsetX: normalizedHash(`flora-offset-x:${x}:${z}`) * 0.82 - 0.41,
     offsetZ: normalizedHash(`flora-offset-z:${x}:${z}`) * 0.82 - 0.41,
     rotation: normalizedHash(`flora-rotation:${x}:${z}`) * Math.PI * 2,
-    scale: Number((0.78 + normalizedHash(`flora-scale:${x}:${z}`) * 0.34).toFixed(2)),
+    scale: Number((0.76 + normalizedHash(`flora-scale:${x}:${z}`) * 0.3).toFixed(2)),
     kind,
     spacing: kind === "grass" ? MIN_GRASS_SPACING : MIN_FLOWER_SPACING
   };
@@ -145,6 +190,14 @@ export const buildSurfaceDecorations = (world: MutableVoxelWorld): SurfaceDecora
   for (const prop of world.listProps()) {
     for (const cell of getMapPropFootprint(prop)) {
       addBufferedColumn(blockedColumns, cell.x, cell.z, 1);
+    }
+  }
+
+  for (let x = 0; x < world.size.x; x += 1) {
+    for (let z = 0; z < world.size.z; z += 1) {
+      if (world.getTopWaterY(x, z) > world.getTopGroundY(x, z)) {
+        addBufferedColumn(blockedColumns, x, z, 1);
+      }
     }
   }
 

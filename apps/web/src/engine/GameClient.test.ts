@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as THREE from "three";
-import { MutableVoxelWorld, createDefaultArenaMap, createVoxelKey } from "@out-of-bounds/map";
+import { MutableVoxelWorld, createDefaultArenaMap } from "@out-of-bounds/map";
 import { defaultSimulationConfig } from "@out-of-bounds/sim";
 import {
   aimCameraConfig,
@@ -436,6 +436,91 @@ const getCameraOccluderVoxel = (
   throw new Error("Could not find a raycast-visible occluder voxel on the runtime camera path.");
 };
 
+const getExclusiveCameraOccluderVoxel = (
+  client: GameClient,
+  primaryAnchor: keyof ReturnType<typeof resolveDesiredRuntimeCameraState>["anchors"],
+  excludedAnchors: Array<keyof ReturnType<typeof resolveDesiredRuntimeCameraState>["anchors"]>,
+  alphaCandidates = [0.7, 0.78, 0.86, 0.92]
+) => {
+  const frame = (client as any).latestFrame as ReturnType<typeof createReadyRuntimeFrame>;
+  const { anchors, cameraPosition } = resolveDesiredRuntimeCameraState(frame);
+  const world = (client as any).runtimeWorld as MutableVoxelWorld;
+  const start = anchors[primaryAnchor].clone();
+  const direction = cameraPosition.clone().sub(start);
+  const distance = direction.length();
+  direction.divideScalar(distance);
+
+  for (const alpha of alphaCandidates) {
+    const sample = start.clone().lerp(cameraPosition, alpha);
+    const baseVoxel = {
+      x: Math.floor(sample.x),
+      y: Math.floor(sample.y),
+      z: Math.floor(sample.z)
+    };
+    const candidateKeys = new Set<string>();
+
+    for (let xOffset = -1; xOffset <= 1; xOffset += 1) {
+      for (let yOffset = -1; yOffset <= 1; yOffset += 1) {
+        for (let zOffset = -1; zOffset <= 1; zOffset += 1) {
+          const voxel = {
+            x: baseVoxel.x + xOffset,
+            y: baseVoxel.y + yOffset,
+            z: baseVoxel.z + zOffset
+          };
+          if (
+            voxel.x < 0 ||
+            voxel.x >= world.size.x ||
+            voxel.y < 0 ||
+            voxel.y >= world.size.y ||
+            voxel.z < 0 ||
+            voxel.z >= world.size.z
+          ) {
+            continue;
+          }
+
+          const key = `${voxel.x},${voxel.y},${voxel.z}`;
+          if (candidateKeys.has(key)) {
+            continue;
+          }
+          candidateKeys.add(key);
+
+          const occluderWorld = world.clone();
+          occluderWorld.setVoxel(voxel.x, voxel.y, voxel.z, "ground");
+          const primaryHit = raycastVoxelWorld(occluderWorld, start, direction, distance);
+          if (
+            !primaryHit ||
+            primaryHit.voxel.x !== voxel.x ||
+            primaryHit.voxel.y !== voxel.y ||
+            primaryHit.voxel.z !== voxel.z
+          ) {
+            continue;
+          }
+
+          const excludesEveryOtherAnchor = excludedAnchors.every((anchorName) => {
+            const excludedStart = anchors[anchorName].clone();
+            const excludedDirection = cameraPosition.clone().sub(excludedStart);
+            const excludedDistance = excludedDirection.length();
+            excludedDirection.divideScalar(excludedDistance);
+            const excludedHit = raycastVoxelWorld(occluderWorld, excludedStart, excludedDirection, excludedDistance);
+            return (
+              !excludedHit ||
+              excludedHit.voxel.x !== voxel.x ||
+              excludedHit.voxel.y !== voxel.y ||
+              excludedHit.voxel.z !== voxel.z
+            );
+          });
+
+          if (excludesEveryOtherAnchor) {
+            return voxel;
+          }
+        }
+      }
+    }
+  }
+
+  throw new Error("Could not find a primary-anchor-only occluder voxel on the runtime camera path.");
+};
+
 const fillSolidBox = (
   world: MutableVoxelWorld,
   min: { x: number; y: number; z: number },
@@ -465,7 +550,7 @@ const carveAirBox = (
   }
 };
 
-const buildCoveredChamber = (
+const buildCoveredCave = (
   world: MutableVoxelWorld,
   {
     centerX,
@@ -673,6 +758,24 @@ describe("GameClient", () => {
     client.dispose();
   });
 
+  it("uses a water-textured underlay below the runtime map", () => {
+    const client = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 73
+    });
+
+    const ground = ((client as any).scene as THREE.Scene).getObjectByName("ground-plane") as THREE.Mesh;
+    const material = ground.material as THREE.MeshStandardMaterial;
+
+    expect(material.map).toBeTruthy();
+    expect(material.map?.repeat.x).toBeGreaterThan(1);
+    expect(material.map?.repeat.y).toBeGreaterThan(1);
+
+    client.dispose();
+  });
+
   it("turns CSM shadows back off when leaving runtime mode", () => {
     const canvas = createCanvas();
     const client = GameClient.mount({
@@ -697,7 +800,7 @@ describe("GameClient", () => {
     client.dispose();
   });
 
-  it("tracks the shared terrain chunk materials with sun shadows and excludes chamber materials", () => {
+  it("tracks the shared terrain chunk materials with sun shadows and excludes the contour material", () => {
     const client = GameClient.mount({
       canvas: createCanvas(),
       initialDocument: createDefaultArenaMap(),
@@ -707,10 +810,69 @@ describe("GameClient", () => {
     });
 
     const trackedMaterials = csmTestState.instances[0]?.setupMaterial.mock.calls.map(([material]) => material) ?? [];
-    const chamberMaterials = ((client as any).undergroundChamber as { materials: THREE.MeshStandardMaterial[] }).materials;
+    const contourMaterial = (client as any).coveredPlayerSilhouetteMaterial as THREE.MeshBasicMaterial;
 
     expect(trackedMaterials).toEqual(expect.arrayContaining(getTerrainChunkMaterials()));
-    expect(trackedMaterials.some((material) => chamberMaterials.includes(material))).toBe(false);
+    expect(trackedMaterials.includes(contourMaterial)).toBe(false);
+
+    client.dispose();
+  });
+
+  it("renders grass and flower decorations in the imperative runtime scene", () => {
+    const client = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 58,
+      qualityTier: "high"
+    });
+
+    const decorationsGroup = (client as any).decorationsGroup as THREE.Group;
+    const decorationMeshes = decorationsGroup.children.filter(
+      (child): child is THREE.InstancedMesh => child instanceof THREE.InstancedMesh
+    );
+
+    expect(
+      decorationMeshes.some((mesh) => mesh.material === propMaterials.grass && mesh.count > 0)
+    ).toBe(true);
+    expect(
+      decorationMeshes.some(
+        (mesh) =>
+          mesh.count > 0 &&
+          [
+            propMaterials.flowerYellow,
+            propMaterials.flowerPink,
+            propMaterials.flowerWhite,
+            propMaterials.flowerBlue
+          ].includes(mesh.material as THREE.Material)
+      )
+    ).toBe(true);
+
+    client.dispose();
+  });
+
+  it("rebuilds runtime surface decoration density when quality changes", () => {
+    const client = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 59,
+      qualityTier: "high"
+    });
+
+    const countInstances = () =>
+      (((client as any).decorationsGroup as THREE.Group).children as THREE.Object3D[])
+        .filter((child): child is THREE.InstancedMesh => child instanceof THREE.InstancedMesh)
+        .reduce((sum, mesh) => sum + mesh.count, 0);
+
+    const highCount = countInstances();
+
+    client.setShellState({
+      mode: "explore",
+      qualityTier: "low"
+    });
+
+    expect(countInstances()).toBeLessThan(highCount);
 
     client.dispose();
   });
@@ -732,9 +894,7 @@ describe("GameClient", () => {
     expect(camera.position.x).toBeCloseTo(expectedCamera.x, 5);
     expect(camera.position.y).toBeCloseTo(expectedCamera.y, 5);
     expect(camera.position.z).toBeCloseTo(expectedCamera.z, 5);
-    expect((client as any).coveredPlayerVisibilityMode).toBe("clear");
     expect(((client as any).terrainGroup as THREE.Group).visible).toBe(true);
-    expect(((client as any).undergroundChamber as { group: THREE.Group }).group.visible).toBe(false);
     expect(((client as any).coveredPlayerSilhouetteGroup as THREE.Group).visible).toBe(false);
 
     client.dispose();
@@ -781,7 +941,7 @@ describe("GameClient", () => {
       expect(currentLookTarget.z).toBeCloseTo(frame.players[0]!.position.z, 5);
       expect(currentLookTarget.y).toBeCloseTo(frame.players[0]!.position.y + aimCameraConfig.aimPivotHeight, 5);
       expect(camera.position.y).toBeGreaterThan(currentLookTarget.y);
-      expect((client as any).coveredPlayerVisibilityMode).toBe("clear");
+      expect(((client as any).coveredPlayerSilhouetteGroup as THREE.Group).visible).toBe(false);
     }
 
     client.dispose();
@@ -881,7 +1041,7 @@ describe("GameClient", () => {
     client.dispose();
   });
 
-  it("enters underground mode only when the player is broadly covered and swaps to the chamber renderer", () => {
+  it("keeps normal terrain rendered even in a broadly covered cave", () => {
     const client = GameClient.mount({
       canvas: createCanvas(),
       initialDocument: createEmptyArenaDocument(),
@@ -890,7 +1050,7 @@ describe("GameClient", () => {
     });
 
     const frame = createCenteredReadyRuntimeFrame();
-    buildCoveredChamber((client as any).runtimeWorld as MutableVoxelWorld, {
+    buildCoveredCave((client as any).runtimeWorld as MutableVoxelWorld, {
       centerX: Math.floor(frame.players[0]!.position.x),
       floorY: 1,
       centerZ: Math.floor(frame.players[0]!.position.z)
@@ -898,16 +1058,12 @@ describe("GameClient", () => {
 
     stepCoveredPlayerVisibility(client, frame);
 
-    expect((client as any).coveredPlayerVisibilityMode).toBe("underground");
-    expect(((client as any).terrainGroup as THREE.Group).visible).toBe(false);
-    expect(((client as any).undergroundChamber as { group: THREE.Group }).group.visible).toBe(true);
-    expect(((client as any).coveredPlayerSilhouetteGroup as THREE.Group).visible).toBe(false);
-    expect(((client as any).undergroundChamber as { chunkMeshes: Map<string, THREE.Mesh> }).chunkMeshes.size).toBeGreaterThan(0);
+    expect(((client as any).terrainGroup as THREE.Group).visible).toBe(true);
 
     client.dispose();
   });
 
-  it("treats narrow bridge blockers as under-structure visibility and renders the player silhouette", () => {
+  it("uses a small push-in to clear a far bridge blocker without showing the contour", () => {
     const client = GameClient.mount({
       canvas: createCanvas(),
       initialDocument: createEmptyArenaDocument(),
@@ -916,33 +1072,33 @@ describe("GameClient", () => {
     });
 
     const frame = createCenteredReadyRuntimeFrame();
+    const expected = resolveDesiredRuntimeCameraState(frame);
     (client as any).latestFrame = frame;
-    const blocker = getCameraOccluderVoxel(client, "chest");
+    const blocker = getExclusiveCameraOccluderVoxel(client, "hips", ["chest", "head"]);
     ((client as any).runtimeWorld as MutableVoxelWorld).setVoxel(blocker.x, blocker.y, blocker.z, "ground");
 
     stepCoveredPlayerVisibility(client, frame);
 
-    const silhouetteGroup = (client as any).coveredPlayerSilhouetteGroup as THREE.Group;
-    const silhouetteMaterial = (client as any).coveredPlayerSilhouetteMaterial as THREE.MeshBasicMaterial;
-    const localVisual = ((client as any).playerVisuals as Map<string, unknown>).get(frame.localPlayerId!) as {
-      ringMaterial: THREE.MeshBasicMaterial;
-    };
-    const silhouetteMesh = silhouetteGroup
-      .getObjectByProperty("isMesh", true) as THREE.Mesh | null;
+    const camera = (client as any).camera as THREE.PerspectiveCamera;
+    const desiredDistance = expected.cameraPosition.distanceTo(expected.aimPivot);
+    const actualDistance = camera.position.distanceTo(expected.aimPivot);
+    const actualHit = raycastVoxelWorld(
+      (client as any).runtimeWorld as MutableVoxelWorld,
+      expected.anchors.chest,
+      camera.position.clone().sub(expected.anchors.chest).normalize(),
+      camera.position.distanceTo(expected.anchors.chest)
+    );
 
-    expect((client as any).coveredPlayerVisibilityMode).toBe("under_structure");
     expect(((client as any).terrainGroup as THREE.Group).visible).toBe(true);
-    expect(((client as any).undergroundChamber as { group: THREE.Group }).group.visible).toBe(false);
-    expect(silhouetteGroup.visible).toBe(true);
-    expect((client as any).coveredPlayerSilhouetteRoot).not.toBeNull();
-    expect(silhouetteMesh).not.toBeNull();
-    expect((silhouetteMesh as THREE.Mesh).material).toBe(silhouetteMaterial);
-    expect(silhouetteMaterial.color.getHex()).toBe(localVisual.ringMaterial.color.getHex());
+    expect(((client as any).coveredPlayerSilhouetteGroup as THREE.Group).visible).toBe(false);
+    expect(desiredDistance - actualDistance).toBeGreaterThan(0);
+    expect(desiredDistance - actualDistance).toBeLessThanOrEqual(0.45 + 1e-3);
+    expect(actualHit).toBeNull();
 
     client.dispose();
   });
 
-  it("only renders the connected underground chamber and keeps a disconnected nearby cavity hidden", () => {
+  it("shows the contour when a small push-in still cannot clear the terrain blocker", () => {
     const client = GameClient.mount({
       canvas: createCanvas(),
       initialDocument: createEmptyArenaDocument(),
@@ -951,25 +1107,28 @@ describe("GameClient", () => {
     });
 
     const frame = createCenteredReadyRuntimeFrame();
-    const world = (client as any).runtimeWorld as MutableVoxelWorld;
-    buildCoveredChamber(world, {
-      centerX: Math.floor(frame.players[0]!.position.x),
-      floorY: 1,
-      centerZ: Math.floor(frame.players[0]!.position.z)
-    });
-    fillSolidBox(world, { x: 22, y: 1, z: 13 }, { x: 28, y: 7, z: 19 });
-    carveAirBox(world, { x: 24, y: 2, z: 15 }, { x: 26, y: 4, z: 17 });
-
+    const expected = resolveDesiredRuntimeCameraState(frame);
+    (client as any).latestFrame = frame;
+    const blocker = getCameraOccluderVoxel(client, "chest", [0.25, 0.35, 0.45]);
+    ((client as any).runtimeWorld as MutableVoxelWorld).setVoxel(blocker.x, blocker.y, blocker.z, "ground");
     stepCoveredPlayerVisibility(client, frame);
 
-    const selected = (client as any).undergroundChamberSelectedVoxelKeys as Set<string>;
-    expect(selected.has(createVoxelKey(13, 3, 16))).toBe(true);
-    expect(selected.has(createVoxelKey(24, 3, 16))).toBe(false);
+    const camera = (client as any).camera as THREE.PerspectiveCamera;
+    const silhouetteGroup = (client as any).coveredPlayerSilhouetteGroup as THREE.Group;
+    const actualHit = raycastVoxelWorld(
+      (client as any).runtimeWorld as MutableVoxelWorld,
+      expected.anchors.chest,
+      camera.position.clone().sub(expected.anchors.chest).normalize(),
+      camera.position.distanceTo(expected.anchors.chest)
+    );
+
+    expect(silhouetteGroup.visible).toBe(true);
+    expect(actualHit?.voxel).toEqual(blocker);
 
     client.dispose();
   });
 
-  it("adds two extra terrain layers behind chamber boundary walls", () => {
+  it("tints the contour from the local player ring color", () => {
     const client = GameClient.mount({
       canvas: createCanvas(),
       initialDocument: createEmptyArenaDocument(),
@@ -978,18 +1137,22 @@ describe("GameClient", () => {
     });
 
     const frame = createCenteredReadyRuntimeFrame();
-    buildCoveredChamber((client as any).runtimeWorld as MutableVoxelWorld, {
-      centerX: Math.floor(frame.players[0]!.position.x),
-      floorY: 1,
-      centerZ: Math.floor(frame.players[0]!.position.z)
-    });
-
+    (client as any).latestFrame = frame;
+    const blocker = getCameraOccluderVoxel(client, "chest", [0.25, 0.35, 0.45]);
+    ((client as any).runtimeWorld as MutableVoxelWorld).setVoxel(blocker.x, blocker.y, blocker.z, "ground");
     stepCoveredPlayerVisibility(client, frame);
 
-    const selected = (client as any).undergroundChamberSelectedVoxelKeys as Set<string>;
-    expect(selected.has(createVoxelKey(13, 3, 16))).toBe(true);
-    expect(selected.has(createVoxelKey(12, 3, 16))).toBe(true);
-    expect(selected.has(createVoxelKey(11, 3, 16))).toBe(true);
+    const silhouetteGroup = (client as any).coveredPlayerSilhouetteGroup as THREE.Group;
+    const silhouetteMaterial = (client as any).coveredPlayerSilhouetteMaterial as THREE.MeshBasicMaterial;
+    const localVisual = ((client as any).playerVisuals as Map<string, unknown>).get(frame.localPlayerId!) as {
+      ringMaterial: THREE.MeshBasicMaterial;
+    };
+    const silhouetteMesh = silhouetteGroup.getObjectByProperty("isMesh", true) as THREE.Mesh | null;
+
+    expect(silhouetteGroup.visible).toBe(true);
+    expect(silhouetteMesh).not.toBeNull();
+    expect((silhouetteMesh as THREE.Mesh).material).toBe(silhouetteMaterial);
+    expect(silhouetteMaterial.color.getHex()).toBe(localVisual.ringMaterial.color.getHex());
 
     client.dispose();
   });
@@ -1009,14 +1172,15 @@ describe("GameClient", () => {
 
     stepCoveredPlayerVisibility(client, frame);
 
-    expect((client as any).coveredPlayerVisibilityMode).toBe("clear");
-    expect(((client as any).undergroundChamber as { group: THREE.Group }).group.visible).toBe(false);
     expect(((client as any).coveredPlayerSilhouetteGroup as THREE.Group).visible).toBe(false);
+    const expected = resolveDesiredRuntimeCameraState(frame);
+    const camera = (client as any).camera as THREE.PerspectiveCamera;
+    expect(camera.position.distanceTo(expected.cameraPosition)).toBeLessThan(1e-5);
 
     client.dispose();
   });
 
-  it("disables both covered-player modes when no live local player is available", () => {
+  it("disables the feature when no live local player is available", () => {
     const client = GameClient.mount({
       canvas: createCanvas(),
       initialDocument: createEmptyArenaDocument(),
@@ -1036,43 +1200,35 @@ describe("GameClient", () => {
 
     stepCoveredPlayerVisibility(client, frame);
 
-    expect((client as any).coveredPlayerVisibilityMode).toBe("clear");
-    expect(((client as any).undergroundChamber as { group: THREE.Group }).group.visible).toBe(false);
     expect(((client as any).coveredPlayerSilhouetteGroup as THREE.Group).visible).toBe(false);
 
     client.dispose();
   });
 
-  it("caps underground camera zoom-in to at most 1.25 world units", () => {
+  it("disables the feature outside runtime play", () => {
     const client = GameClient.mount({
       canvas: createCanvas(),
       initialDocument: createEmptyArenaDocument(),
-      initialMode: "explore",
+      initialMode: "editor",
       matchColorSeed: 52
     });
 
     const frame = createCenteredReadyRuntimeFrame();
-    buildCoveredChamber((client as any).runtimeWorld as MutableVoxelWorld, {
-      centerX: Math.floor(frame.players[0]!.position.x),
-      floorY: 1,
-      centerZ: Math.floor(frame.players[0]!.position.z)
-    });
-
     const expected = resolveDesiredRuntimeCameraState(frame);
-    stepCoveredPlayerVisibility(client, frame);
+    (client as any).latestFrame = frame;
+    const blocker = getCameraOccluderVoxel(client, "chest", [0.25, 0.35, 0.45]);
+    ((client as any).runtimeWorld as MutableVoxelWorld).setVoxel(blocker.x, blocker.y, blocker.z, "ground");
+    (client as any).updateRuntimeCamera(1 / 60);
 
     const camera = (client as any).camera as THREE.PerspectiveCamera;
-    const desiredDistance = expected.cameraPosition.distanceTo(expected.aimPivot);
-    const actualDistance = camera.position.distanceTo(expected.aimPivot);
 
-    expect((client as any).coveredPlayerVisibilityMode).toBe("underground");
-    expect(desiredDistance - actualDistance).toBeGreaterThan(0);
-    expect(desiredDistance - actualDistance).toBeLessThanOrEqual(1.25 + 1e-3);
+    expect(((client as any).coveredPlayerSilhouetteGroup as THREE.Group).visible).toBe(false);
+    expect(camera.position.distanceTo(expected.cameraPosition)).toBeLessThan(1e-5);
 
     client.dispose();
   });
 
-  it("caps under-structure zoom-in to 0.6 world units and clears the silhouette when line of sight returns", () => {
+  it("caps the small push-in to 0.45 units and hides the contour when line of sight returns", () => {
     const client = GameClient.mount({
       canvas: createCanvas(),
       initialDocument: createEmptyArenaDocument(),
@@ -1092,15 +1248,14 @@ describe("GameClient", () => {
     const desiredDistance = expected.cameraPosition.distanceTo(expected.aimPivot);
     const occludedDistance = camera.position.distanceTo(expected.aimPivot);
 
-    expect((client as any).coveredPlayerVisibilityMode).toBe("under_structure");
     expect(desiredDistance - occludedDistance).toBeGreaterThan(0);
-    expect(desiredDistance - occludedDistance).toBeLessThanOrEqual(0.6 + 1e-3);
+    expect(desiredDistance - occludedDistance).toBeLessThanOrEqual(0.45 + 1e-3);
+    expect(((client as any).coveredPlayerSilhouetteGroup as THREE.Group).visible).toBe(true);
 
     ((client as any).runtimeWorld as MutableVoxelWorld).removeVoxel(blocker.x, blocker.y, blocker.z);
     stepCoveredPlayerVisibility(client, frame);
 
     const releasedDistance = ((client as any).camera as THREE.PerspectiveCamera).position.distanceTo(expected.aimPivot);
-    expect((client as any).coveredPlayerVisibilityMode).toBe("clear");
     expect(releasedDistance).toBeGreaterThan(occludedDistance);
     expect(releasedDistance).toBeLessThan(desiredDistance);
     expect(((client as any).coveredPlayerSilhouetteGroup as THREE.Group).visible).toBe(false);

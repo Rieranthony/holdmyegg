@@ -7,7 +7,11 @@ import {
 } from "@out-of-bounds/map";
 import * as THREE from "three";
 import { propMaterials } from "../game/propMaterials";
-import { buildSurfaceDecorations, type SurfaceDecoration } from "../game/surfaceDecorations";
+import {
+  buildSurfaceDecorations,
+  filterSurfaceDecorationsByDensity,
+  type SurfaceDecoration
+} from "../game/surfaceDecorations";
 import { resolveTerrainRaycastHit } from "../game/terrainRaycast";
 import { sharedVoxelGeometry } from "../game/voxelMaterials";
 import type { VoxelInteractPayload } from "./VoxelWorld";
@@ -62,24 +66,6 @@ const flowerCardLocalTransforms = [
   { position: [0, 0.44, 0] },
   { position: [0, 0.44, 0], rotation: [0, Math.PI / 2, 0] }
 ] as const satisfies readonly StaticInstanceTransform[];
-
-const hashString = (value: string) => {
-  let hash = 2166136261;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-
-  return hash >>> 0;
-};
-
-const filterDecorationsByDensity = (decorations: SurfaceDecoration[], density: number) => {
-  if (density >= 0.999) {
-    return decorations;
-  }
-
-  return decorations.filter((decoration) => hashString(decoration.id) / 4294967295 <= density);
-};
 
 const composeMatrices = (
   parentTransform: StaticInstanceTransform,
@@ -184,6 +170,7 @@ const buildDecorationMatrices = (decorations: SurfaceDecoration[]) => {
   const flowerYellowMatrices: THREE.Matrix4[] = [];
   const flowerPinkMatrices: THREE.Matrix4[] = [];
   const flowerWhiteMatrices: THREE.Matrix4[] = [];
+  const flowerBlueMatrices: THREE.Matrix4[] = [];
 
   for (const decoration of decorations) {
     const parentTransform: StaticInstanceTransform = {
@@ -202,6 +189,8 @@ const buildDecorationMatrices = (decorations: SurfaceDecoration[]) => {
       flowerYellowMatrices.push(...flowerMatrices);
     } else if (decoration.kind === "flower-pink") {
       flowerPinkMatrices.push(...flowerMatrices);
+    } else if (decoration.kind === "flower-blue") {
+      flowerBlueMatrices.push(...flowerMatrices);
     } else {
       flowerWhiteMatrices.push(...flowerMatrices);
     }
@@ -211,7 +200,8 @@ const buildDecorationMatrices = (decorations: SurfaceDecoration[]) => {
     grassMatrices,
     flowerYellowMatrices,
     flowerPinkMatrices,
-    flowerWhiteMatrices
+    flowerWhiteMatrices,
+    flowerBlueMatrices
   };
 };
 
@@ -220,7 +210,10 @@ export const createWorldPropsRenderState = (
   decorationDensity: number
 ): WorldPropsRenderState => {
   const props = world.listProps();
-  const decorations = filterDecorationsByDensity(buildSurfaceDecorations(world), decorationDensity);
+  const decorations = filterSurfaceDecorationsByDensity(
+    buildSurfaceDecorations(world),
+    decorationDensity
+  );
 
   return {
     instancedPropMatrices: buildTreeMatrices(props),
@@ -366,6 +359,11 @@ function WorldPropsMeshes({
         geometry={flowerCardGeometry}
         material={propMaterials.flowerWhite}
         matrices={renderState.decorationMatrices.flowerWhiteMatrices}
+      />
+      <StaticInstancedMesh
+        geometry={flowerCardGeometry}
+        material={propMaterials.flowerBlue}
+        matrices={renderState.decorationMatrices.flowerBlueMatrices}
       />
     </group>
   );

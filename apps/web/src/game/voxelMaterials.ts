@@ -318,13 +318,3 @@ export const getTerrainMaterialKey = (kind: BlockKind, y: number, face: ExposedF
 };
 
 export const getTerrainChunkMaterials = () => terrainMaterialOrder.map((key) => terrainMaterialsByKey[key]);
-
-export const cloneTerrainChunkMaterials = () =>
-  terrainMaterialOrder.map((key) => {
-    const clone = terrainMaterialsByKey[key].clone();
-    if (!(clone instanceof THREE.MeshStandardMaterial)) {
-      throw new Error(`Expected MeshStandardMaterial for ${key} terrain material clone.`);
-    }
-
-    return clone;
-  });

@@ -3,13 +3,16 @@ import {
   DEFAULT_FOUNDATION_DEPTH,
   DEFAULT_GROUND_TOP_Y,
   DEFAULT_MOUNTAIN_PEAK_RISE,
+  DEFAULT_WATERLINE_Y,
   MAX_PLAYABLE_ARENA_DEPTH,
   MAX_PLAYABLE_ARENA_WIDTH,
   createDefaultArenaMap,
   getDefaultArenaColumnTopY,
+  getDefaultArenaPondBounds,
   getDefaultArenaSpawnPadBounds,
   getDefaultArenaSummitBounds,
   isInsideDefaultArenaFootprint,
+  WORLD_FLOOR_Y,
   normalizeArenaBudgetMapDocument
 } from "@out-of-bounds/map";
 import type { MapDocumentV1 } from "../types";
@@ -47,8 +50,20 @@ describe("arena budget normalization", () => {
   it("builds the curved default arena with summit plateau and spawn pads", () => {
     const document = createDefaultArenaMap();
     const summitBounds = getDefaultArenaSummitBounds(document.size);
+    const pondBounds = getDefaultArenaPondBounds(document.size);
     const spawnPadBounds = getDefaultArenaSpawnPadBounds(document.size);
     const summitHeights = new Set<number>();
+    const topEdgeHeights = [8, 12, 16, 20, 24, 28, 32, 36].map((x) => getDefaultArenaColumnTopY(document.size, x, 4));
+
+    const firstInsideZByColumn = [8, 12, 16, 20, 24, 28, 32, 36].map((x) => {
+      for (let z = 0; z < document.size.z; z += 1) {
+        if (isInsideDefaultArenaFootprint(document.size, x, z)) {
+          return z;
+        }
+      }
+
+      return -1;
+    });
 
     expect(document.size).toEqual({ x: 80, y: 32, z: 80 });
     expect(document.props).toHaveLength(42);
@@ -60,13 +75,21 @@ describe("arena budget normalization", () => {
       { id: "spawn-4", x: 63.5, y: DEFAULT_FOUNDATION_DEPTH + 0.05, z: 63.5 }
     ]);
     expect(isInsideDefaultArenaFootprint(document.size, 0, 0)).toBe(false);
+    expect(Array.from({ length: document.size.x }, (_, x) => isInsideDefaultArenaFootprint(document.size, x, 0)).every((inside) => inside === false)).toBe(true);
+    expect(Array.from({ length: document.size.z }, (_, z) => isInsideDefaultArenaFootprint(document.size, 0, z)).every((inside) => inside === false)).toBe(true);
     expect(isInsideDefaultArenaFootprint(document.size, 16, 16)).toBe(true);
     expect(document.voxels.some((voxel) => voxel.x === 0 && voxel.y === DEFAULT_GROUND_TOP_Y && voxel.z === 0)).toBe(false);
     expect(document.voxels.some((voxel) => voxel.x === 16 && voxel.y === DEFAULT_GROUND_TOP_Y && voxel.z === 16)).toBe(true);
-    expect(getDefaultArenaColumnTopY(document.size, 4, 40)).toBeGreaterThanOrEqual(DEFAULT_GROUND_TOP_Y + 4);
-    expect(getDefaultArenaColumnTopY(document.size, 4, 40)).toBeGreaterThan(getDefaultArenaColumnTopY(document.size, 6, 40));
-    expect(getDefaultArenaColumnTopY(document.size, 6, 40)).toBeGreaterThan(getDefaultArenaColumnTopY(document.size, 8, 40));
-    expect(getDefaultArenaColumnTopY(document.size, 8, 40)).toBeGreaterThanOrEqual(getDefaultArenaColumnTopY(document.size, 10, 40));
+    expect(new Set(topEdgeHeights).size).toBeGreaterThan(1);
+    expect(new Set(firstInsideZByColumn).size).toBeGreaterThan(1);
+    expect(getDefaultArenaColumnTopY(document.size, 40, 22)).toBeGreaterThan(getDefaultArenaColumnTopY(document.size, 34, 22));
+    expect(getDefaultArenaColumnTopY(document.size, 40, 22)).toBeGreaterThan(getDefaultArenaColumnTopY(document.size, 46, 22));
+    expect(pondBounds).toEqual({ minX: 5, maxX: 13, minZ: 5, maxZ: 13 });
+    expect(getDefaultArenaColumnTopY(document.size, 9, 9)).toBe(WORLD_FLOOR_Y);
+    expect(getDefaultArenaColumnTopY(document.size, 9, 11)).toBe(WORLD_FLOOR_Y);
+    expect(getDefaultArenaColumnTopY(document.size, 9, 12)).toBe(DEFAULT_WATERLINE_Y - 2);
+    expect(getDefaultArenaColumnTopY(document.size, 9, 13)).toBe(DEFAULT_WATERLINE_Y - 1);
+    expect(document.voxels.some((voxel) => voxel.x === 9 && voxel.y === DEFAULT_WATERLINE_Y && voxel.z === 9 && voxel.kind === "water")).toBe(true);
     expect(
       document.props.every(
         (prop) =>

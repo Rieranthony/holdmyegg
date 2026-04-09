@@ -1,14 +1,10 @@
 import * as THREE from "three";
 import {
-  DEFAULT_CHUNK_SIZE,
   MutableVoxelWorld,
-  chunkCoordsFromPosition,
   createDefaultArenaMap,
-  createVoxelKey,
   getMapPropVoxels,
   normalizeArenaBudgetMapDocument,
-  type MapDocumentV1,
-  type Vec3i
+  type MapDocumentV1
 } from "@out-of-bounds/map";
 import {
   defaultSimulationConfig,
@@ -27,7 +23,10 @@ import {
   type SimulationInitialSpawnStyle
 } from "@out-of-bounds/sim";
 import { propMaterials } from "../game/propMaterials";
-import type { QualityTier } from "../game/quality";
+import {
+  getDecorationDensityForQualityTier,
+  type QualityTier
+} from "../game/quality";
 import {
   aimCameraConfig,
   applyFreeLookDelta,
@@ -61,7 +60,6 @@ import { eggBaseGeometry, eggCapGeometry, eggMiddleGeometry } from "../game/eggV
 import { getFallingClusterVisualState } from "../game/fallingClusters";
 import { buildPlayerCommand, initialKeyboardInputState, type KeyboardInputState } from "../game/input";
 import { configureDynamicInstancedMesh, finalizeDynamicInstancedMesh, finalizeStaticInstancedMesh } from "../game/instancedMeshes";
-import { buildTerrainChunkGeometry, meshTerrainChunk } from "../game/terrainMesher";
 import {
   chickenFeatherGeometry,
   chickenPoseVisualDefaults,
@@ -102,6 +100,11 @@ import {
 } from "../game/sceneAssets";
 import { getSkyDropVisualState } from "../game/skyDrops";
 import {
+  buildSurfaceDecorations,
+  filterSurfaceDecorationsByDensity,
+  type SurfaceDecoration
+} from "../game/surfaceDecorations";
+import {
   SunShadows,
   enableSunShadowLayer,
   syncDirectionalLightSunLayer
@@ -109,11 +112,12 @@ import {
 import { type TerrainRaycastHit, raycastVoxelWorld, resolveTerrainRaycastHit } from "../game/terrainRaycast";
 import {
   type BlockRenderProfile,
-  cloneTerrainChunkMaterials,
   getBlockRenderProfile,
   getTerrainChunkMaterials,
   getVoxelMaterials,
-  sharedVoxelGeometry
+  sharedVoxelGeometry,
+  updateVoxelMaterialAnimation,
+  voxelTextures
 } from "../game/voxelMaterials";
 import type {
   WorkerRequestMessage,
@@ -284,23 +288,26 @@ interface TerrainOcclusionHit {
   hit: TerrainRaycastHit;
 }
 
-type CoveredPlayerVisibilityMode = "clear" | "under_structure" | "underground";
-
 interface CoveredPlayerVisibilityResolution {
   cameraPosition: THREE.Vector3;
-  mode: CoveredPlayerVisibilityMode;
   occluded: boolean;
-}
-
-interface UndergroundChamberRenderState {
-  group: THREE.Group;
-  chunkMeshes: Map<string, THREE.Mesh>;
-  materials: THREE.MeshStandardMaterial[];
+  contourVisible: boolean;
 }
 
 const backgroundColor = "#8fc6e0";
-const runtimeGroundMaterial = new THREE.MeshStandardMaterial({ color: "#050505" });
 const menuGroundMaterial = new THREE.MeshBasicMaterial({ color: backgroundColor });
+const runtimeOceanTexture = voxelTextures.waterTop.clone();
+runtimeOceanTexture.wrapS = THREE.RepeatWrapping;
+runtimeOceanTexture.wrapT = THREE.RepeatWrapping;
+runtimeOceanTexture.repeat.set(14, 14);
+runtimeOceanTexture.offset.set(0, 0);
+runtimeOceanTexture.needsUpdate = true;
+const runtimeGroundMaterial = new THREE.MeshStandardMaterial({
+  color: "#ffffff",
+  map: runtimeOceanTexture,
+  roughness: 1,
+  metalness: 0
+});
 const cloudGeometry = new THREE.BoxGeometry(1.6, 0.9, 1.6);
 const skyDropRingGeometry = new THREE.RingGeometry(0.48, 0.72, 24);
 const skyDropBeamGeometry = new THREE.CylinderGeometry(0.16, 0.16, 2, 12, 1, true);
@@ -319,7 +326,11 @@ const clusterTempObject = new THREE.Object3D();
 const cloudTempObject = new THREE.Object3D();
 const voxelFxTempObject = new THREE.Object3D();
 const treeTempMatrix = new THREE.Matrix4();
+const decorationParentObject = new THREE.Object3D();
+const decorationChildObject = new THREE.Object3D();
 const shadowRayDirection = new THREE.Vector3(0, -1, 0);
+const grassCardGeometry = new THREE.PlaneGeometry(0.56, 0.82);
+const flowerCardGeometry = new THREE.PlaneGeometry(0.72, 0.92);
 const daySkyColor = new THREE.Color(backgroundColor);
 const spaceSkyColor = new THREE.Color("#04060d");
 const dayFogColor = new THREE.Color(backgroundColor);
@@ -465,16 +476,11 @@ const MULTIPLAYER_SPECTATOR_CAMERA_SPEED = 16;
 const TERRAIN_OCCLUSION_HIP_HEIGHT_RATIO = 0.35;
 const TERRAIN_OCCLUSION_CHEST_HEIGHT_RATIO = 0.7;
 const TERRAIN_OCCLUSION_HEAD_HEIGHT_RATIO = 0.9;
-const COVERED_PLAYER_CAMERA_BUFFER = 0.6;
+const COVERED_PLAYER_CAMERA_BUFFER = 0.75;
 const COVERED_PLAYER_PUSH_IN_DAMPING = 10;
 const COVERED_PLAYER_RELEASE_DAMPING = 6;
 const COVERED_PLAYER_RELEASE_EPSILON = 0.05;
-const COVERED_PLAYER_UNDER_STRUCTURE_MAX_CAMERA_PUSH_IN = 0.6;
-const COVERED_PLAYER_UNDERGROUND_MAX_CAMERA_PUSH_IN = 1.25;
-const COVERED_PLAYER_ROOF_SEARCH_HEIGHT = 6;
-const COVERED_PLAYER_COVERAGE_RADIUS = 2;
-const COVERED_PLAYER_UNDERGROUND_MIN_COVERED_COLUMNS = 16;
-const UNDERGROUND_CHAMBER_THICKNESS_LAYERS = 2;
+const COVERED_PLAYER_MAX_CAMERA_PUSH_IN = 0.45;
 const TERRAIN_OCCLUSION_RAYCAST_STEP_EPSILON = 0.05;
 
 const getVectorDistance = (
@@ -507,6 +513,105 @@ const configureSunShadowObject = (
       child.receiveShadow = receiveShadow;
     }
   });
+};
+
+const composeDecorationMatrices = (
+  parentTransform: {
+    position: [number, number, number];
+    rotation?: [number, number, number];
+    scale?: number | [number, number, number];
+  },
+  localTransforms: readonly {
+    position: [number, number, number];
+    rotation?: [number, number, number];
+    scale?: number | [number, number, number];
+  }[]
+) => {
+  const parentRotation = parentTransform.rotation ?? [0, 0, 0];
+  const parentScale = parentTransform.scale ?? 1;
+  decorationParentObject.position.set(
+    parentTransform.position[0],
+    parentTransform.position[1],
+    parentTransform.position[2]
+  );
+  decorationParentObject.rotation.set(parentRotation[0], parentRotation[1], parentRotation[2]);
+  if (typeof parentScale === "number") {
+    decorationParentObject.scale.setScalar(parentScale);
+  } else {
+    decorationParentObject.scale.set(parentScale[0], parentScale[1], parentScale[2]);
+  }
+  decorationParentObject.updateMatrix();
+
+  return localTransforms.map((transform) => {
+    const rotation = transform.rotation ?? [0, 0, 0];
+    const scale = transform.scale ?? 1;
+    decorationChildObject.position.set(
+      transform.position[0],
+      transform.position[1],
+      transform.position[2]
+    );
+    decorationChildObject.rotation.set(rotation[0], rotation[1], rotation[2]);
+    if (typeof scale === "number") {
+      decorationChildObject.scale.setScalar(scale);
+    } else {
+      decorationChildObject.scale.set(scale[0], scale[1], scale[2]);
+    }
+    decorationChildObject.updateMatrix();
+    return new THREE.Matrix4().multiplyMatrices(
+      decorationParentObject.matrix,
+      decorationChildObject.matrix
+    );
+  });
+};
+
+const grassCardLocalTransforms = [
+  { position: [0, 0.38, 0] },
+  { position: [0, 0.38, 0], rotation: [0, Math.PI / 2, 0] }
+] as const;
+
+const flowerCardLocalTransforms = [
+  { position: [0, 0.44, 0] },
+  { position: [0, 0.44, 0], rotation: [0, Math.PI / 2, 0] }
+] as const;
+
+const buildDecorationMatrices = (decorations: SurfaceDecoration[]) => {
+  const grassMatrices: THREE.Matrix4[] = [];
+  const flowerYellowMatrices: THREE.Matrix4[] = [];
+  const flowerPinkMatrices: THREE.Matrix4[] = [];
+  const flowerWhiteMatrices: THREE.Matrix4[] = [];
+  const flowerBlueMatrices: THREE.Matrix4[] = [];
+
+  for (const decoration of decorations) {
+    const parentTransform = {
+      position: [decoration.x, decoration.y, decoration.z] as [number, number, number],
+      rotation: [0, decoration.rotation, 0] as [number, number, number],
+      scale: decoration.scale
+    };
+
+    if (decoration.kind === "grass") {
+      grassMatrices.push(...composeDecorationMatrices(parentTransform, grassCardLocalTransforms));
+      continue;
+    }
+
+    const flowerMatrices = composeDecorationMatrices(parentTransform, flowerCardLocalTransforms);
+    if (decoration.kind === "flower-yellow") {
+      flowerYellowMatrices.push(...flowerMatrices);
+    } else if (decoration.kind === "flower-pink") {
+      flowerPinkMatrices.push(...flowerMatrices);
+    } else if (decoration.kind === "flower-blue") {
+      flowerBlueMatrices.push(...flowerMatrices);
+    } else {
+      flowerWhiteMatrices.push(...flowerMatrices);
+    }
+  }
+
+  return {
+    grassMatrices,
+    flowerYellowMatrices,
+    flowerPinkMatrices,
+    flowerWhiteMatrices,
+    flowerBlueMatrices
+  };
 };
 
 const buildCloudMatrices = (preset: VoxelCloudPreset) => {
@@ -847,32 +952,6 @@ const createEggVisual = () => {
   } satisfies EggVisual;
 };
 
-const createUndergroundChamberRenderState = (): UndergroundChamberRenderState => {
-  const group = new THREE.Group();
-  group.visible = false;
-  return {
-    group,
-    chunkMeshes: new Map(),
-    materials: cloneTerrainChunkMaterials()
-  };
-};
-
-const clearUndergroundChamberRenderState = (state: UndergroundChamberRenderState) => {
-  for (const mesh of state.chunkMeshes.values()) {
-    mesh.geometry.dispose();
-    state.group.remove(mesh);
-  }
-  state.chunkMeshes.clear();
-  state.group.visible = false;
-};
-
-const disposeUndergroundChamberRenderState = (state: UndergroundChamberRenderState) => {
-  clearUndergroundChamberRenderState(state);
-  for (const material of state.materials) {
-    material.dispose();
-  }
-};
-
 const createCoveredPlayerSilhouetteMaterial = () =>
   new THREE.MeshBasicMaterial({
     color: "#ffffff",
@@ -938,8 +1017,8 @@ export class GameClient {
   private readonly cloudsGroup = new THREE.Group();
   private readonly spaceBackdropGroup = new THREE.Group();
   private readonly terrainGroup = new THREE.Group();
-  private readonly undergroundChamber = createUndergroundChamberRenderState();
   private readonly propsGroup = new THREE.Group();
+  private readonly decorationsGroup = new THREE.Group();
   private readonly spawnsGroup = new THREE.Group();
   private readonly playersGroup = new THREE.Group();
   private readonly coveredPlayerSilhouetteGroup = new THREE.Group();
@@ -1108,11 +1187,9 @@ export class GameClient {
   private previousLocalSpacePhase: RuntimePlayerState["spacePhase"] | null = null;
   private localSpaceChallengeTargetKey: string | null = null;
   private localSpaceChallengeHitCount = 0;
-  private coveredPlayerVisibilityMode: CoveredPlayerVisibilityMode = "clear";
+  private coveredPlayerContourVisible = false;
   private coveredPlayerSilhouetteRoot: THREE.Object3D | null = null;
   private coveredPlayerSilhouetteSource: PlayerVisual | null = null;
-  private undergroundChamberCacheKey: string | null = null;
-  private readonly undergroundChamberSelectedVoxelKeys = new Set<string>();
   private pendingTypedText = "";
   private lastRuntimeInputMismatchWarningKey: string | null = null;
   private lastRuntimeOverlayState: RuntimeOverlayState | null = null;
@@ -1205,7 +1282,15 @@ export class GameClient {
   private trackSunShadowMaterials() {
     this.sunShadows.trackMaterial(runtimeGroundMaterial);
     this.sunShadows.trackMaterial(getTerrainChunkMaterials());
-    this.sunShadows.trackMaterial([propMaterials.bark, propMaterials.leaves]);
+    this.sunShadows.trackMaterial([
+      propMaterials.bark,
+      propMaterials.leaves,
+      propMaterials.grass,
+      propMaterials.flowerYellow,
+      propMaterials.flowerPink,
+      propMaterials.flowerWhite,
+      propMaterials.flowerBlue
+    ]);
   }
 
   private syncSunShadowWorld(document = this.worldDocument) {
@@ -1548,6 +1633,9 @@ export class GameClient {
       if (presentationChanged || qualityTierChanged) {
         this.syncSunShadowMode();
       }
+      if (qualityTierChanged) {
+        this.rebuildSurfaceDecorations(this.worldDocument);
+      }
       if ((presentationChanged || localPaletteChanged) && this.mode === "editor") {
         this.applyEditorCameraPosition();
       }
@@ -1718,7 +1806,6 @@ export class GameClient {
     this.focusGhost.geometry.dispose();
     (this.focusGhost.material as THREE.Material).dispose();
     this.sunShadows.dispose();
-    disposeUndergroundChamberRenderState(this.undergroundChamber);
     this.coveredPlayerSilhouetteMaterial.dispose();
     this.resourceBubbleElement?.remove();
     this.resourceBubbleElement = null;
@@ -1745,7 +1832,7 @@ export class GameClient {
 
     const ground = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), runtimeGroundMaterial);
     ground.rotation.x = -Math.PI / 2;
-    ground.position.y = -0.01;
+    ground.position.y = -0.02;
     ground.name = "ground-plane";
     ground.receiveShadow = true;
     configureSunShadowObject(ground, {
@@ -1764,8 +1851,8 @@ export class GameClient {
     );
     this.scene.add(
       this.terrainGroup,
-      this.undergroundChamber.group,
       this.propsGroup,
+      this.decorationsGroup,
       this.spawnsGroup,
       this.playersGroup,
       this.coveredPlayerSilhouetteGroup,
@@ -2045,6 +2132,7 @@ export class GameClient {
     );
     this.rebuildClouds(document);
     this.rebuildProps(document);
+    this.rebuildSurfaceDecorations(document);
     this.rebuildSpawns(document);
   }
 
@@ -2211,7 +2299,6 @@ export class GameClient {
     this.currentTerrainStats.drawCallCount = patches.reduce((sum, patch) => sum + patch.drawCallCount, 0);
     this.currentTerrainStats.triangleCount = patches.reduce((sum, patch) => sum + patch.triangleCount, 0);
     if (patches.length > 0) {
-      this.undergroundChamberCacheKey = null;
       this.sunShadows.markDirty();
     }
   }
@@ -2254,6 +2341,48 @@ export class GameClient {
       });
       this.propsGroup.add(leafMesh);
     }
+
+    this.sunShadows.markDirty();
+  }
+
+  private rebuildSurfaceDecorations(document: MapDocumentV1) {
+    this.decorationsGroup.clear();
+    const world = new MutableVoxelWorld(document);
+    const decorations = filterSurfaceDecorationsByDensity(
+      buildSurfaceDecorations(world),
+      getDecorationDensityForQualityTier(this.qualityTier)
+    );
+    const {
+      grassMatrices,
+      flowerYellowMatrices,
+      flowerPinkMatrices,
+      flowerWhiteMatrices,
+      flowerBlueMatrices
+    } = buildDecorationMatrices(decorations);
+
+    const addDecorationMesh = (
+      geometry: THREE.BufferGeometry,
+      material: THREE.Material,
+      matrices: THREE.Matrix4[]
+    ) => {
+      if (matrices.length === 0) {
+        return;
+      }
+
+      const mesh = new THREE.InstancedMesh(geometry, material, matrices.length);
+      configureStaticInstancedMesh(mesh, matrices);
+      configureSunShadowObject(mesh, {
+        castShadow: false,
+        receiveShadow: true
+      });
+      this.decorationsGroup.add(mesh);
+    };
+
+    addDecorationMesh(grassCardGeometry, propMaterials.grass, grassMatrices);
+    addDecorationMesh(flowerCardGeometry, propMaterials.flowerYellow, flowerYellowMatrices);
+    addDecorationMesh(flowerCardGeometry, propMaterials.flowerPink, flowerPinkMatrices);
+    addDecorationMesh(flowerCardGeometry, propMaterials.flowerWhite, flowerWhiteMatrices);
+    addDecorationMesh(flowerCardGeometry, propMaterials.flowerBlue, flowerBlueMatrices);
 
     this.sunShadows.markDirty();
   }
@@ -2328,9 +2457,6 @@ export class GameClient {
       this.terrainGroup.remove(mesh);
     }
     this.chunkMeshes.clear();
-    clearUndergroundChamberRenderState(this.undergroundChamber);
-    this.undergroundChamberCacheKey = null;
-    this.undergroundChamberSelectedVoxelKeys.clear();
     this.sunShadows.markDirty();
   }
 
@@ -3128,14 +3254,7 @@ export class GameClient {
   }
 
   private getVisibleTerrainRaycastRoots() {
-    const roots: THREE.Object3D[] = [];
-    if (this.terrainGroup.visible) {
-      roots.push(this.terrainGroup);
-    }
-    if (this.undergroundChamber.group.visible) {
-      roots.push(this.undergroundChamber.group);
-    }
-    return roots;
+    return this.terrainGroup.visible ? [this.terrainGroup] : [];
   }
 
   private getTerrainTargetAtPointer(offsetX = 0, offsetY = 0) {
@@ -3369,6 +3488,9 @@ export class GameClient {
   private readonly animate = () => {
     const delta = Math.min(this.clock.getDelta(), 0.1);
     const elapsedTime = this.clock.elapsedTime;
+    updateVoxelMaterialAnimation(elapsedTime);
+    runtimeOceanTexture.offset.x = (elapsedTime * 0.045) % 1;
+    runtimeOceanTexture.offset.y = (elapsedTime * 0.02) % 1;
 
     if (isRuntimeMode(this.mode)) {
       this.updateRuntimeCamera(delta);
@@ -3480,14 +3602,16 @@ export class GameClient {
     const coveredPlayerVisibility = spaceCameraActive
       ? {
           cameraPosition: this.desiredCameraPosition.clone(),
-          mode: "clear" as const,
-          occluded: false
+          occluded: false,
+          contourVisible: false
         }
       : this.resolveCoveredPlayerVisibility(player, this.desiredCameraPosition);
     if (spaceCameraActive) {
       this.clearCoveredPlayerVisibility();
     } else {
       this.desiredCameraPosition.copy(coveredPlayerVisibility.cameraPosition);
+      this.coveredPlayerContourVisible = coveredPlayerVisibility.contourVisible;
+      this.coveredPlayerSilhouetteGroup.visible = coveredPlayerVisibility.contourVisible;
     }
 
     if (!this.hasInitializedRuntimeCamera) {
@@ -3541,54 +3665,9 @@ export class GameClient {
   }
 
   private clearCoveredPlayerVisibility() {
-    this.coveredPlayerVisibilityMode = "clear";
+    this.coveredPlayerContourVisible = false;
     this.terrainGroup.visible = true;
-    this.undergroundChamber.group.visible = false;
     this.coveredPlayerSilhouetteGroup.visible = false;
-  }
-
-  private resolveCoveredColumnCount(player: RuntimePlayerState) {
-    const baseX = Math.floor(player.position.x);
-    const baseZ = Math.floor(player.position.z);
-    const headY = player.position.y + defaultSimulationConfig.playerHeight * TERRAIN_OCCLUSION_HEAD_HEIGHT_RATIO;
-    const startY = Math.max(0, Math.ceil(headY));
-    const endY = Math.min(this.runtimeWorld.size.y - 1, Math.floor(headY + COVERED_PLAYER_ROOF_SEARCH_HEIGHT));
-    let coveredCount = 0;
-    let centerCovered = false;
-
-    for (let zOffset = -COVERED_PLAYER_COVERAGE_RADIUS; zOffset <= COVERED_PLAYER_COVERAGE_RADIUS; zOffset += 1) {
-      for (let xOffset = -COVERED_PLAYER_COVERAGE_RADIUS; xOffset <= COVERED_PLAYER_COVERAGE_RADIUS; xOffset += 1) {
-        const x = baseX + xOffset;
-        const z = baseZ + zOffset;
-        let covered = false;
-
-        if (x >= 0 && x < this.runtimeWorld.size.x && z >= 0 && z < this.runtimeWorld.size.z) {
-          for (let y = startY; y <= endY; y += 1) {
-            if (!this.runtimeWorld.getVoxelKind(x, y, z)) {
-              continue;
-            }
-
-            covered = true;
-            coveredCount += 1;
-            break;
-          }
-        }
-
-        if (xOffset === 0 && zOffset === 0) {
-          centerCovered = covered;
-        }
-      }
-    }
-
-    return {
-      centerCovered,
-      coveredCount
-    };
-  }
-
-  private isPlayerUnderground(player: RuntimePlayerState) {
-    const coverage = this.resolveCoveredColumnCount(player);
-    return coverage.centerCovered && coverage.coveredCount >= COVERED_PLAYER_UNDERGROUND_MIN_COVERED_COLUMNS;
   }
 
   private raycastTerrainOccluder(origin: THREE.Vector3, target: THREE.Vector3) {
@@ -3636,7 +3715,7 @@ export class GameClient {
     return null;
   }
 
-  private collectCoveredPlayerHits(player: RuntimePlayerState, desiredCameraPosition: THREE.Vector3) {
+  private populateCoveredPlayerAnchors(player: RuntimePlayerState) {
     this.terrainOcclusionHipsAnchor.set(
       player.position.x,
       player.position.y + defaultSimulationConfig.playerHeight * TERRAIN_OCCLUSION_HIP_HEIGHT_RATIO,
@@ -3652,12 +3731,25 @@ export class GameClient {
       player.position.y + defaultSimulationConfig.playerHeight * TERRAIN_OCCLUSION_HEAD_HEIGHT_RATIO,
       player.position.z
     );
+  }
 
-    return [
-      this.raycastTerrainOccluder(this.terrainOcclusionHipsAnchor, desiredCameraPosition),
-      this.raycastTerrainOccluder(this.terrainOcclusionChestAnchor, desiredCameraPosition),
-      this.raycastTerrainOccluder(this.terrainOcclusionHeadAnchor, desiredCameraPosition)
-    ].filter((hit): hit is TerrainOcclusionHit => hit !== null);
+  private collectCoveredPlayerHits(
+    player: RuntimePlayerState,
+    targetCameraPosition: THREE.Vector3,
+    {
+      includeHips = true
+    }: {
+      includeHips?: boolean;
+    } = {}
+  ) {
+    this.populateCoveredPlayerAnchors(player);
+    const anchors = includeHips
+      ? [this.terrainOcclusionHipsAnchor, this.terrainOcclusionChestAnchor, this.terrainOcclusionHeadAnchor]
+      : [this.terrainOcclusionChestAnchor, this.terrainOcclusionHeadAnchor];
+
+    return anchors
+      .map((anchor) => this.raycastTerrainOccluder(anchor, targetCameraPosition))
+      .filter((hit): hit is TerrainOcclusionHit => hit !== null);
   }
 
   private clampCoveredPlayerCamera(
@@ -3691,187 +3783,6 @@ export class GameClient {
     };
   }
 
-  private collectUndergroundAirSeedCells(player: RuntimePlayerState) {
-    const seeds = new Map<string, Vec3i>();
-    const heightSamples = [
-      player.position.y + 0.05,
-      player.position.y + defaultSimulationConfig.playerHeight * TERRAIN_OCCLUSION_CHEST_HEIGHT_RATIO
-    ];
-    const footprintOffsets = [
-      [0, 0],
-      [0.22, 0.22],
-      [0.22, -0.22],
-      [-0.22, 0.22],
-      [-0.22, -0.22]
-    ] as const;
-
-    for (const sampleY of heightSamples) {
-      for (const [xOffset, zOffset] of footprintOffsets) {
-        const x = Math.floor(player.position.x + xOffset);
-        const y = Math.floor(sampleY);
-        const z = Math.floor(player.position.z + zOffset);
-        if (
-          x < 0 ||
-          x >= this.runtimeWorld.size.x ||
-          y < 0 ||
-          y >= this.runtimeWorld.size.y ||
-          z < 0 ||
-          z >= this.runtimeWorld.size.z
-        ) {
-          continue;
-        }
-
-        const key = createVoxelKey(x, y, z);
-        if (!seeds.has(key)) {
-          seeds.set(key, { x, y, z });
-        }
-      }
-    }
-
-    return [...seeds.values()];
-  }
-
-  private rebuildUndergroundChamber(player: RuntimePlayerState) {
-    const playerCell = {
-      x: Math.floor(player.position.x),
-      y: Math.floor(player.position.y),
-      z: Math.floor(player.position.z)
-    };
-    const playerChunk = chunkCoordsFromPosition(playerCell.x, playerCell.y, playerCell.z, DEFAULT_CHUNK_SIZE);
-    const cacheKey = [
-      this.runtimeWorld.getTerrainRevision(),
-      `${playerCell.x},${playerCell.y},${playerCell.z}`,
-      `${playerChunk.x},${playerChunk.y},${playerChunk.z}`
-    ].join("|");
-
-    if (this.undergroundChamberCacheKey === cacheKey) {
-      this.undergroundChamber.group.visible = this.undergroundChamber.chunkMeshes.size > 0;
-      return;
-    }
-
-    clearUndergroundChamberRenderState(this.undergroundChamber);
-    this.undergroundChamberSelectedVoxelKeys.clear();
-
-    const minBounds = {
-      x: Math.max(0, (playerChunk.x - 1) * DEFAULT_CHUNK_SIZE),
-      y: Math.max(0, (playerChunk.y - 1) * DEFAULT_CHUNK_SIZE),
-      z: Math.max(0, (playerChunk.z - 1) * DEFAULT_CHUNK_SIZE)
-    };
-    const maxBounds = {
-      x: Math.min(this.runtimeWorld.size.x - 1, (playerChunk.x + 2) * DEFAULT_CHUNK_SIZE - 1),
-      y: Math.min(this.runtimeWorld.size.y - 1, (playerChunk.y + 2) * DEFAULT_CHUNK_SIZE - 1),
-      z: Math.min(this.runtimeWorld.size.z - 1, (playerChunk.z + 2) * DEFAULT_CHUNK_SIZE - 1)
-    };
-
-    const reachableAir = new Set<string>();
-    const queue: Vec3i[] = [];
-    const enqueueAir = (x: number, y: number, z: number) => {
-      if (
-        x < minBounds.x || x > maxBounds.x ||
-        y < minBounds.y || y > maxBounds.y ||
-        z < minBounds.z || z > maxBounds.z
-      ) {
-        return;
-      }
-      if (
-        x < 0 || x >= this.runtimeWorld.size.x ||
-        y < 0 || y >= this.runtimeWorld.size.y ||
-        z < 0 || z >= this.runtimeWorld.size.z
-      ) {
-        return;
-      }
-      if (this.runtimeWorld.getVoxelKind(x, y, z)) {
-        return;
-      }
-
-      const key = createVoxelKey(x, y, z);
-      if (reachableAir.has(key)) {
-        return;
-      }
-
-      reachableAir.add(key);
-      queue.push({ x, y, z });
-    };
-
-    for (const seed of this.collectUndergroundAirSeedCells(player)) {
-      enqueueAir(seed.x, seed.y, seed.z);
-    }
-
-    const floodOffsets = [
-      { x: 1, y: 0, z: 0 },
-      { x: -1, y: 0, z: 0 },
-      { x: 0, y: 1, z: 0 },
-      { x: 0, y: -1, z: 0 },
-      { x: 0, y: 0, z: 1 },
-      { x: 0, y: 0, z: -1 }
-    ] as const;
-
-    while (queue.length > 0) {
-      const current = queue.shift()!;
-      for (const offset of floodOffsets) {
-        enqueueAir(current.x + offset.x, current.y + offset.y, current.z + offset.z);
-      }
-    }
-
-    for (const airKey of reachableAir) {
-      const [airX, airY, airZ] = airKey.split(",").map(Number);
-      for (const offset of floodOffsets) {
-        const solidX = airX + offset.x;
-        const solidY = airY + offset.y;
-        const solidZ = airZ + offset.z;
-        const kind = this.runtimeWorld.getVoxelKind(solidX, solidY, solidZ);
-        if (!kind) {
-          continue;
-        }
-
-        for (let depth = 0; depth <= UNDERGROUND_CHAMBER_THICKNESS_LAYERS; depth += 1) {
-          const selectedX = solidX + offset.x * depth;
-          const selectedY = solidY + offset.y * depth;
-          const selectedZ = solidZ + offset.z * depth;
-          const selectedKind = this.runtimeWorld.getVoxelKind(selectedX, selectedY, selectedZ);
-          if (!selectedKind) {
-            break;
-          }
-
-          this.undergroundChamberSelectedVoxelKeys.add(createVoxelKey(selectedX, selectedY, selectedZ));
-        }
-      }
-    }
-
-    const selectedVoxels = [...this.undergroundChamberSelectedVoxelKeys]
-      .map((key) => {
-        const [x, y, z] = key.split(",").map(Number);
-        const kind = this.runtimeWorld.getVoxelKind(x, y, z);
-        return kind ? { x, y, z, kind } : null;
-      })
-      .filter((voxel): voxel is MapDocumentV1["voxels"][number] => voxel !== null);
-
-    if (selectedVoxels.length > 0) {
-      const chamberWorld = new MutableVoxelWorld({
-        version: this.worldDocument.version,
-        meta: { ...this.worldDocument.meta },
-        size: { ...this.worldDocument.size },
-        boundary: { ...this.worldDocument.boundary },
-        spawns: [],
-        props: [],
-        voxels: selectedVoxels
-      });
-
-      for (const chunk of chamberWorld.buildVisibleChunks()) {
-        const meshData = meshTerrainChunk(chunk);
-        const geometry = buildTerrainChunkGeometry(meshData);
-        const mesh = new THREE.Mesh(geometry, this.undergroundChamber.materials);
-        mesh.frustumCulled = true;
-        mesh.position.set(meshData.chunkOffset.x, meshData.chunkOffset.y, meshData.chunkOffset.z);
-        this.undergroundChamber.group.add(mesh);
-        this.undergroundChamber.chunkMeshes.set(chunk.key, mesh);
-      }
-    }
-
-    this.undergroundChamberCacheKey = cacheKey;
-    this.undergroundChamber.group.visible = this.undergroundChamber.chunkMeshes.size > 0;
-  }
-
   private resolveCoveredPlayerVisibility(
     player: RuntimePlayerState,
     desiredCameraPosition: THREE.Vector3
@@ -3881,57 +3792,33 @@ export class GameClient {
       this.coveredPlayerResolvedCameraPosition.copy(desiredCameraPosition);
       return {
         cameraPosition: this.coveredPlayerResolvedCameraPosition,
-        mode: "clear",
-        occluded: false
+        occluded: false,
+        contourVisible: false
       };
     }
 
     const terrainBlockerHits = this.collectCoveredPlayerHits(player, desiredCameraPosition);
-
-    if (this.isPlayerUnderground(player)) {
-      this.rebuildUndergroundChamber(player);
-      this.terrainGroup.visible = false;
-      this.coveredPlayerSilhouetteGroup.visible = false;
-      this.coveredPlayerVisibilityMode = "underground";
-      const cameraResolution = this.clampCoveredPlayerCamera(
-        desiredCameraPosition,
-        terrainBlockerHits,
-        COVERED_PLAYER_UNDERGROUND_MAX_CAMERA_PUSH_IN
-      );
-
-      return {
-        cameraPosition: cameraResolution.cameraPosition,
-        mode: "underground",
-        occluded: cameraResolution.occluded
-      };
-    }
-
-    this.terrainGroup.visible = true;
-    this.undergroundChamber.group.visible = false;
-
     if (terrainBlockerHits.length > 0) {
-      this.coveredPlayerVisibilityMode = "under_structure";
-      this.coveredPlayerSilhouetteGroup.visible = true;
       const cameraResolution = this.clampCoveredPlayerCamera(
         desiredCameraPosition,
         terrainBlockerHits,
-        COVERED_PLAYER_UNDER_STRUCTURE_MAX_CAMERA_PUSH_IN
+        COVERED_PLAYER_MAX_CAMERA_PUSH_IN
       );
+      const contourVisible =
+        this.collectCoveredPlayerHits(player, cameraResolution.cameraPosition, { includeHips: false }).length > 0;
 
       return {
         cameraPosition: cameraResolution.cameraPosition,
-        mode: "under_structure",
-        occluded: cameraResolution.occluded
+        occluded: cameraResolution.occluded,
+        contourVisible
       };
     }
 
-    this.coveredPlayerVisibilityMode = "clear";
-    this.coveredPlayerSilhouetteGroup.visible = false;
     this.coveredPlayerResolvedCameraPosition.copy(desiredCameraPosition);
     return {
       cameraPosition: this.coveredPlayerResolvedCameraPosition,
-      mode: "clear",
-      occluded: false
+      occluded: false,
+      contourVisible: false
     };
   }
 
@@ -4652,7 +4539,7 @@ export class GameClient {
   private updateCoveredPlayerSilhouette(localVisual: PlayerVisual | null) {
     if (
       !localVisual ||
-      this.coveredPlayerVisibilityMode !== "under_structure" ||
+      !this.coveredPlayerContourVisible ||
       !localVisual.group.visible
     ) {
       this.coveredPlayerSilhouetteGroup.visible = false;

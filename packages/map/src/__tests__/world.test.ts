@@ -6,8 +6,12 @@ import {
   DEFAULT_GROUND_TOP_Y,
   DEFAULT_MOUNTAIN_PEAK_RISE,
   DEFAULT_SURFACE_Y,
+  DEFAULT_WATERLINE_Y,
   DEFAULT_WATER_TABLE_Y,
-  getDefaultArenaSummitBounds
+  WORLD_FLOOR_Y,
+  getDefaultArenaPondBounds,
+  getDefaultArenaSummitBounds,
+  isInsideDefaultArenaFootprint
 } from "../default-map";
 import { EXPOSED_FACE_BITS } from "../utils";
 import { MutableVoxelWorld } from "../world";
@@ -65,6 +69,16 @@ const mergeDirtyKeys = (...dirtySets: Set<string>[]) => {
   }
 
   return merged;
+};
+
+const getFirstInsideZ = (world: MutableVoxelWorld, x: number) => {
+  for (let z = 0; z < world.size.z; z += 1) {
+    if (isInsideDefaultArenaFootprint(world.size, x, z)) {
+      return z;
+    }
+  }
+
+  return -1;
 };
 
 describe("MutableVoxelWorld", () => {
@@ -283,20 +297,34 @@ describe("MutableVoxelWorld", () => {
   it("keeps the default arena invariants intact", () => {
     const world = new MutableVoxelWorld(createDefaultArenaMap());
     const summitBounds = getDefaultArenaSummitBounds(world.size);
+    const pondBounds = getDefaultArenaPondBounds(world.size);
+    const topEdgeHeights = [8, 12, 16, 20, 24, 28, 32, 36].map((x) => world.getTopSolidY(x, 4));
+    const topEdgeFrontier = [8, 12, 16, 20, 24, 28, 32, 36].map((x) => getFirstInsideZ(world, x));
 
     expect(world.listSpawns().length).toBeGreaterThanOrEqual(4);
     expect(world.size).toEqual({ x: 80, y: 32, z: 80 });
     expect(world.boundary.fallY).toBe(-1);
+    expect(Array.from({ length: world.size.x }, (_, x) => world.getTopSolidY(x, 0)).every((topY) => topY < 0)).toBe(true);
+    expect(Array.from({ length: world.size.x }, (_, x) => world.getTopWaterY(x, 0)).every((topY) => topY === DEFAULT_WATERLINE_Y)).toBe(true);
+    expect(Array.from({ length: world.size.z }, (_, z) => world.getTopSolidY(0, z)).every((topY) => topY < 0)).toBe(true);
+    expect(Array.from({ length: world.size.z }, (_, z) => world.getTopWaterY(0, z)).every((topY) => topY === DEFAULT_WATERLINE_Y)).toBe(true);
     expect(world.getVoxelKind(0, DEFAULT_GROUND_TOP_Y, 0)).toBeUndefined();
     expect(world.getVoxelKind(16, DEFAULT_GROUND_TOP_Y, 16)).toBe("ground");
     expect(world.getTopSolidY(16, 16)).toBe(DEFAULT_GROUND_TOP_Y);
-    expect(world.getTopSolidY(4, 40)).toBeGreaterThanOrEqual(DEFAULT_GROUND_TOP_Y + 4);
-    expect(world.getTopSolidY(4, 40)).toBeGreaterThan(world.getTopSolidY(6, 40));
-    expect(world.getTopSolidY(6, 40)).toBeGreaterThan(world.getTopSolidY(8, 40));
-    expect(world.getTopSolidY(8, 40)).toBeGreaterThanOrEqual(world.getTopSolidY(10, 40));
+    expect(new Set(topEdgeHeights).size).toBeGreaterThan(1);
+    expect(new Set(topEdgeFrontier).size).toBeGreaterThan(1);
     expect(world.getTopSolidY(40, 40)).toBe(DEFAULT_GROUND_TOP_Y + DEFAULT_MOUNTAIN_PEAK_RISE);
     expect(world.getTopSolidY(summitBounds.minX, summitBounds.minZ)).toBe(DEFAULT_GROUND_TOP_Y + DEFAULT_MOUNTAIN_PEAK_RISE);
+    expect(world.getTopSolidY(40, 22)).toBeGreaterThan(world.getTopSolidY(34, 22));
+    expect(world.getTopSolidY(40, 22)).toBeGreaterThan(world.getTopSolidY(46, 22));
     expect(world.getVoxelKind(16, DEFAULT_FOUNDATION_DEPTH, 16)).toBeUndefined();
+    expect(pondBounds).toEqual({ minX: 5, maxX: 13, minZ: 5, maxZ: 13 });
+    expect(world.getVoxelKind(9, WORLD_FLOOR_Y, 9)).toBe("ground");
+    expect(world.getTopGroundY(9, 9)).toBe(WORLD_FLOOR_Y);
+    expect(world.getTopGroundY(9, 11)).toBe(WORLD_FLOOR_Y);
+    expect(world.getTopWaterY(9, 9)).toBe(DEFAULT_WATERLINE_Y);
+    expect(world.getTopGroundY(9, 12)).toBe(DEFAULT_WATERLINE_Y - 2);
+    expect(world.getTopGroundY(9, 13)).toBe(DEFAULT_WATERLINE_Y - 1);
     expect(world.listSpawns().every((spawn) => spawn.x >= 0 && spawn.z >= 0)).toBe(true);
   });
 

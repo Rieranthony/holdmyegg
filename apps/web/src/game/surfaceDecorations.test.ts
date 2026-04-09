@@ -1,14 +1,19 @@
-import { MutableVoxelWorld, type MapDocumentV1, type VoxelCell } from "@out-of-bounds/map";
+import {
+  MutableVoxelWorld,
+  createDefaultArenaMap,
+  type MapDocumentV1,
+  type VoxelCell
+} from "@out-of-bounds/map";
 import { describe, expect, it } from "vitest";
 import { buildSurfaceDecorations } from "./surfaceDecorations";
 
-const getDecorationSpacing = (kind: string) => (kind === "grass" ? 1.55 : 1.95);
+const getDecorationSpacing = (kind: string) => (kind === "grass" ? 1.6 : 2.02);
 
 const createFlatArenaDocument = (): MapDocumentV1 => {
   const voxels: VoxelCell[] = [];
 
-  for (let x = 0; x < 12; x += 1) {
-    for (let z = 0; z < 12; z += 1) {
+  for (let x = 0; x < 20; x += 1) {
+    for (let z = 0; z < 20; z += 1) {
       voxels.push({ x, y: 0, z, kind: "ground" });
     }
   }
@@ -21,10 +26,10 @@ const createFlatArenaDocument = (): MapDocumentV1 => {
       createdAt: "2026-04-04T00:00:00.000Z",
       updatedAt: "2026-04-04T00:00:00.000Z"
     },
-    size: { x: 12, y: 12, z: 12 },
+    size: { x: 20, y: 12, z: 20 },
     boundary: { fallY: -1 },
     spawns: [{ id: "spawn-1", x: 2.5, y: 1.05, z: 2.5 }],
-    props: [{ id: "prop-1", kind: "tree-oak", x: 8, y: 1, z: 8 }],
+    props: [{ id: "prop-1", kind: "tree-oak", x: 12, y: 1, z: 12 }],
     voxels
   };
 };
@@ -39,7 +44,7 @@ describe("buildSurfaceDecorations", () => {
     expect(first).toEqual(second);
     expect(first.length).toBeGreaterThan(0);
     expect(first.some((decoration) => Math.floor(decoration.x) === 2 && Math.floor(decoration.z) === 2)).toBe(false);
-    expect(first.some((decoration) => Math.floor(decoration.x) >= 7 && Math.floor(decoration.x) <= 9 && Math.floor(decoration.z) >= 7 && Math.floor(decoration.z) <= 9)).toBe(false);
+    expect(first.some((decoration) => Math.floor(decoration.x) >= 11 && Math.floor(decoration.x) <= 13 && Math.floor(decoration.z) >= 11 && Math.floor(decoration.z) <= 13)).toBe(false);
     expect(
       first.every((decoration, index) =>
         first.slice(index + 1).every((other) =>
@@ -56,10 +61,24 @@ describe("buildSurfaceDecorations", () => {
     document.voxels.push({ x: 5, y: 2, z: 5, kind: "water" });
     const world = new MutableVoxelWorld(document);
     const decorations = buildSurfaceDecorations(world);
-    const flowerCount = decorations.filter((decoration) => decoration.kind !== "grass").length;
+    const flowerDecorations = decorations.filter((decoration) => decoration.kind !== "grass");
+    const flowerCount = flowerDecorations.length;
+    const flowerKinds = new Set(flowerDecorations.map((decoration) => decoration.kind));
 
     expect(decorations.some((decoration) => Math.floor(decoration.x) === 5 && Math.floor(decoration.z) === 5)).toBe(false);
     expect(flowerCount).toBeGreaterThan(0);
-    expect(flowerCount / decorations.length).toBeGreaterThan(0.25);
+    expect(flowerCount / decorations.length).toBeGreaterThan(0.18);
+    expect(flowerCount / decorations.length).toBeLessThan(0.5);
+    expect(flowerKinds.size).toBeGreaterThanOrEqual(2);
+  });
+
+  it("adds visible flower patches to the default arena", () => {
+    const world = new MutableVoxelWorld(createDefaultArenaMap());
+    const decorations = buildSurfaceDecorations(world);
+    const flowerDecorations = decorations.filter((decoration) => decoration.kind !== "grass");
+
+    expect(decorations.length).toBeGreaterThan(120);
+    expect(flowerDecorations.length).toBeGreaterThan(50);
+    expect(new Set(flowerDecorations.map((decoration) => decoration.kind)).size).toBeGreaterThanOrEqual(4);
   });
 });

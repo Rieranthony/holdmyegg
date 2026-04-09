@@ -1,7 +1,6 @@
 import * as THREE from "three";
 import { describe, expect, it } from "vitest";
 import {
-  cloneTerrainChunkMaterials,
   getBlockRenderProfile,
   getTerrainChunkMaterials,
   getTerrainMaterialIndex,
@@ -61,20 +60,5 @@ describe("voxelMaterials", () => {
     expect(terrainMaterialsByKey.waterSide.transparent).toBe(true);
     expect(terrainMaterialsByKey.waterTop.depthWrite).toBe(false);
     expect(terrainMaterialsByKey.waterSide.depthWrite).toBe(false);
-  });
-
-  it("clones terrain chunk materials for chamber rendering without mutating the shared terrain set", () => {
-    const baseMaterials = getTerrainChunkMaterials();
-    const clones = cloneTerrainChunkMaterials();
-
-    expect(clones).toHaveLength(terrainMaterialOrder.length);
-    clones.forEach((material: THREE.MeshStandardMaterial, index: number) => {
-      expect(material).toBeInstanceOf(THREE.MeshStandardMaterial);
-      expect(material).not.toBe(baseMaterials[index]);
-      expect(material.map).toBe(baseMaterials[index]?.map ?? null);
-      expect(material.transparent).toBe(baseMaterials[index]?.transparent ?? false);
-      expect(material.opacity).toBe(baseMaterials[index]?.opacity ?? 1);
-      expect(material.depthWrite).toBe(baseMaterials[index]?.depthWrite ?? true);
-    });
   });
 });

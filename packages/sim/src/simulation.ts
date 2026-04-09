@@ -1,4 +1,13 @@
-import { MutableVoxelWorld, SEA_LEVEL_Y, createDefaultArenaMap, createVoxelKey, isInBounds, parseVoxelKey } from "@out-of-bounds/map";
+import {
+  DEFAULT_GROUND_TOP_Y,
+  DEFAULT_WATERLINE_Y,
+  MutableVoxelWorld,
+  WORLD_FLOOR_Y,
+  createDefaultArenaMap,
+  createVoxelKey,
+  isInBounds,
+  parseVoxelKey
+} from "@out-of-bounds/map";
 import type { BlockKind, DetachedVoxelComponent, MapDocumentV1, Vec3i, VoxelCell } from "@out-of-bounds/map";
 import type {
   AuthoritativeEggScatterDebrisState,
@@ -218,6 +227,7 @@ interface SimSkyDrop {
 
 interface SimWaterFloodState extends WaterFloodState {
   breachSeedKeys: Set<string>;
+  autoFloodVoxelKeys: Set<string>;
 }
 
 type NpcArchetype = "hunter" | "opportunist" | "forager";
@@ -439,12 +449,14 @@ export class OutOfBoundsSimulation {
     fixedStepClampedFrames: 0,
     fixedStepDroppedMs: 0
   };
+  private waterlineY = DEFAULT_WATERLINE_Y;
   private waterFlood: SimWaterFloodState = {
     active: false,
-    breachLevelY: SEA_LEVEL_Y,
-    currentLevelY: SEA_LEVEL_Y,
-    targetLevelY: SEA_LEVEL_Y,
-    breachSeedKeys: new Set()
+    breachLevelY: DEFAULT_WATERLINE_Y,
+    currentLevelY: DEFAULT_WATERLINE_Y,
+    targetLevelY: DEFAULT_WATERLINE_Y,
+    breachSeedKeys: new Set(),
+    autoFloodVoxelKeys: new Set()
   };
 
   constructor(config: Partial<SimulationConfig> = {}) {
@@ -452,6 +464,7 @@ export class OutOfBoundsSimulation {
       ...defaultSimulationConfig,
       ...config
     };
+    this.waterlineY = this.deriveWaterlineY();
     this.waterFlood = this.createWaterFloodState();
   }
 
@@ -486,6 +499,7 @@ export class OutOfBoundsSimulation {
     this.performanceDiagnostics.fixedStepClampedFrames = 0;
     this.performanceDiagnostics.fixedStepDroppedMs = 0;
     this.world = new MutableVoxelWorld(mapDocument);
+    this.waterlineY = this.deriveWaterlineY();
     this.waterFlood = this.createWaterFloodState();
     this.invalidatePlayerCollection();
     this.invalidateFallingClusterCollection();
@@ -1820,7 +1834,9 @@ export class OutOfBoundsSimulation {
     }
 
     this.addDirtyChunkKeys(this.world.removeVoxels(voxels));
-    this.refreshWaterFloodAfterTerrainRemoval(voxels);
+    if (source !== "water_flood") {
+      this.refreshWaterFloodAfterTerrainRemoval(voxels);
+    }
     this.queueTerrainChanges(source, "remove", voxels, null);
     this.queueTerrainChangedEvent(source, voxels.length);
   }
@@ -1837,7 +1853,7 @@ export class OutOfBoundsSimulation {
     if (
       this.waterFlood.active &&
       source !== "water_flood" &&
-      voxels.some((voxel) => voxel.y === SEA_LEVEL_Y && voxel.kind !== "water")
+      voxels.some((voxel) => this.isWithinWaterFloodBand(voxel.y) && voxel.kind !== "water")
     ) {
       this.fillWaterFloodReachableCells();
     }
@@ -3054,6 +3070,11 @@ export class OutOfBoundsSimulation {
   }
 
   private resolveOutOfBounds(player: SimPlayer) {
+    if (this.isPlayerAtDeepWaterBottom(player)) {
+      this.handleRingOut(player, false);
+      return;
+    }
+
     if (player.position.y < this.world.boundary.fallY) {
       this.handleRingOut(player, false);
       return;
@@ -3270,7 +3291,7 @@ export class OutOfBoundsSimulation {
       for (let y = Math.max(0, Math.floor(center.y - radius)); y <= Math.min(this.world.size.y - 1, Math.ceil(center.y + radius)); y += 1) {
         for (let z = Math.max(0, Math.floor(center.z - radius)); z <= Math.min(this.world.size.z - 1, Math.ceil(center.z + radius)); z += 1) {
           const voxel = this.world.getVoxel(x, y, z);
-          if (!voxel) {
+          if (!voxel || voxel.kind === "water") {
             continue;
           }
 
@@ -5148,23 +5169,50 @@ export class OutOfBoundsSimulation {
   private createWaterFloodState(): SimWaterFloodState {
     return {
       active: false,
-      breachLevelY: SEA_LEVEL_Y,
-      currentLevelY: SEA_LEVEL_Y,
-      targetLevelY: SEA_LEVEL_Y,
-      breachSeedKeys: new Set()
+      breachLevelY: this.waterlineY,
+      currentLevelY: this.waterlineY,
+      targetLevelY: this.waterlineY,
+      breachSeedKeys: new Set(),
+      autoFloodVoxelKeys: new Set()
     };
   }
 
+  private deriveWaterlineY() {
+    const spawns = this.world.listSpawns();
+    let baselineSurfaceTopY = Number.POSITIVE_INFINITY;
+
+    for (const spawn of spawns) {
+      const topBlockingY = this.world.getTopBlockingY(
+        clamp(Math.floor(spawn.x), 0, this.world.size.x - 1),
+        clamp(Math.floor(spawn.z), 0, this.world.size.z - 1)
+      );
+      if (topBlockingY >= 0) {
+        baselineSurfaceTopY = Math.min(baselineSurfaceTopY, topBlockingY);
+      }
+    }
+
+    const fallbackSurfaceTopY = Math.min(DEFAULT_GROUND_TOP_Y, this.world.size.y - 1);
+    const surfaceTopY = Number.isFinite(baselineSurfaceTopY)
+      ? baselineSurfaceTopY
+      : fallbackSurfaceTopY;
+
+    return clamp(surfaceTopY - 1, WORLD_FLOOR_Y, this.world.size.y - 1);
+  }
+
+  private isWithinWaterFloodBand(y: number) {
+    return y >= WORLD_FLOOR_Y && y <= this.waterlineY;
+  }
+
   private triggerWaterFloodAt(voxel: Vec3i) {
-    if (voxel.y !== SEA_LEVEL_Y) {
+    if (!this.isWithinWaterFloodBand(voxel.y)) {
       return false;
     }
 
     this.waterFlood.active = true;
-    this.waterFlood.breachLevelY = SEA_LEVEL_Y;
-    this.waterFlood.currentLevelY = SEA_LEVEL_Y;
-    this.waterFlood.targetLevelY = SEA_LEVEL_Y;
-    this.waterFlood.breachSeedKeys.add(createVoxelKey(voxel.x, SEA_LEVEL_Y, voxel.z));
+    this.waterFlood.breachLevelY = this.waterlineY;
+    this.waterFlood.currentLevelY = this.waterlineY;
+    this.waterFlood.targetLevelY = this.waterlineY;
+    this.waterFlood.breachSeedKeys.add(createVoxelKey(voxel.x, voxel.y, voxel.z));
     return true;
   }
 
@@ -5199,75 +5247,163 @@ export class OutOfBoundsSimulation {
 
     const queue: Vec3i[] = [];
     const visited = new Set<string>();
-    const fillsByKey = new Map<string, VoxelCell>();
     const nextSeedKeys = new Set<string>();
+    const nextAutoFloodKeys = new Set<string>();
+    const previousAutoFloodKeys = new Set(this.waterFlood.autoFloodVoxelKeys);
 
-    const enqueue = (x: number, z: number) => {
-      if (!isInBounds(this.world.size, x, SEA_LEVEL_Y, z)) {
+    const enqueue = (x: number, y: number, z: number) => {
+      if (!isInBounds(this.world.size, x, y, z) || !this.isWithinWaterFloodBand(y)) {
         return;
       }
 
-      const key = createVoxelKey(x, SEA_LEVEL_Y, z);
+      const key = createVoxelKey(x, y, z);
       if (visited.has(key)) {
         return;
       }
 
       visited.add(key);
-      queue.push({ x, y: SEA_LEVEL_Y, z });
+      queue.push({ x, y, z });
     };
 
     for (let x = 0; x < this.world.size.x; x += 1) {
-      for (let z = 0; z < this.world.size.z; z += 1) {
-        if (this.world.hasWater(x, SEA_LEVEL_Y, z)) {
-          enqueue(x, z);
+      for (let y = WORLD_FLOOR_Y; y <= this.waterlineY; y += 1) {
+        for (let z = 0; z < this.world.size.z; z += 1) {
+          if (this.world.hasWater(x, y, z)) {
+            enqueue(x, y, z);
+          }
         }
       }
     }
 
     for (const seedKey of this.waterFlood.breachSeedKeys) {
       const seed = parseVoxelKey(seedKey);
-      if (seed.y !== SEA_LEVEL_Y || !isInBounds(this.world.size, seed.x, SEA_LEVEL_Y, seed.z)) {
+      if (!this.isWithinWaterFloodBand(seed.y) || !isInBounds(this.world.size, seed.x, seed.y, seed.z)) {
         continue;
       }
 
-      const occupiedKind = this.world.getOccupiedKind(seed.x, SEA_LEVEL_Y, seed.z);
+      const occupiedKind = this.world.getOccupiedKind(seed.x, seed.y, seed.z);
       if (occupiedKind && occupiedKind !== "water") {
         continue;
       }
 
-      const normalizedSeedKey = createVoxelKey(seed.x, SEA_LEVEL_Y, seed.z);
+      const normalizedSeedKey = createVoxelKey(seed.x, seed.y, seed.z);
       nextSeedKeys.add(normalizedSeedKey);
-      enqueue(seed.x, seed.z);
+      enqueue(seed.x, seed.y, seed.z);
     }
     this.waterFlood.breachSeedKeys = nextSeedKeys;
 
     while (queue.length > 0) {
       const current = queue.pop()!;
+      const key = createVoxelKey(current.x, current.y, current.z);
       const occupiedKind = this.world.getOccupiedKind(current.x, current.y, current.z);
       const isWater = occupiedKind === "water";
       if (occupiedKind && !isWater) {
         continue;
       }
 
-      if (!isWater) {
-        fillsByKey.set(createVoxelKey(current.x, current.y, current.z), {
-          x: current.x,
-          y: current.y,
-          z: current.z,
+      if (isWater) {
+        if (previousAutoFloodKeys.has(key)) {
+          nextAutoFloodKeys.add(key);
+        }
+      } else {
+        nextAutoFloodKeys.add(key);
+      }
+
+      enqueue(current.x + 1, current.y, current.z);
+      enqueue(current.x - 1, current.y, current.z);
+      enqueue(current.x, current.y + 1, current.z);
+      enqueue(current.x, current.y - 1, current.z);
+      enqueue(current.x, current.y, current.z + 1);
+      enqueue(current.x, current.y, current.z - 1);
+    }
+
+    const removals: Vec3i[] = [];
+    for (const key of previousAutoFloodKeys) {
+      if (nextAutoFloodKeys.has(key)) {
+        continue;
+      }
+
+      const position = parseVoxelKey(key);
+      if (this.world.hasWater(position.x, position.y, position.z)) {
+        removals.push(position);
+      }
+    }
+
+    const fills: VoxelCell[] = [];
+    for (const key of nextAutoFloodKeys) {
+      if (previousAutoFloodKeys.has(key)) {
+        continue;
+      }
+
+      const position = parseVoxelKey(key);
+      if (!this.world.hasWater(position.x, position.y, position.z)) {
+        fills.push({
+          x: position.x,
+          y: position.y,
+          z: position.z,
           kind: "water"
         });
       }
-
-      enqueue(current.x + 1, current.z);
-      enqueue(current.x - 1, current.z);
-      enqueue(current.x, current.z + 1);
-      enqueue(current.x, current.z - 1);
     }
 
-    const fills = [...fillsByKey.values()];
+    this.waterFlood.autoFloodVoxelKeys = nextAutoFloodKeys;
+
+    if (removals.length > 0) {
+      this.removeTerrainVoxels(removals, "water_flood");
+    }
+
     if (fills.length > 0) {
       this.setTerrainVoxels(fills, "water_flood");
     }
+  }
+
+  private getDeepWaterBottomY(x: number, z: number) {
+    const topWaterY = this.world.getTopWaterY(x, z);
+    if (topWaterY < WORLD_FLOOR_Y) {
+      return null;
+    }
+
+    const bottomWaterY = Math.max(WORLD_FLOOR_Y, this.world.getTopBlockingY(x, z) + 1);
+    const waterDepth = topWaterY - bottomWaterY + 1;
+    return waterDepth >= 3 ? bottomWaterY : null;
+  }
+
+  private isPlayerAtDeepWaterBottom(player: SimPlayer) {
+    const minX = Math.floor(player.position.x - this.config.playerRadius + EPSILON);
+    const maxX = Math.floor(player.position.x + this.config.playerRadius - EPSILON);
+    const lowerBodyMinY = player.position.y + EPSILON;
+    const lowerBodyMaxY = Math.min(
+      player.position.y + 0.58,
+      player.position.y + this.config.playerHeight - EPSILON
+    );
+    const minZ = Math.floor(player.position.z - this.config.playerRadius + EPSILON);
+    const maxZ = Math.floor(player.position.z + this.config.playerRadius - EPSILON);
+
+    for (let x = minX; x <= maxX; x += 1) {
+      for (let z = minZ; z <= maxZ; z += 1) {
+        const closestX = clamp(player.position.x, x, x + 1);
+        const closestZ = clamp(player.position.z, z, z + 1);
+        const deltaX = player.position.x - closestX;
+        const deltaZ = player.position.z - closestZ;
+        if (deltaX * deltaX + deltaZ * deltaZ >= this.config.playerRadius * this.config.playerRadius - EPSILON) {
+          continue;
+        }
+
+        const bottomWaterY = this.getDeepWaterBottomY(x, z);
+        if (bottomWaterY === null) {
+          continue;
+        }
+
+        if (
+          lowerBodyMaxY > bottomWaterY + EPSILON &&
+          lowerBodyMinY < bottomWaterY + 1 - EPSILON
+        ) {
+          return true;
+        }
+      }
+    }
+
+    return false;
   }
 
   private isPlayerInWater(player: SimPlayer) {

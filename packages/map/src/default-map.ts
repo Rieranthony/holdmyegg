@@ -9,14 +9,26 @@ const DEFAULT_ARENA_CORNER_RADIUS_RATIO = 0.225;
 const DEFAULT_DEFAULT_SPAWN_PAD_RATIO = 0.2;
 const DEFAULT_MOUNTAIN_FALLOFF_RADIUS = 16;
 const DEFAULT_ARENA_RIM_WIDTH = 11;
+const DEFAULT_BORDER_WIDTH_VARIATION = 3;
+const DEFAULT_RIM_HEIGHT_VARIATION = 1.15;
+const DEFAULT_OUTER_WATER_MARGIN = 4;
 const DEFAULT_TREE_COUNT = 42;
 const DEFAULT_TREE_MIN_SPACING = 4.5;
 const DEFAULT_TREE_SPAWN_BUFFER = 2;
 const DEFAULT_TREE_SUMMIT_BUFFER = 4;
+const DEFAULT_TREE_POND_BUFFER = 2;
+const DEFAULT_TREE_SIDE_MOUNTAIN_BUFFER = 2;
 const TREE_EDGE_WEIGHT_DISTANCE = 20;
+const DEFAULT_POND_CENTER_RATIO = 0.1125;
+const DEFAULT_POND_HALF_SIZE = 4;
+const DEFAULT_POND_SHORE_BUFFER = 1;
+const DEFAULT_SIDE_MOUNTAIN_HALF_WIDTH = 5.5;
+const DEFAULT_SIDE_MOUNTAIN_RISE = 5;
 
 const snapToVoxelCenter = (value: number) => Math.round(value - 0.5) + 0.5;
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+const lerp = (start: number, end: number, alpha: number) => start + (end - start) * alpha;
+const smoothstep01 = (value: number) => value * value * (3 - 2 * value);
 
 const getArenaSpawnOffset = (axisSize: number) => {
   if (axisSize <= 0) {
@@ -66,8 +78,10 @@ export const DEFAULT_ARENA_DEPTH = MAX_PLAYABLE_ARENA_DEPTH;
 export const DEFAULT_FOUNDATION_DEPTH = 5;
 export const DEFAULT_SURFACE_Y = DEFAULT_FOUNDATION_DEPTH;
 export const DEFAULT_GROUND_TOP_Y = DEFAULT_SURFACE_Y - 1;
-export const SEA_LEVEL_Y = 0;
-export const DEFAULT_WATER_TABLE_Y = SEA_LEVEL_Y;
+export const WORLD_FLOOR_Y = 0;
+export const SEA_LEVEL_Y = WORLD_FLOOR_Y;
+export const DEFAULT_WATERLINE_Y = Math.max(WORLD_FLOOR_Y, DEFAULT_GROUND_TOP_Y - 1);
+export const DEFAULT_WATER_TABLE_Y = DEFAULT_WATERLINE_Y;
 export const DEFAULT_BOUNDARY_HEIGHT = 4;
 export const DEFAULT_SUMMIT_PAD_SIZE = 6;
 export const DEFAULT_SPAWN_PAD_SIZE = 5;
@@ -81,7 +95,50 @@ const getRoundedCornerRadius = (size: MapDocumentV1["size"]) => {
   return clamp(Math.round(Math.min(size.x, size.z) * DEFAULT_ARENA_CORNER_RADIUS_RATIO), 8, maxRadius);
 };
 
-const getFootprintSignedDistance = (size: MapDocumentV1["size"], x: number, z: number) => {
+const normalizedHash = (value: string) => hashString(value) / 4294967295;
+
+const sampleSignedNoise = (
+  seed: string,
+  x: number,
+  z: number,
+  coarseScale: number,
+  detailScale: number
+) => {
+  const sampleLayer = (layerSeed: string, scale: number) => {
+    const scaledX = x / scale;
+    const scaledZ = z / scale;
+    const originX = Math.floor(scaledX);
+    const originZ = Math.floor(scaledZ);
+    const localX = smoothstep01(scaledX - originX);
+    const localZ = smoothstep01(scaledZ - originZ);
+
+    const sample = (sampleX: number, sampleZ: number) =>
+      normalizedHash(`${layerSeed}:${sampleX}:${sampleZ}`) * 2 - 1;
+
+    const top = lerp(sample(originX, originZ), sample(originX + 1, originZ), localX);
+    const bottom = lerp(sample(originX, originZ + 1), sample(originX + 1, originZ + 1), localX);
+    return lerp(top, bottom, localZ);
+  };
+
+  return clamp(
+    sampleLayer(`${seed}:coarse`, coarseScale) * 0.72 +
+      sampleLayer(`${seed}:detail`, detailScale) * 0.28,
+    -1,
+    1
+  );
+};
+
+const distanceToRect = (
+  x: number,
+  z: number,
+  bounds: { minX: number; maxX: number; minZ: number; maxZ: number }
+) => {
+  const deltaX = Math.max(bounds.minX - x, 0, x - bounds.maxX);
+  const deltaZ = Math.max(bounds.minZ - z, 0, z - bounds.maxZ);
+  return Math.hypot(deltaX, deltaZ);
+};
+
+const getBaseFootprintSignedDistance = (size: MapDocumentV1["size"], x: number, z: number) => {
   const radius = getRoundedCornerRadius(size);
   const centerX = x + 0.5 - size.x / 2;
   const centerZ = z + 0.5 - size.z / 2;
@@ -106,6 +163,18 @@ export const getDefaultArenaSummitBounds = (size: MapDocumentV1["size"]) => {
   };
 };
 
+const getDefaultArenaNorthEntryColumn = (size: MapDocumentV1["size"]) => {
+  const centerX = clamp(Math.floor(size.x / 2), 0, Math.max(0, size.x - 1));
+
+  for (let z = 0; z < size.z; z += 1) {
+    if (isInsideDefaultArenaFootprint(size, centerX, z)) {
+      return { x: centerX, z };
+    }
+  }
+
+  return null;
+};
+
 const isInsideRect = (
   bounds: ReturnType<typeof getDefaultArenaSummitBounds> | { minX: number; maxX: number; minZ: number; maxZ: number },
   x: number,
@@ -122,6 +191,126 @@ const isInsideExpandedRect = (
   x <= bounds.maxX + buffer &&
   z >= bounds.minZ - buffer &&
   z <= bounds.maxZ + buffer;
+
+export const getDefaultArenaPondBounds = (size: MapDocumentV1["size"]) => {
+  const centerX = clamp(
+    Math.round(size.x * DEFAULT_POND_CENTER_RATIO),
+    DEFAULT_POND_HALF_SIZE + 3,
+    Math.max(DEFAULT_POND_HALF_SIZE + 3, Math.floor(size.x / 2) - DEFAULT_POND_HALF_SIZE - 5)
+  );
+  const centerZ = clamp(
+    Math.round(size.z * DEFAULT_POND_CENTER_RATIO),
+    DEFAULT_POND_HALF_SIZE + 3,
+    Math.max(DEFAULT_POND_HALF_SIZE + 3, Math.floor(size.z / 2) - DEFAULT_POND_HALF_SIZE - 5)
+  );
+
+  return {
+    minX: centerX - DEFAULT_POND_HALF_SIZE,
+    maxX: centerX + DEFAULT_POND_HALF_SIZE,
+    minZ: centerZ - DEFAULT_POND_HALF_SIZE,
+    maxZ: centerZ + DEFAULT_POND_HALF_SIZE
+  };
+};
+
+const getDistanceToSegment = (
+  pointX: number,
+  pointZ: number,
+  startX: number,
+  startZ: number,
+  endX: number,
+  endZ: number
+) => {
+  const segmentX = endX - startX;
+  const segmentZ = endZ - startZ;
+  const segmentLengthSquared = segmentX * segmentX + segmentZ * segmentZ;
+
+  if (segmentLengthSquared <= Number.EPSILON) {
+    return {
+      distance: Math.hypot(pointX - startX, pointZ - startZ),
+      t: 0
+    };
+  }
+
+  const t = clamp(
+    ((pointX - startX) * segmentX + (pointZ - startZ) * segmentZ) / segmentLengthSquared,
+    0,
+    1
+  );
+  const closestX = startX + segmentX * t;
+  const closestZ = startZ + segmentZ * t;
+  return {
+    distance: Math.hypot(pointX - closestX, pointZ - closestZ),
+    t
+  };
+};
+
+const getSideMountainMetrics = (size: MapDocumentV1["size"], x: number, z: number) => {
+  const northEntry = getDefaultArenaNorthEntryColumn(size);
+  if (!northEntry) {
+    return null;
+  }
+
+  const summitBounds = getDefaultArenaSummitBounds(size);
+  return getDistanceToSegment(
+    x + 0.5,
+    z + 0.5,
+    northEntry.x + 0.5,
+    northEntry.z + 0.5,
+    northEntry.x + 0.5,
+    summitBounds.minZ + 0.5
+  );
+};
+
+const getSideMountainRiseAt = (size: MapDocumentV1["size"], x: number, z: number) => {
+  const metrics = getSideMountainMetrics(size, x, z);
+  if (!metrics || metrics.distance >= DEFAULT_SIDE_MOUNTAIN_HALF_WIDTH) {
+    return 0;
+  }
+
+  const crossSection = smoothstep01(clamp(1 - metrics.distance / DEFAULT_SIDE_MOUNTAIN_HALF_WIDTH, 0, 1));
+  const startFade = smoothstep01(clamp(metrics.t / 0.12, 0, 1));
+  const endFade = smoothstep01(clamp((1 - metrics.t) / 0.1, 0, 1));
+  const alongRidge = Math.min(startFade, endFade) * lerp(0.76, 1, metrics.t);
+
+  return Math.max(0, Math.round(DEFAULT_SIDE_MOUNTAIN_RISE * crossSection * alongRidge));
+};
+
+const isInsideSideMountainBuffer = (size: MapDocumentV1["size"], x: number, z: number, buffer: number) => {
+  const metrics = getSideMountainMetrics(size, x, z);
+  return metrics !== null && metrics.distance <= DEFAULT_SIDE_MOUNTAIN_HALF_WIDTH + buffer;
+};
+
+const getProtectedBorderNoiseFade = (size: MapDocumentV1["size"], x: number, z: number) => {
+  const summitBounds = getDefaultArenaSummitBounds(size);
+  const pondBounds = getDefaultArenaPondBounds(size);
+  const spawnDistance = Math.min(
+    ...getDefaultArenaSpawnPadBounds(size).map((bounds) => distanceToRect(x, z, bounds))
+  );
+  const summitDistance = distanceToRect(x, z, summitBounds);
+  const pondDistance = distanceToRect(x, z, pondBounds);
+
+  return Math.min(
+    smoothstep01(clamp(spawnDistance / 5, 0, 1)),
+    smoothstep01(clamp(summitDistance / 7, 0, 1)),
+    smoothstep01(clamp(pondDistance / (4 + DEFAULT_POND_SHORE_BUFFER), 0, 1))
+  );
+};
+
+const getFootprintSignedDistance = (size: MapDocumentV1["size"], x: number, z: number) => {
+  const baseDistance = getBaseFootprintSignedDistance(size, x, z);
+  const borderNoise =
+    sampleSignedNoise(
+      `default-arena-footprint:${size.x}:${size.z}`,
+      x + 0.5,
+      z + 0.5,
+      10.5,
+      5.25
+    ) *
+    DEFAULT_BORDER_WIDTH_VARIATION *
+    getProtectedBorderNoiseFade(size, x, z);
+
+  return baseDistance + DEFAULT_OUTER_WATER_MARGIN - borderNoise;
+};
 
 const getDefaultSpawnPadCenters = (size: MapDocumentV1["size"]) => {
   const centerX = clamp(Math.round(size.x * DEFAULT_DEFAULT_SPAWN_PAD_RATIO), 2, Math.max(2, size.x - 3));
@@ -188,7 +377,40 @@ const getRimRiseAt = (size: MapDocumentV1["size"], x: number, z: number) => {
 
   const normalized = 1 - inwardDistance / DEFAULT_ARENA_RIM_WIDTH;
   const eased = normalized * normalized * (3 - 2 * normalized);
-  return Math.max(0, Math.round(DEFAULT_RIM_PEAK_RISE * eased));
+  const rimNoise =
+    Math.round(
+      sampleSignedNoise(
+        `default-arena-rim:${size.x}:${size.z}`,
+        x + 0.5,
+        z + 0.5,
+        9,
+        4.5
+      ) *
+        DEFAULT_RIM_HEIGHT_VARIATION *
+        getProtectedBorderNoiseFade(size, x, z)
+    );
+  return Math.max(0, Math.round(DEFAULT_RIM_PEAK_RISE * eased) + rimNoise);
+};
+
+const getPondFloorY = (size: MapDocumentV1["size"], x: number, z: number) => {
+  const bounds = getDefaultArenaPondBounds(size);
+  if (!isInsideRect(bounds, x, z)) {
+    return null;
+  }
+
+  const centerX = (bounds.minX + bounds.maxX) / 2;
+  const centerZ = (bounds.minZ + bounds.maxZ) / 2;
+  const ringDistance = Math.max(Math.abs(x - centerX), Math.abs(z - centerZ));
+
+  if (ringDistance <= 2) {
+    return WORLD_FLOOR_Y;
+  }
+
+  if (ringDistance <= 3) {
+    return Math.max(WORLD_FLOOR_Y, DEFAULT_WATERLINE_Y - 2);
+  }
+
+  return Math.max(WORLD_FLOOR_Y, DEFAULT_WATERLINE_Y - 1);
 };
 
 export const getDefaultArenaColumnTopY = (size: MapDocumentV1["size"], x: number, z: number) => {
@@ -200,7 +422,13 @@ export const getDefaultArenaColumnTopY = (size: MapDocumentV1["size"], x: number
     return DEFAULT_GROUND_TOP_Y;
   }
 
-  return DEFAULT_GROUND_TOP_Y + getMountainRiseAt(size, x, z) + getRimRiseAt(size, x, z);
+  const surfaceTopY =
+    DEFAULT_GROUND_TOP_Y +
+    getMountainRiseAt(size, x, z) +
+    getSideMountainRiseAt(size, x, z) +
+    getRimRiseAt(size, x, z);
+  const pondFloorY = getPondFloorY(size, x, z);
+  return pondFloorY === null ? surfaceTopY : Math.min(surfaceTopY, pondFloorY);
 };
 
 const isBoundaryColumn = (size: MapDocumentV1["size"], x: number, z: number) =>
@@ -306,6 +534,7 @@ export const normalizeArenaBudgetMapDocument = (document: MapDocumentV1): MapDoc
 const buildDefaultTreeSeedCandidates = (size: MapDocumentV1["size"]) => {
   const summitBounds = getDefaultArenaSummitBounds(size);
   const spawnPadBounds = getDefaultArenaSpawnPadBounds(size);
+  const pondBounds = getDefaultArenaPondBounds(size);
   const treeHeight = getMapPropHeight("tree-oak");
   const candidates: Array<{ x: number; y: number; z: number; weight: number }> = [];
 
@@ -321,6 +550,14 @@ const buildDefaultTreeSeedCandidates = (size: MapDocumentV1["size"]) => {
       }
 
       if (isInsideExpandedRect(summitBounds, x, z, DEFAULT_TREE_SUMMIT_BUFFER)) {
+        continue;
+      }
+
+      if (isInsideExpandedRect(pondBounds, x, z, DEFAULT_TREE_POND_BUFFER + DEFAULT_POND_SHORE_BUFFER)) {
+        continue;
+      }
+
+      if (isInsideSideMountainBuffer(size, x, z, DEFAULT_TREE_SIDE_MOUNTAIN_BUFFER)) {
         continue;
       }
 
@@ -427,14 +664,20 @@ const buildDefaultArenaTemplate = (): MapDocumentV1 => {
     for (let z = 0; z < size.z; z += 1) {
       const topY = getDefaultArenaColumnTopY(size, x, z);
       if (topY < 0) {
-        for (let y = 0; y <= DEFAULT_WATER_TABLE_Y; y += 1) {
+        for (let y = WORLD_FLOOR_Y; y <= DEFAULT_WATERLINE_Y; y += 1) {
           pushVoxel(x, y, z, "water");
         }
         continue;
       }
 
-      for (let y = 0; y <= topY; y += 1) {
+      for (let y = WORLD_FLOOR_Y; y <= topY; y += 1) {
         pushVoxel(x, y, z, "ground");
+      }
+
+      if (topY < DEFAULT_WATERLINE_Y) {
+        for (let y = topY + 1; y <= DEFAULT_WATERLINE_Y; y += 1) {
+          pushVoxel(x, y, z, "water");
+        }
       }
 
       if (!isBoundaryColumn(size, x, z)) {

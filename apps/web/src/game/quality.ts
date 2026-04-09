@@ -23,11 +23,14 @@ export interface RendererQualityProfile {
   gpu: TierResult | null;
 }
 
+export const getDecorationDensityForQualityTier = (tier: QualityTier) =>
+  tier === "high" ? 1 : tier === "medium" ? 0.8 : 0.56;
+
 const highProfile = (gpu: TierResult | null): RendererQualityProfile => ({
   tier: "high",
   antialias: true,
   dpr: [1, 1.5],
-  decorationDensity: 1,
+  decorationDensity: getDecorationDensityForQualityTier("high"),
   enableClouds: true,
   skyBirdCount: 3,
   enableAtmosphereSky: true,
@@ -45,7 +48,7 @@ const mediumProfile = (gpu: TierResult | null): RendererQualityProfile => ({
   tier: "medium",
   antialias: false,
   dpr: [1, 1.25],
-  decorationDensity: 0.68,
+  decorationDensity: getDecorationDensityForQualityTier("medium"),
   enableClouds: true,
   skyBirdCount: 2,
   enableAtmosphereSky: true,
@@ -63,7 +66,7 @@ const lowProfile = (gpu: TierResult | null): RendererQualityProfile => ({
   tier: "low",
   antialias: false,
   dpr: [1, 1],
-  decorationDensity: 0.4,
+  decorationDensity: getDecorationDensityForQualityTier("low"),
   enableClouds: false,
   skyBirdCount: 1,
   enableAtmosphereSky: false,

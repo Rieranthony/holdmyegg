@@ -156,6 +156,6 @@ describe("meshTerrainChunk", () => {
     expect(totalVoxels).toBeLessThanOrEqual(45_000);
     expect(meshedTriangles).toBeLessThanOrEqual(cubeTriangles * 0.2);
     expect(drawCalls).toBeGreaterThan(chunks.length);
-    expect(drawCalls).toBeLessThanOrEqual(90);
+    expect(drawCalls).toBeLessThanOrEqual(100);
   });
 });
