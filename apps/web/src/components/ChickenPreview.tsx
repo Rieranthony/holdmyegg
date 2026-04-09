@@ -286,9 +286,9 @@ function ChickenPreviewModel({
     const tauntAnchor = tauntAnchorRef.current;
     if (tauntAnchor) {
       tauntAnchor.position.set(
-        0.84,
-        avatar.position.y + chickenModelRig.headPivotY + poseState.headYOffset + 0.44,
-        0.18
+        0,
+        avatar.position.y + chickenModelRig.headPivotY + poseState.headYOffset + 0.56,
+        0.12
       );
     }
     leftLeg.rotation.x = poseState.leftLegPitch;

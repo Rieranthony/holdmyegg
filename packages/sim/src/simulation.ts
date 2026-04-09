@@ -1,4 +1,4 @@
-import { MutableVoxelWorld, createDefaultArenaMap, isInBounds } from "@out-of-bounds/map";
+import { MutableVoxelWorld, SEA_LEVEL_Y, createDefaultArenaMap, createVoxelKey, isInBounds, parseVoxelKey } from "@out-of-bounds/map";
 import type { BlockKind, DetachedVoxelComponent, MapDocumentV1, Vec3i, VoxelCell } from "@out-of-bounds/map";
 import type {
   AuthoritativeEggScatterDebrisState,
@@ -46,16 +46,13 @@ import type {
   TerrainDeltaSource,
   Vector2,
   Vector3,
+  WaterFloodState,
   VoxelBurstStyle,
   VoxelBurstViewState
 } from "./types";
 import { defaultSimulationConfig } from "./config";
 import { getHudEggStatus } from "./eggAvailability";
 import { getGroundedEggLaunchVelocity } from "./eggLaunch";
-import {
-  createSpaceChallengeRequiredHits,
-  createSpaceChallengeTargetKey
-} from "./spaceChallenge";
 
 const EPSILON = 0.0001;
 const RING_OUT_FALL_CULL_DEPTH = 12;
@@ -105,6 +102,13 @@ const EGG_GROUND_FRICTION_MULTIPLIER = 1.45;
 const EGG_WALL_BOUNCE_DAMPING = 0.72;
 const EGG_CEILING_BOUNCE_DAMPING = 0.82;
 const EGG_TAUNT_DURATION = 1.6;
+const WATER_MOVE_SPEED_MULTIPLIER = 0.58;
+const WATER_ACCELERATION_MULTIPLIER = 0.54;
+const WATER_HORIZONTAL_DRAG = 10;
+const WATER_JUMP_SPEED_MULTIPLIER = 0.72;
+const WATER_EGG_DRAG = 7.5;
+const WATER_EGG_VERTICAL_DRAG = 4.2;
+const WATER_EGG_BOUNCE_MULTIPLIER = 0.4;
 const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
 
 interface SimPlayer {
@@ -210,6 +214,10 @@ interface SimSkyDrop {
   offsetY: number;
   velocityY: number;
   damagedPlayerIds: Set<string>;
+}
+
+interface SimWaterFloodState extends WaterFloodState {
+  breachSeedKeys: Set<string>;
 }
 
 type NpcArchetype = "hunter" | "opportunist" | "forager";
@@ -431,12 +439,20 @@ export class OutOfBoundsSimulation {
     fixedStepClampedFrames: 0,
     fixedStepDroppedMs: 0
   };
+  private waterFlood: SimWaterFloodState = {
+    active: false,
+    breachLevelY: SEA_LEVEL_Y,
+    currentLevelY: SEA_LEVEL_Y,
+    targetLevelY: SEA_LEVEL_Y,
+    breachSeedKeys: new Set()
+  };
 
   constructor(config: Partial<SimulationConfig> = {}) {
     this.config = {
       ...defaultSimulationConfig,
       ...config
     };
+    this.waterFlood = this.createWaterFloodState();
   }
 
   reset(mode: GameMode, mapDocument: MapDocumentV1, options: SimulationResetOptions = {}) {
@@ -470,6 +486,7 @@ export class OutOfBoundsSimulation {
     this.performanceDiagnostics.fixedStepClampedFrames = 0;
     this.performanceDiagnostics.fixedStepDroppedMs = 0;
     this.world = new MutableVoxelWorld(mapDocument);
+    this.waterFlood = this.createWaterFloodState();
     this.invalidatePlayerCollection();
     this.invalidateFallingClusterCollection();
     this.invalidateEggCollection();
@@ -747,7 +764,7 @@ export class OutOfBoundsSimulation {
     }
 
     const kind = this.world.getVoxelKind(targetVoxel.x, targetVoxel.y, targetVoxel.z);
-    if (!kind) {
+    if (!kind || kind === "water") {
       return null;
     }
 
@@ -766,7 +783,7 @@ export class OutOfBoundsSimulation {
       invalidReason = "outOfRange";
     } else if (!isInBounds(this.world.size, placeVoxel.x, placeVoxel.y, placeVoxel.z)) {
       invalidReason = "outOfBounds";
-    } else if (this.world.hasSolid(placeVoxel.x, placeVoxel.y, placeVoxel.z)) {
+    } else if (this.world.hasOccupiedVoxel(placeVoxel.x, placeVoxel.y, placeVoxel.z)) {
       invalidReason = "occupied";
     } else if (this.isVoxelBlockedByAnyPlayer(placeVoxel)) {
       invalidReason = "blockedByPlayer";
@@ -919,7 +936,8 @@ export class OutOfBoundsSimulation {
       hazards: {
         fallingClusters,
         skyDrops,
-        eggScatterDebris
+        eggScatterDebris,
+        waterFlood: this.toWaterFloodState()
       },
       stats: {
         terrainRevision: this.world.getTerrainRevision()
@@ -941,6 +959,7 @@ export class OutOfBoundsSimulation {
       terrainRevision: match.terrainRevision,
       localPlayerId: match.localPlayerId,
       players,
+      waterFlood: this.toWaterFloodState(),
       fallingClusters: this.getFallingClusters(),
       eggs: this.getEggs(),
       eggScatterDebris: this.getEggScatterDebris(),
@@ -1005,6 +1024,7 @@ export class OutOfBoundsSimulation {
     this.updateVoxelBursts(dt);
     this.updateFallingClusters(dt);
     this.updateSkyDrops(dt);
+    this.updateWaterFlood(dt);
     this.resolvePlayerCollisions();
 
     for (const player of this.players.values()) {
@@ -1714,6 +1734,15 @@ export class OutOfBoundsSimulation {
     };
   }
 
+  private toWaterFloodState(): WaterFloodState {
+    return {
+      active: this.waterFlood.active,
+      breachLevelY: this.waterFlood.breachLevelY,
+      currentLevelY: this.waterFlood.currentLevelY,
+      targetLevelY: this.waterFlood.targetLevelY
+    };
+  }
+
   private getRanking() {
     const players = [...this.players.values()];
     players.sort((left, right) => {
@@ -1791,6 +1820,7 @@ export class OutOfBoundsSimulation {
     }
 
     this.addDirtyChunkKeys(this.world.removeVoxels(voxels));
+    this.refreshWaterFloodAfterTerrainRemoval(voxels);
     this.queueTerrainChanges(source, "remove", voxels, null);
     this.queueTerrainChangedEvent(source, voxels.length);
   }
@@ -1804,6 +1834,14 @@ export class OutOfBoundsSimulation {
     }
 
     this.addDirtyChunkKeys(this.world.setVoxels(voxels));
+    if (
+      this.waterFlood.active &&
+      source !== "water_flood" &&
+      voxels.some((voxel) => voxel.y === SEA_LEVEL_Y && voxel.kind !== "water")
+    ) {
+      this.fillWaterFloodReachableCells();
+    }
+
     for (const voxel of voxels) {
       this.pendingTerrainChanges.push({
         voxel: {
@@ -1954,6 +1992,7 @@ export class OutOfBoundsSimulation {
     const stunned = player.stunRemaining > EPSILON;
     const floatingInSpace = player.spacePhase === "float";
     const divingSuperBoom = player.spacePhase === "superBoomDive";
+    const inWater = this.isPlayerInWater(player);
     const jumpLockedBySpace = floatingInSpace || divingSuperBoom;
     const suppressGameplayActions = floatingInSpace || divingSuperBoom;
     if (stunned || jumpLockedBySpace) {
@@ -1971,13 +2010,15 @@ export class OutOfBoundsSimulation {
     const moveSpeed =
       floatingInSpace
         ? this.config.moveSpeed * SPACE_FLOAT_MOVE_SPEED_MULTIPLIER
-        : this.config.moveSpeed;
+        : this.config.moveSpeed * (inWater ? WATER_MOVE_SPEED_MULTIPLIER : 1);
     const desiredX = moveInput.x * moveSpeed;
     const desiredZ = moveInput.z * moveSpeed;
     const acceleration =
       floatingInSpace
         ? this.config.airAcceleration * SPACE_FLOAT_ACCELERATION_MULTIPLIER * dt
-        : (player.grounded ? this.config.groundAcceleration : this.config.airAcceleration) * dt;
+        : (player.grounded ? this.config.groundAcceleration : this.config.airAcceleration) *
+          (inWater ? WATER_ACCELERATION_MULTIPLIER : 1) *
+          dt;
     const airControl = floatingInSpace ? 1 : player.grounded ? 1 : this.config.airControl;
 
     player.velocity.x = approach(player.velocity.x, desiredX, acceleration * airControl);
@@ -1994,9 +2035,15 @@ export class OutOfBoundsSimulation {
       player.velocity.z = approach(player.velocity.z, 0, frictionAmount);
     }
 
+    if (inWater) {
+      const waterDrag = WATER_HORIZONTAL_DRAG * dt;
+      player.velocity.x = approach(player.velocity.x, 0, waterDrag);
+      player.velocity.z = approach(player.velocity.z, 0, waterDrag);
+    }
+
     let jumpedThisFrame = false;
     if (!stunned && !jumpLockedBySpace && command.jumpPressed && player.grounded) {
-      this.startGroundJump(player);
+      this.startGroundJump(player, inWater);
       jumpedThisFrame = true;
     }
 
@@ -2456,7 +2503,7 @@ export class OutOfBoundsSimulation {
       player.spacePhaseRemaining = 0;
       player.spaceTriggerArmed = true;
       if (player.jumpBufferRemaining > EPSILON && player.stunRemaining <= EPSILON) {
-        this.startGroundJump(player);
+        this.startGroundJump(player, this.isPlayerInWater(player));
       }
       return;
     }
@@ -2501,18 +2548,13 @@ export class OutOfBoundsSimulation {
     player.jetpackOutsideBoundsGrace = false;
     player.spacePhase = "float";
     player.spacePhaseRemaining = SPACE_FLOAT_DURATION;
-    player.spaceChallengeTargetKey = createSpaceChallengeTargetKey({
-      previousKey: player.spaceChallengePreviousKey,
-      random: () => this.nextRandom()
-    });
-    player.spaceChallengeHits = 0;
-    player.spaceChallengeRequiredHits = createSpaceChallengeRequiredHits(() => this.nextRandom());
+    this.resetSpaceChallenge(player);
     player.spaceTriggerArmed = false;
     player.velocity.y = SPACE_FLOAT_DRIFT_SPEED;
   }
 
-  private startGroundJump(player: SimPlayer) {
-    player.velocity.y = this.config.jumpSpeed;
+  private startGroundJump(player: SimPlayer, inWater = false) {
+    player.velocity.y = this.config.jumpSpeed * (inWater ? WATER_JUMP_SPEED_MULTIPLIER : 1);
     player.grounded = false;
     player.jumpBufferRemaining = 0;
     player.jumpAssistRemaining = JUMP_LEDGE_ASSIST_DURATION;
@@ -2568,6 +2610,7 @@ export class OutOfBoundsSimulation {
   }
 
   private integrateEgg(egg: SimEgg, dt: number) {
+    const inWater = this.isEggInWater(egg);
     egg.velocity.y -= this.config.eggGravity * dt;
 
     this.resolveEggAxis(egg, "x", egg.velocity.x * dt);
@@ -2579,6 +2622,12 @@ export class OutOfBoundsSimulation {
       return true;
     }
     this.resolveEggAxis(egg, "z", egg.velocity.z * dt);
+
+    if (inWater) {
+      egg.velocity.x = approach(egg.velocity.x, 0, WATER_EGG_DRAG * dt);
+      egg.velocity.y = approach(egg.velocity.y, 0, WATER_EGG_VERTICAL_DRAG * dt);
+      egg.velocity.z = approach(egg.velocity.z, 0, WATER_EGG_DRAG * dt);
+    }
 
     if (egg.grounded) {
       egg.velocity.x = approach(egg.velocity.x, 0, this.config.eggGroundFriction * EGG_GROUND_FRICTION_MULTIPLIER * dt);
@@ -2691,15 +2740,21 @@ export class OutOfBoundsSimulation {
         }
         egg.velocity.x *= EGG_GROUND_IMPACT_CARRY;
         egg.velocity.z *= EGG_GROUND_IMPACT_CARRY;
-        egg.velocity.y = Math.abs(egg.velocity.y) * this.config.eggBounceDamping;
+        const bounceDamping =
+          this.config.eggBounceDamping * (this.isEggInWater(egg) ? WATER_EGG_BOUNCE_MULTIPLIER : 1);
+        egg.velocity.y = Math.abs(egg.velocity.y) * bounceDamping;
         if (egg.velocity.y < this.config.eggGroundSpeedThreshold * EGG_GROUND_SETTLE_BOUNCE_SPEED_MULTIPLIER) {
           egg.velocity.y = 0;
         }
       } else {
-        egg.velocity.y = -Math.abs(egg.velocity.y) * this.config.eggBounceDamping * EGG_CEILING_BOUNCE_DAMPING;
+        const bounceDamping =
+          this.config.eggBounceDamping * (this.isEggInWater(egg) ? WATER_EGG_BOUNCE_MULTIPLIER : 1);
+        egg.velocity.y = -Math.abs(egg.velocity.y) * bounceDamping * EGG_CEILING_BOUNCE_DAMPING;
       }
     } else {
-      egg.velocity[axis] = -egg.velocity[axis] * this.config.eggBounceDamping * EGG_WALL_BOUNCE_DAMPING;
+      const bounceDamping =
+        this.config.eggBounceDamping * (this.isEggInWater(egg) ? WATER_EGG_BOUNCE_MULTIPLIER : 1);
+      egg.velocity[axis] = -egg.velocity[axis] * bounceDamping * EGG_WALL_BOUNCE_DAMPING;
     }
 
     return grounded;
@@ -2728,7 +2783,7 @@ export class OutOfBoundsSimulation {
       const landingKey = `${landingVoxel.x},${landingVoxel.y},${landingVoxel.z}`;
       if (
         !landedVoxelsByKey.has(landingKey) &&
-        !this.world.hasSolid(landingVoxel.x, landingVoxel.y, landingVoxel.z)
+        !this.world.hasOccupiedVoxel(landingVoxel.x, landingVoxel.y, landingVoxel.z)
       ) {
         landedVoxelsByKey.set(landingKey, {
           x: landingVoxel.x,
@@ -3286,10 +3341,10 @@ export class OutOfBoundsSimulation {
     }
 
     if (candidates.length === 0) {
-      return this.selectRespawnPosition(playerId);
+      return this.selectSafeRespawnPosition(playerId);
     }
 
-    return candidates[Math.floor(this.nextRandom() * candidates.length)] ?? this.selectRespawnPosition(playerId);
+    return candidates[Math.floor(this.nextRandom() * candidates.length)] ?? this.selectSafeRespawnPosition(playerId);
   }
 
   private findEggScatterLandingVoxel(center: Vector3, reservedLandingKeys: Set<string>): Vec3i | null {
@@ -3313,7 +3368,7 @@ export class OutOfBoundsSimulation {
         const landingKey = `${landingVoxel.x},${landingVoxel.y},${landingVoxel.z}`;
         if (
           reservedLandingKeys.has(landingKey) ||
-          this.world.hasSolid(landingVoxel.x, landingVoxel.y, landingVoxel.z) ||
+          this.world.hasOccupiedVoxel(landingVoxel.x, landingVoxel.y, landingVoxel.z) ||
           this.isVoxelBlockedByAnyPlayer(landingVoxel) ||
           this.isVoxelBlockedByFallingCluster(landingVoxel) ||
           this.isVoxelBlockedBySkyDrop(landingVoxel) ||
@@ -3457,11 +3512,12 @@ export class OutOfBoundsSimulation {
   }
 
   private respawnPlayer(player: SimPlayer) {
-    const spawn = this.selectRespawnPosition(player.id);
+    const spawn = this.selectRandomRespawnPosition();
+    const entryState = this.createInitialSpawnState(spawn, "sky");
     player.spawnTick = this.tick;
     this.resetSpaceChallenge(player);
-    player.position = { ...spawn };
-    player.velocity = { x: 0, y: 0, z: 0 };
+    player.position = entryState.position;
+    player.velocity = entryState.velocity;
     player.facing = normalize2(this.world.size.x / 2 - spawn.x, this.world.size.z / 2 - spawn.z);
     player.grounded = false;
     player.fallingOut = false;
@@ -3483,7 +3539,29 @@ export class OutOfBoundsSimulation {
     player.spaceTriggerArmed = true;
   }
 
-  private selectRespawnPosition(playerId: string): Vector3 {
+  private selectRandomRespawnPosition(): Vector3 {
+    const fallback = {
+      x: this.world.size.x / 2 + 0.5,
+      y: this.world.getTopSolidY(Math.floor(this.world.size.x / 2), Math.floor(this.world.size.z / 2)) + 1.05,
+      z: this.world.size.z / 2 + 0.5
+    };
+    const respawnCandidates =
+      this.spawnCandidates.length > 0 ? this.spawnCandidates : this.buildSpawnCandidates(Math.max(1, this.players.size));
+    const validCandidates = respawnCandidates.filter((spawn) => this.canPlayerFitAt(spawn));
+
+    if (validCandidates.length === 0) {
+      return fallback;
+    }
+
+    const spawn = validCandidates[Math.floor(this.nextRandom() * validCandidates.length)] ?? validCandidates[0]!;
+    return {
+      x: spawn.x,
+      y: spawn.y,
+      z: spawn.z
+    };
+  }
+
+  private selectSafeRespawnPosition(playerId: string): Vector3 {
     const fallback = {
       x: this.world.size.x / 2 + 0.5,
       y: this.world.getTopSolidY(Math.floor(this.world.size.x / 2), Math.floor(this.world.size.z / 2)) + 1.05,
@@ -3832,7 +3910,7 @@ export class OutOfBoundsSimulation {
           continue;
         }
 
-        if (this.world.hasSolid(x, landingY, z)) {
+        if (this.world.hasOccupiedVoxel(x, landingY, z)) {
           continue;
         }
 
@@ -4781,7 +4859,7 @@ export class OutOfBoundsSimulation {
       return false;
     }
 
-    if (this.world.hasSolid(placement.x, placement.y, placement.z)) {
+    if (this.world.hasOccupiedVoxel(placement.x, placement.y, placement.z)) {
       return false;
     }
 
@@ -5065,6 +5143,194 @@ export class OutOfBoundsSimulation {
     }
 
     return null;
+  }
+
+  private createWaterFloodState(): SimWaterFloodState {
+    return {
+      active: false,
+      breachLevelY: SEA_LEVEL_Y,
+      currentLevelY: SEA_LEVEL_Y,
+      targetLevelY: SEA_LEVEL_Y,
+      breachSeedKeys: new Set()
+    };
+  }
+
+  private triggerWaterFloodAt(voxel: Vec3i) {
+    if (voxel.y !== SEA_LEVEL_Y) {
+      return false;
+    }
+
+    this.waterFlood.active = true;
+    this.waterFlood.breachLevelY = SEA_LEVEL_Y;
+    this.waterFlood.currentLevelY = SEA_LEVEL_Y;
+    this.waterFlood.targetLevelY = SEA_LEVEL_Y;
+    this.waterFlood.breachSeedKeys.add(createVoxelKey(voxel.x, SEA_LEVEL_Y, voxel.z));
+    return true;
+  }
+
+  private refreshWaterFloodAfterTerrainRemoval(
+    voxels: ReadonlyArray<Pick<VoxelCell, "x" | "y" | "z">>
+  ) {
+    let shouldFill = false;
+
+    for (const voxel of voxels) {
+      shouldFill = this.triggerWaterFloodAt({
+        x: voxel.x,
+        y: voxel.y,
+        z: voxel.z
+      }) || shouldFill;
+    }
+
+    if (shouldFill) {
+      this.fillWaterFloodReachableCells();
+    }
+  }
+
+  private updateWaterFlood(_dt: number) {
+    if (!this.waterFlood.active) {
+      return;
+    }
+  }
+
+  private fillWaterFloodReachableCells() {
+    if (!this.waterFlood.active) {
+      return;
+    }
+
+    const queue: Vec3i[] = [];
+    const visited = new Set<string>();
+    const fillsByKey = new Map<string, VoxelCell>();
+    const nextSeedKeys = new Set<string>();
+
+    const enqueue = (x: number, z: number) => {
+      if (!isInBounds(this.world.size, x, SEA_LEVEL_Y, z)) {
+        return;
+      }
+
+      const key = createVoxelKey(x, SEA_LEVEL_Y, z);
+      if (visited.has(key)) {
+        return;
+      }
+
+      visited.add(key);
+      queue.push({ x, y: SEA_LEVEL_Y, z });
+    };
+
+    for (let x = 0; x < this.world.size.x; x += 1) {
+      for (let z = 0; z < this.world.size.z; z += 1) {
+        if (this.world.hasWater(x, SEA_LEVEL_Y, z)) {
+          enqueue(x, z);
+        }
+      }
+    }
+
+    for (const seedKey of this.waterFlood.breachSeedKeys) {
+      const seed = parseVoxelKey(seedKey);
+      if (seed.y !== SEA_LEVEL_Y || !isInBounds(this.world.size, seed.x, SEA_LEVEL_Y, seed.z)) {
+        continue;
+      }
+
+      const occupiedKind = this.world.getOccupiedKind(seed.x, SEA_LEVEL_Y, seed.z);
+      if (occupiedKind && occupiedKind !== "water") {
+        continue;
+      }
+
+      const normalizedSeedKey = createVoxelKey(seed.x, SEA_LEVEL_Y, seed.z);
+      nextSeedKeys.add(normalizedSeedKey);
+      enqueue(seed.x, seed.z);
+    }
+    this.waterFlood.breachSeedKeys = nextSeedKeys;
+
+    while (queue.length > 0) {
+      const current = queue.pop()!;
+      const occupiedKind = this.world.getOccupiedKind(current.x, current.y, current.z);
+      const isWater = occupiedKind === "water";
+      if (occupiedKind && !isWater) {
+        continue;
+      }
+
+      if (!isWater) {
+        fillsByKey.set(createVoxelKey(current.x, current.y, current.z), {
+          x: current.x,
+          y: current.y,
+          z: current.z,
+          kind: "water"
+        });
+      }
+
+      enqueue(current.x + 1, current.z);
+      enqueue(current.x - 1, current.z);
+      enqueue(current.x, current.z + 1);
+      enqueue(current.x, current.z - 1);
+    }
+
+    const fills = [...fillsByKey.values()];
+    if (fills.length > 0) {
+      this.setTerrainVoxels(fills, "water_flood");
+    }
+  }
+
+  private isPlayerInWater(player: SimPlayer) {
+    const minX = Math.floor(player.position.x - this.config.playerRadius + EPSILON);
+    const maxX = Math.floor(player.position.x + this.config.playerRadius - EPSILON);
+    const minY = Math.floor(player.position.y + EPSILON);
+    const maxY = Math.floor(player.position.y + this.config.playerHeight - EPSILON);
+    const minZ = Math.floor(player.position.z - this.config.playerRadius + EPSILON);
+    const maxZ = Math.floor(player.position.z + this.config.playerRadius - EPSILON);
+
+    for (let x = minX; x <= maxX; x += 1) {
+      for (let y = minY; y <= maxY; y += 1) {
+        for (let z = minZ; z <= maxZ; z += 1) {
+          if (!this.world.hasWater(x, y, z)) {
+            continue;
+          }
+
+          const closestX = clamp(player.position.x, x, x + 1);
+          const closestZ = clamp(player.position.z, z, z + 1);
+          const deltaX = player.position.x - closestX;
+          const deltaZ = player.position.z - closestZ;
+          if (deltaX * deltaX + deltaZ * deltaZ < this.config.playerRadius * this.config.playerRadius - EPSILON) {
+            return true;
+          }
+        }
+      }
+    }
+
+    return false;
+  }
+
+  private isEggInWater(egg: SimEgg) {
+    const minX = Math.floor(egg.position.x - this.config.eggRadius + EPSILON);
+    const maxX = Math.floor(egg.position.x + this.config.eggRadius - EPSILON);
+    const minY = Math.floor(egg.position.y - this.config.eggRadius + EPSILON);
+    const maxY = Math.floor(egg.position.y + this.config.eggRadius - EPSILON);
+    const minZ = Math.floor(egg.position.z - this.config.eggRadius + EPSILON);
+    const maxZ = Math.floor(egg.position.z + this.config.eggRadius - EPSILON);
+
+    for (let x = minX; x <= maxX; x += 1) {
+      for (let y = minY; y <= maxY; y += 1) {
+        for (let z = minZ; z <= maxZ; z += 1) {
+          if (!this.world.hasWater(x, y, z)) {
+            continue;
+          }
+
+          const closestX = clamp(egg.position.x, x, x + 1);
+          const closestY = clamp(egg.position.y, y, y + 1);
+          const closestZ = clamp(egg.position.z, z, z + 1);
+          const deltaX = egg.position.x - closestX;
+          const deltaY = egg.position.y - closestY;
+          const deltaZ = egg.position.z - closestZ;
+          if (
+            deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ <
+            this.config.eggRadius * this.config.eggRadius - EPSILON
+          ) {
+            return true;
+          }
+        }
+      }
+    }
+
+    return false;
   }
 
   private isOutsideHorizontalBounds(player: SimPlayer) {

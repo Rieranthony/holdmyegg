@@ -53,7 +53,13 @@ const createAuthoritativeFrame = (): RuntimeAuthoritativeFrame => ({
     hazards: {
       fallingClusters: [],
       skyDrops: [],
-      eggScatterDebris: []
+      eggScatterDebris: [],
+      waterFlood: {
+        active: false,
+        breachLevelY: 0,
+        currentLevelY: 0,
+        targetLevelY: 0
+      }
     },
     stats: {
       terrainRevision: 9

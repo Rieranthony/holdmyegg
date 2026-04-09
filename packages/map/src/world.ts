@@ -9,6 +9,7 @@ import type {
   MapProp,
   MapPropKind,
   MapSpawnPoint,
+  OccupiedKind,
   Vec3i,
   VisibleVoxelChunk,
   VisibleVoxelInstance,
@@ -23,6 +24,8 @@ import {
   collectDirtyChunkKeysAround,
   createVoxelKey,
   isInBounds,
+  isBlockingBlockKind,
+  isLiquidBlockKind,
   sortVoxels
 } from "./utils";
 
@@ -105,6 +108,7 @@ export class MutableVoxelWorld {
   private readonly topTerrainYByColumn: Int16Array;
   private readonly topGroundYByColumn: Int16Array;
   private readonly topSolidYByColumn: Int16Array;
+  private readonly topWaterYByColumn: Int16Array;
   private terrainRevision = 0;
 
   constructor(document: MapDocumentV1) {
@@ -116,6 +120,7 @@ export class MutableVoxelWorld {
     this.topTerrainYByColumn = new Int16Array(columnCount).fill(-1);
     this.topGroundYByColumn = new Int16Array(columnCount).fill(-1);
     this.topSolidYByColumn = new Int16Array(columnCount).fill(-1);
+    this.topWaterYByColumn = new Int16Array(columnCount).fill(-1);
 
     for (const voxel of parsed.voxels) {
       this.voxelMap.set(createVoxelKey(voxel.x, voxel.y, voxel.z), { ...voxel });
@@ -158,13 +163,37 @@ export class MutableVoxelWorld {
     return this.getVoxel(x, y, z)?.kind;
   }
 
-  hasSolid(x: number, y: number, z: number) {
+  hasOccupiedVoxel(x: number, y: number, z: number) {
     const key = createVoxelKey(x, y, z);
     return this.voxelMap.has(key) || this.propVoxelMap.has(key);
   }
 
-  getSolidKind(x: number, y: number, z: number) {
+  getOccupiedKind(x: number, y: number, z: number): OccupiedKind | undefined {
     return this.getVoxelKind(x, y, z) ?? this.propVoxelMap.get(createVoxelKey(x, y, z))?.kind;
+  }
+
+  hasWater(x: number, y: number, z: number) {
+    return this.getVoxelKind(x, y, z) === "water";
+  }
+
+  hasBlockingVoxel(x: number, y: number, z: number) {
+    const voxelKind = this.getVoxelKind(x, y, z);
+    return isBlockingBlockKind(voxelKind) || this.propVoxelMap.has(createVoxelKey(x, y, z));
+  }
+
+  getBlockingKind(x: number, y: number, z: number) {
+    const voxelKind = this.getVoxelKind(x, y, z);
+    return isBlockingBlockKind(voxelKind)
+      ? voxelKind
+      : this.propVoxelMap.get(createVoxelKey(x, y, z))?.kind;
+  }
+
+  hasSolid(x: number, y: number, z: number) {
+    return this.hasBlockingVoxel(x, y, z);
+  }
+
+  getSolidKind(x: number, y: number, z: number) {
+    return this.getBlockingKind(x, y, z);
   }
 
   getTopTerrainY(x: number, z: number) {
@@ -189,6 +218,18 @@ export class MutableVoxelWorld {
     }
 
     return this.topSolidYByColumn[this.getColumnIndex(x, z)] ?? -1;
+  }
+
+  getTopBlockingY(x: number, z: number) {
+    return this.getTopSolidY(x, z);
+  }
+
+  getTopWaterY(x: number, z: number) {
+    if (!this.isColumnInBounds(x, z)) {
+      return -1;
+    }
+
+    return this.topWaterYByColumn[this.getColumnIndex(x, z)] ?? -1;
   }
 
   listSpawns() {
@@ -462,6 +503,10 @@ export class MutableVoxelWorld {
     const anchorQueue: string[] = [];
 
     for (const voxel of this.voxelMap.values()) {
+      if (!isBlockingBlockKind(voxel.kind)) {
+        continue;
+      }
+
       if (!this.isAnchorVoxel(voxel)) {
         continue;
       }
@@ -477,7 +522,7 @@ export class MutableVoxelWorld {
 
       for (const [ox, oy, oz] of surfaceNeighbors) {
         const neighborKey = createVoxelKey(position.x + ox, position.y + oy, position.z + oz);
-        if (!this.voxelMap.has(neighborKey) || anchored.has(neighborKey)) {
+        if (!this.hasBlockingTerrainVoxel(position.x + ox, position.y + oy, position.z + oz) || anchored.has(neighborKey)) {
           continue;
         }
 
@@ -489,7 +534,7 @@ export class MutableVoxelWorld {
     const visited = new Set(anchored);
     const detached: DetachedVoxelComponent[] = [];
 
-    for (const voxel of sortVoxels(this.voxelMap.values())) {
+    for (const voxel of sortVoxels(this.voxelMap.values()).filter((entry) => isBlockingBlockKind(entry.kind))) {
       const startKey = createVoxelKey(voxel.x, voxel.y, voxel.z);
       if (visited.has(startKey)) {
         continue;
@@ -509,7 +554,7 @@ export class MutableVoxelWorld {
         component.push({ ...current });
         for (const [ox, oy, oz] of surfaceNeighbors) {
           const neighborKey = createVoxelKey(current.x + ox, current.y + oy, current.z + oz);
-          if (!this.voxelMap.has(neighborKey) || visited.has(neighborKey)) {
+          if (!this.hasBlockingTerrainVoxel(current.x + ox, current.y + oy, current.z + oz) || visited.has(neighborKey)) {
             continue;
           }
 
@@ -532,7 +577,7 @@ export class MutableVoxelWorld {
     for (const voxel of mutatedVoxels) {
       for (const [ox, oy, oz] of surfaceNeighbors) {
         const neighborKey = createVoxelKey(voxel.x + ox, voxel.y + oy, voxel.z + oz);
-        if (!this.voxelMap.has(neighborKey)) {
+        if (!this.hasBlockingTerrainVoxel(voxel.x + ox, voxel.y + oy, voxel.z + oz)) {
           continue;
         }
 
@@ -590,7 +635,7 @@ export class MutableVoxelWorld {
         for (let index = componentTraversalOffsets.length - 1; index >= 0; index -= 1) {
           const [ox, oy, oz] = componentTraversalOffsets[index]!;
           const neighborKey = createVoxelKey(current.x + ox, current.y + oy, current.z + oz);
-          if (!this.voxelMap.has(neighborKey) || componentKeys.has(neighborKey)) {
+          if (!this.hasBlockingTerrainVoxel(current.x + ox, current.y + oy, current.z + oz) || componentKeys.has(neighborKey)) {
             continue;
           }
 
@@ -634,7 +679,7 @@ export class MutableVoxelWorld {
         }
 
         const key = createVoxelKey(voxel.x, nextY, voxel.z);
-        if (this.voxelMap.has(key) && !ownKeys.has(key)) {
+        if (this.hasBlockingTerrainVoxel(voxel.x, nextY, voxel.z) && !ownKeys.has(key)) {
           return dropDistance;
         }
       }
@@ -723,6 +768,7 @@ export class MutableVoxelWorld {
       for (let z = 0; z < this.size.z; z += 1) {
         const columnIndex = this.getColumnIndex(x, z);
         this.topSolidYByColumn[columnIndex] = this.findTopSolidY(x, z);
+        this.topWaterYByColumn[columnIndex] = this.findTopWaterY(x, z);
       }
     }
   }
@@ -736,6 +782,7 @@ export class MutableVoxelWorld {
     this.topTerrainYByColumn[columnIndex] = this.findTopTerrainY(x, z);
     this.topGroundYByColumn[columnIndex] = this.findTopGroundY(x, z);
     this.topSolidYByColumn[columnIndex] = this.findTopSolidY(x, z);
+    this.topWaterYByColumn[columnIndex] = this.findTopWaterY(x, z);
   }
 
   private findTopTerrainY(x: number, z: number) {
@@ -760,7 +807,17 @@ export class MutableVoxelWorld {
 
   private findTopSolidY(x: number, z: number) {
     for (let y = this.size.y - 1; y >= 0; y -= 1) {
-      if (this.hasSolid(x, y, z)) {
+      if (this.hasBlockingVoxel(x, y, z)) {
+        return y;
+      }
+    }
+
+    return -1;
+  }
+
+  private findTopWaterY(x: number, z: number) {
+    for (let y = this.size.y - 1; y >= 0; y -= 1) {
+      if (this.getVoxelKind(x, y, z) === "water") {
         return y;
       }
     }
@@ -852,13 +909,27 @@ export class MutableVoxelWorld {
   }
 
   private getExposedFaceMask(x: number, y: number, z: number) {
-    if (!this.hasVoxel(x, y, z)) {
+    const voxel = this.getVoxel(x, y, z);
+    if (!voxel) {
       return 0;
     }
 
     let faceMask = 0;
     for (const [ox, oy, oz, bit] of surfaceNeighbors) {
-      if (!this.hasVoxel(x + ox, y + oy, z + oz)) {
+      const neighborKind = this.getVoxelKind(x + ox, y + oy, z + oz);
+      if (!neighborKind) {
+        faceMask |= bit;
+        continue;
+      }
+
+      if (isLiquidBlockKind(voxel.kind)) {
+        if (!isLiquidBlockKind(neighborKind)) {
+          faceMask |= bit;
+        }
+        continue;
+      }
+
+      if (isLiquidBlockKind(neighborKind)) {
         faceMask |= bit;
       }
     }
@@ -929,13 +1000,17 @@ export class MutableVoxelWorld {
   }
 
   private isAnchorVoxel(voxel: VoxelCell) {
-    return (
+    return isBlockingBlockKind(voxel.kind) && (
       voxel.y < DEFAULT_FOUNDATION_DEPTH ||
       voxel.x === 0 ||
       voxel.z === 0 ||
       voxel.x === this.size.x - 1 ||
       voxel.z === this.size.z - 1
     );
+  }
+
+  private hasBlockingTerrainVoxel(x: number, y: number, z: number) {
+    return isBlockingBlockKind(this.getVoxelKind(x, y, z));
   }
 
   private isColumnInBounds(x: number, z: number) {

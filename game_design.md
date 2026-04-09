@@ -35,13 +35,13 @@
 - `Multiplayer`: later phase
 
 ## Mechanical Defaults
-- Matter starts below build cost, so harvesting matters immediately
+- Matter starts with enough stock for a couple quick builds, so harvesting and building both matter immediately
 - Grounded jumps are free and unlimited
 - Jetpack lift costs Matter
 - Pushing costs Matter
 - Harvesting cubes restores Matter
 - Placing cubes spends Matter
-- Runtime building uses `E`, harvesting uses `LMB`, and mouse movement controls the camera look
+- Runtime building uses held `F`, harvesting uses held `LMB`, and mouse movement controls the camera look
 - Runtime play captures the mouse with pointer lock, and `Esc` opens a pause overlay instead of instantly leaving the match
 - Players and NPCs collide in XZ during normal movement
 - Crush hazards deal big Matter damage and knockback, but ring-out remains the hard elimination rule

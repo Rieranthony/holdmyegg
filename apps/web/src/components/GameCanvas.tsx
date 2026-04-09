@@ -4,17 +4,22 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import type { CSSProperties, MutableRefObject } from "react";
 import { type MutableVoxelWorld, type Vec3i } from "@out-of-bounds/map";
-import type { GameMode, OutOfBoundsSimulation, SimulationPerformanceDiagnostics } from "@out-of-bounds/sim";
+import type { OutOfBoundsSimulation, SimulationPerformanceDiagnostics } from "@out-of-bounds/sim";
+import type { ActiveMode } from "../engine/types";
 import {
   aimCameraConfig,
   applyFreeLookDelta,
   chaseCameraConfig,
+  clampLookPitch,
+  clampSpaceLookPitch,
   dampScalar,
   getAimRigState,
   getForwardSpeedRatio,
   getPlanarForwardBetweenPoints,
   getSpeedCameraBlend,
   getRuntimeFocusRayDistance,
+  getSpaceAimRigState,
+  spaceCameraConfig,
   getYawFromPlanarVector
 } from "../game/camera";
 import { useRendererQualityProfile } from "../game/quality";
@@ -26,6 +31,7 @@ import {
   type VoxelFocusState
 } from "../game/focus";
 import { raycastVoxelWorld } from "../game/terrainRaycast";
+import { updateVoxelMaterialAnimation } from "../game/voxelMaterials";
 import { buildPlayerCommand, useKeyboardInput, type KeyboardInputState } from "../hooks/useKeyboardInput";
 import { FallingClustersLayer } from "./FallingClusters";
 import { ImpactBurstsLayer } from "./ImpactBursts";
@@ -36,9 +42,6 @@ import { SkyDropsLayer } from "./SkyDrops";
 import { PlayersLayer } from "./Players";
 import { type TerrainRenderStats, type VoxelInteractPayload, VoxelWorldView } from "./VoxelWorld";
 import { WorldPropsLayer } from "./WorldProps";
-
-export type ActiveMode = "editor" | GameMode;
-export type EditorTool = "add" | "erase" | "spawn" | "prop";
 
 interface RuntimeActionCounts {
   destroy: number;
@@ -360,13 +363,19 @@ export function GameCanvas({
             worldSize={world.size}
           />
         )}
-        {qualityProfile.enableBirds && <SkyBirds worldSize={world.size} />}
+        {qualityProfile.skyBirdCount > 0 && (
+          <SkyBirds
+            count={qualityProfile.skyBirdCount}
+            worldSize={world.size}
+          />
+        )}
+        <TerrainMaterialAnimation />
         <mesh
           rotation={[-Math.PI / 2, 0, 0]}
-          position={[world.size.x / 2, -0.01, world.size.z / 2]}
+          position={[world.size.x / 2, -0.35, world.size.z / 2]}
         >
           <planeGeometry args={groundPlaneSize} />
-          <meshStandardMaterial color="#050505" />
+          <meshStandardMaterial color="#102834" />
         </mesh>
         <VoxelWorldView
           world={world}
@@ -462,6 +471,14 @@ export function GameCanvas({
       )}
     </>
   );
+}
+
+function TerrainMaterialAnimation() {
+  useFrame(({ clock }) => {
+    updateVoxelMaterialAnimation(clock.elapsedTime);
+  });
+
+  return null;
 }
 
 function GameLoop({
@@ -573,6 +590,7 @@ function CameraRig({
   const lookPitchRef = useRef(aimCameraConfig.defaultPitch);
   const speedBlendRef = useRef(0);
   const hasInitializedRef = useRef(false);
+  const usingSpaceRigRef = useRef(false);
   const trackedPlayerIdRef = useRef<string | null>(null);
   const { camera } = useThree();
 
@@ -593,12 +611,27 @@ function CameraRig({
       lookYawRef.current = null;
       lookPitchRef.current = aimCameraConfig.defaultPitch;
       speedBlendRef.current = 0;
+      usingSpaceRigRef.current = false;
       orbitInputRef.current.pendingDeltaX = 0;
       orbitInputRef.current.pendingDeltaY = 0;
     }
 
     if (lookYawRef.current === null) {
       lookYawRef.current = getYawFromPlanarVector(player.facing);
+    }
+
+    const spaceCameraActive = player.spacePhase !== "none";
+    if (spaceCameraActive !== usingSpaceRigRef.current) {
+      hasInitializedRef.current = false;
+      speedBlendRef.current = 0;
+      lookPitchRef.current = spaceCameraActive
+        ? spaceCameraConfig.defaultPitch
+        : clampLookPitch(lookPitchRef.current);
+      usingSpaceRigRef.current = spaceCameraActive;
+    } else if (spaceCameraActive) {
+      lookPitchRef.current = clampSpaceLookPitch(lookPitchRef.current);
+    } else {
+      lookPitchRef.current = clampLookPitch(lookPitchRef.current);
     }
 
     if (orbitInputRef.current.pendingDeltaX !== 0 || orbitInputRef.current.pendingDeltaY !== 0) {
@@ -610,7 +643,9 @@ function CameraRig({
         {
           deltaX: orbitInputRef.current.pendingDeltaX,
           deltaY: orbitInputRef.current.pendingDeltaY
-        }
+        },
+        undefined,
+        spaceCameraActive ? spaceCameraConfig : aimCameraConfig
       );
 
       lookYawRef.current = nextLook.yaw;
@@ -619,22 +654,19 @@ function CameraRig({
       orbitInputRef.current.pendingDeltaY = 0;
     }
 
-    const aimState = getAimRigState(
-      player.position,
-      lookYawRef.current ?? getYawFromPlanarVector(player.facing),
-      lookPitchRef.current,
-      speedBlendRef.current
-    );
-    const forwardSpeedRatio = getForwardSpeedRatio(player.velocity, aimState.planarForward, runtime.config.moveSpeed);
-    const targetSpeedBlend = getSpeedCameraBlend(forwardSpeedRatio);
-    speedBlendRef.current = dampScalar(speedBlendRef.current, targetSpeedBlend, 7, delta);
+    const lookYaw = lookYawRef.current ?? getYawFromPlanarVector(player.facing);
+    if (spaceCameraActive) {
+      speedBlendRef.current = 0;
+    } else {
+      const aimState = getAimRigState(player.position, lookYaw, lookPitchRef.current, speedBlendRef.current);
+      const forwardSpeedRatio = getForwardSpeedRatio(player.velocity, aimState.planarForward, runtime.config.moveSpeed);
+      const targetSpeedBlend = getSpeedCameraBlend(forwardSpeedRatio);
+      speedBlendRef.current = dampScalar(speedBlendRef.current, targetSpeedBlend, 7, delta);
+    }
 
-    const resolvedAimState = getAimRigState(
-      player.position,
-      lookYawRef.current ?? getYawFromPlanarVector(player.facing),
-      lookPitchRef.current,
-      speedBlendRef.current
-    );
+    const resolvedAimState = spaceCameraActive
+      ? getSpaceAimRigState(player.position, lookYaw, lookPitchRef.current)
+      : getAimRigState(player.position, lookYaw, lookPitchRef.current, speedBlendRef.current);
     desiredLookTarget.current.set(
       resolvedAimState.aimTarget.x,
       resolvedAimState.aimTarget.y,
@@ -749,7 +781,7 @@ function FocusTargetingLayer({
       },
       interactRange: runtime.config.interactRange,
       placementOccupied: placeVoxel
-        ? runtime.getWorld().hasSolid(placeVoxel.x, placeVoxel.y, placeVoxel.z)
+        ? runtime.getWorld().hasOccupiedVoxel(placeVoxel.x, placeVoxel.y, placeVoxel.z)
         : false,
       blockedByPlayer: placeVoxel ? isPlacementBlockedByPlayer(runtime, placeVoxel) : false,
       blockedByDebris: placeVoxel ? isPlacementBlockedByRuntimeDebris(runtime, placeVoxel) : false

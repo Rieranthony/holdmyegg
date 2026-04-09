@@ -10,14 +10,21 @@ import {
   skyBirdWingGeometry
 } from "../game/sceneAssets";
 
-export function SkyBirds({ worldSize }: { worldSize: Vec3i }) {
+export function SkyBirds({
+  worldSize,
+  count = birdPresets.length
+}: {
+  worldSize: Vec3i;
+  count?: number;
+}) {
   const birdRefs = useRef<Array<THREE.Group | null>>([]);
   const leftWingRefs = useRef<Array<THREE.Mesh | null>>([]);
   const rightWingRefs = useRef<Array<THREE.Mesh | null>>([]);
+  const activePresets = birdPresets.slice(0, Math.max(0, Math.min(count, birdPresets.length)));
 
   useFrame(({ clock }) => {
     const elapsedSeconds = clock.elapsedTime;
-    birdPresets.forEach((preset, index) => {
+    activePresets.forEach((preset, index) => {
       const bird = birdRefs.current[index];
       const leftWing = leftWingRefs.current[index];
       const rightWing = rightWingRefs.current[index];
@@ -40,7 +47,7 @@ export function SkyBirds({ worldSize }: { worldSize: Vec3i }) {
 
   return (
     <group>
-      {birdPresets.map((preset, index) => {
+      {activePresets.map((preset, index) => {
         const initialPose = getSkyBirdPose(preset, 0, worldSize);
         return (
           <group

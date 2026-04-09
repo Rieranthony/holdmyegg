@@ -13,6 +13,12 @@ export const normalizeSnapshot = (snapshot: SimulationSnapshot) => ({
   mode: snapshot.mode,
   terrainRevision: snapshot.terrainRevision,
   ranking: [...snapshot.ranking],
+  waterFlood: {
+    active: snapshot.waterFlood.active,
+    breachLevelY: snapshot.waterFlood.breachLevelY,
+    currentLevelY: snapshot.waterFlood.currentLevelY,
+    targetLevelY: snapshot.waterFlood.targetLevelY
+  },
   fallingClusters: snapshot.fallingClusters.map((cluster) => ({
     id: cluster.id,
     phase: cluster.phase,
@@ -224,7 +230,13 @@ export const normalizeAuthoritativeMatchState = (
       },
       elapsed: round(debris.elapsed),
       duration: round(debris.duration)
-    }))
+    })),
+    waterFlood: {
+      active: state.hazards.waterFlood.active,
+      breachLevelY: state.hazards.waterFlood.breachLevelY,
+      currentLevelY: state.hazards.waterFlood.currentLevelY,
+      targetLevelY: state.hazards.waterFlood.targetLevelY
+    }
   }
 });
 

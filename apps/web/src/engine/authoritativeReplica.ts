@@ -81,7 +81,8 @@ const cloneAuthoritativeState = (
       ...debris,
       origin: { ...debris.origin },
       destination: { ...debris.destination }
-    }))
+    })),
+    waterFlood: { ...state.hazards.waterFlood }
   },
   stats: {
     terrainRevision: state.stats.terrainRevision

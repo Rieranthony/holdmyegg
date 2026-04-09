@@ -24,6 +24,7 @@ export type ShellMode =
   | "editor"
   | GameMode;
 export type ActiveShellMode = "editor" | GameMode;
+export type ActiveMode = ActiveShellMode;
 export type ShellPresentation = "default" | "menu";
 export type EditorTool = "add" | "erase" | "spawn" | "prop";
 export type PointerCaptureFailureReason =
@@ -54,7 +55,7 @@ export interface RuntimeOverlayState {
   spaceLocalHitCount: number;
 }
 
-export const blockKindOptions: BlockKind[] = ["ground", "boundary", "hazard"];
+export const blockKindOptions: BlockKind[] = ["ground", "boundary", "hazard", "water"];
 export const propKindOptions: MapPropKind[] = ["tree-oak"];
 
 export interface EditorPanelState {

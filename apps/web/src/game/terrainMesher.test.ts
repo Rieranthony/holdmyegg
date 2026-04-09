@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { buildTerrainChunkGeometry, getTerrainChunkMaterials, meshTerrainChunk } from "./terrainMesher";
 import { terrainMaterialOrder } from "./voxelMaterials";
 
-const createTinyWorld = (voxels: Array<{ x: number; y: number; z: number; kind: "ground" | "boundary" | "hazard" }>) =>
+const createTinyWorld = (voxels: Array<{ x: number; y: number; z: number; kind: "ground" | "boundary" | "hazard" | "water" }>) =>
   new MutableVoxelWorld({
     version: 1,
     meta: {
@@ -113,6 +113,16 @@ describe("meshTerrainChunk", () => {
     expect(mesh.drawCallCount).toBe(3);
   });
 
+  it("keeps water faces in their own transparent material groups", () => {
+    const mesh = meshSingleChunk([
+      { x: 1, y: 1, z: 1, kind: "ground" },
+      { x: 1, y: 2, z: 1, kind: "water" }
+    ]);
+
+    expect(mesh.materialGroups.map((group) => group.materialKey)).toContain("waterTop");
+    expect(mesh.materialGroups.map((group) => group.materialKey)).toContain("waterSide");
+  });
+
   it("builds geometry groups for stable terrain materials without a tile-index shader attribute", () => {
     const mesh = meshSingleChunk([{ x: 1, y: 5, z: 1, kind: "ground" }]);
     const geometry = buildTerrainChunkGeometry(mesh);
@@ -143,9 +153,9 @@ describe("meshTerrainChunk", () => {
     const cubeTriangles = visibleVoxels * 12;
 
     expect(chunks.length).toBeLessThanOrEqual(25);
-    expect(totalVoxels).toBeLessThanOrEqual(44_000);
+    expect(totalVoxels).toBeLessThanOrEqual(45_000);
     expect(meshedTriangles).toBeLessThanOrEqual(cubeTriangles * 0.2);
     expect(drawCalls).toBeGreaterThan(chunks.length);
-    expect(drawCalls).toBeLessThanOrEqual(75);
+    expect(drawCalls).toBeLessThanOrEqual(90);
   });
 });

@@ -4,7 +4,7 @@ import {
   type PlayerCommand,
   OutOfBoundsSimulation
 } from "@out-of-bounds/sim";
-import { DEFAULT_SURFACE_Y } from "@out-of-bounds/map";
+import { DEFAULT_SURFACE_Y, SEA_LEVEL_Y, getMapPropVoxels } from "@out-of-bounds/map";
 import { createArenaDocument } from "@test/fixtures/maps";
 import { destroy, idle, jump, layEgg, move, place, push } from "@test/helpers/commands";
 import { advanceSimulation, advanceUntilGrounded, createTestSimulation } from "@test/helpers/simulation";
@@ -60,6 +60,21 @@ const getNpcMemory = (simulation: OutOfBoundsSimulation, playerId: string) =>
     targetPlayerId: string | null;
     targetLockRemaining: number;
   });
+
+const getInternalEggMap = (simulation: OutOfBoundsSimulation) =>
+  (simulation as unknown as { eggs: Map<string, any> }).eggs;
+
+const getSimulationInternals = (simulation: OutOfBoundsSimulation) =>
+  simulation as unknown as {
+    explodeEgg: (egg: any) => void;
+    fillWaterFloodReachableCells: () => void;
+    resolveSuperBoomImpact: (player: any) => void;
+    triggerWaterFloodAt: (voxel: { x: number; y: number; z: number }) => boolean;
+    waterFlood: {
+      active: boolean;
+      breachSeedKeys: Set<string>;
+    };
+  };
 
 const getHorizontalDistance = (
   left: { position: { x: number; z: number } },
@@ -247,8 +262,241 @@ describe("OutOfBoundsSimulation", () => {
 
     const respawnedPlayer = getInternalPlayer(skySimulation, skyPlayerId);
     (skySimulation as unknown as { respawnPlayer: (player: typeof respawnedPlayer) => void }).respawnPlayer(respawnedPlayer);
-    expect(respawnedPlayer.position.y).toBeCloseTo(groundedPlayer.position.y, 5);
-    expect(respawnedPlayer.velocity.y).toBe(0);
+    expect(respawnedPlayer.position.y - groundedPlayer.position.y).toBeCloseTo(
+      skySimulation.config.skyDropSpawnHeight,
+      5
+    );
+    expect(respawnedPlayer.velocity.y).toBeLessThan(0);
+  });
+
+  it("fills sea-level breaches immediately and expands as the cavity grows", () => {
+    const simulation = createTestSimulation("explore");
+    const localPlayerId = simulation.getLocalPlayerId()!;
+    const localPlayer = getInternalPlayer(simulation, localPlayerId);
+    localPlayer.position = { x: 10.5, y: PLAYER_GROUND_Y, z: 10.5 };
+    localPlayer.velocity = { x: 0, y: 0, z: 0 };
+    localPlayer.facing = { x: 1, z: 0 };
+    localPlayer.grounded = true;
+    localPlayer.mass = 120;
+
+    for (const y of [SURFACE_TOP_Y, SURFACE_TOP_Y - 1, SURFACE_TOP_Y - 2]) {
+      simulation.step({
+        [localPlayerId]: destroy({
+          targetVoxel: { x: 12, y, z: 10 }
+        })
+      });
+    }
+
+    expect(simulation.getSnapshot().waterFlood.active).toBe(false);
+    localPlayer.position = { x: 11.5, y: 1.05, z: 10.5 };
+    localPlayer.velocity = { x: 0, y: 0, z: 0 };
+    localPlayer.grounded = true;
+
+    simulation.step({
+      [localPlayerId]: destroy({
+        targetVoxel: { x: 12, y: 0, z: 10 }
+      })
+    });
+
+    expect(simulation.getSnapshot().waterFlood).toEqual({
+      active: true,
+      breachLevelY: 0,
+      currentLevelY: 0,
+      targetLevelY: 0
+    });
+    expect(simulation.getWorld().getVoxelKind(12, SEA_LEVEL_Y, 10)).toBe("water");
+    expect(simulation.getWorld().getVoxelKind(12, SEA_LEVEL_Y + 1, 10)).not.toBe("water");
+
+    localPlayer.position = { x: 12.5, y: 1.05, z: 10.5 };
+    localPlayer.velocity = { x: 0, y: 0, z: 0 };
+    localPlayer.grounded = true;
+
+    simulation.step({
+      [localPlayerId]: destroy({
+        targetVoxel: { x: 13, y: 0, z: 10 }
+      })
+    });
+
+    expect(simulation.getWorld().getVoxelKind(13, SEA_LEVEL_Y, 10)).toBe("water");
+    expect(simulation.getSnapshot().waterFlood.currentLevelY).toBe(SEA_LEVEL_Y);
+
+    advanceSimulation(simulation, 120);
+    expect(simulation.getSnapshot().waterFlood.currentLevelY).toBe(SEA_LEVEL_Y);
+    expect(simulation.getWorld().getVoxelKind(13, SEA_LEVEL_Y + 1, 10)).not.toBe("water");
+  });
+
+  it("fills sea-level gaps after projectile explosions", () => {
+    const simulation = createTestSimulation("explore", (world) => {
+      for (const y of [SURFACE_TOP_Y, SURFACE_TOP_Y - 1, SURFACE_TOP_Y - 2, SURFACE_TOP_Y - 3]) {
+        world.removeVoxel(12, y, 10);
+      }
+    });
+    const localPlayerId = simulation.getLocalPlayerId()!;
+    const egg = {
+      id: "sea-level-egg",
+      ownerId: localPlayerId,
+      spawnTick: 0,
+      visualSeed: 1,
+      fuseRemaining: 0,
+      grounded: false,
+      orbital: false,
+      explodeOnGroundContact: false,
+      fuseArmedBelowY: null,
+      position: { x: 12.5, y: 0.5, z: 10.5 },
+      velocity: { x: 0, y: 0, z: 0 }
+    };
+
+    getInternalEggMap(simulation).set(egg.id, egg);
+    getSimulationInternals(simulation).explodeEgg(egg);
+
+    const terrainBatch = simulation.consumeTerrainDeltaBatch();
+    expect(terrainBatch?.changes.some((change) => change.source === "projectile_explosion")).toBe(true);
+    expect(terrainBatch?.changes.some((change) => change.source === "water_flood")).toBe(true);
+    expect(simulation.getWorld().getVoxelKind(12, SEA_LEVEL_Y, 10)).toBe("water");
+    expect(simulation.getWorld().getVoxelKind(12, SEA_LEVEL_Y + 1, 10)).toBeUndefined();
+  });
+
+  it("fills sea-level gaps after super boom explosions", () => {
+    const simulation = createTestSimulation("explore", (world) => {
+      for (const y of [SURFACE_TOP_Y, SURFACE_TOP_Y - 1, SURFACE_TOP_Y - 2, SURFACE_TOP_Y - 3]) {
+        world.removeVoxel(12, y, 10);
+      }
+    });
+    const localPlayerId = simulation.getLocalPlayerId()!;
+    const localPlayer = getInternalPlayer(simulation, localPlayerId);
+
+    localPlayer.position = { x: 12.5, y: SEA_LEVEL_Y, z: 10.5 };
+    localPlayer.velocity = { x: 0, y: 0, z: 0 };
+    localPlayer.grounded = false;
+
+    getSimulationInternals(simulation).resolveSuperBoomImpact(localPlayer);
+
+    const terrainBatch = simulation.consumeTerrainDeltaBatch();
+    expect(terrainBatch?.changes.some((change) => change.source === "super_boom_explosion")).toBe(true);
+    expect(terrainBatch?.changes.some((change) => change.source === "water_flood")).toBe(true);
+    expect(simulation.getWorld().getVoxelKind(12, SEA_LEVEL_Y, 10)).toBe("water");
+    expect(simulation.getWorld().getVoxelKind(12, SEA_LEVEL_Y + 1, 10)).toBeUndefined();
+  });
+
+  it("ignores above-sea authored water as an automatic flood source", () => {
+    const simulation = createTestSimulation("explore", (world) => {
+      world.removeVoxel(20, SEA_LEVEL_Y, 20);
+      world.setVoxel(20, SEA_LEVEL_Y + 1, 20, "water");
+    });
+    const internals = getSimulationInternals(simulation);
+
+    internals.waterFlood.active = true;
+    internals.fillWaterFloodReachableCells();
+
+    expect(simulation.getWorld().getVoxelKind(20, SEA_LEVEL_Y, 20)).toBeUndefined();
+  });
+
+  it("does not fill tree prop voxels at sea level", () => {
+    const simulation = createTestSimulation("explore", (world) => {
+      const treeOrigin = { kind: "tree-oak" as const, x: 20, y: SEA_LEVEL_Y, z: 20 };
+      for (const voxel of getMapPropVoxels(treeOrigin)) {
+        world.removeVoxel(voxel.x, voxel.y, voxel.z);
+      }
+      world.removeVoxel(19, SEA_LEVEL_Y, 20);
+      world.setProp("tree-oak", treeOrigin.x, treeOrigin.y, treeOrigin.z);
+    });
+    const internals = getSimulationInternals(simulation);
+
+    internals.triggerWaterFloodAt({ x: 19, y: SEA_LEVEL_Y, z: 20 });
+    internals.fillWaterFloodReachableCells();
+
+    expect(simulation.getWorld().getVoxelKind(19, SEA_LEVEL_Y, 20)).toBe("water");
+    expect(simulation.getWorld().getVoxelKind(20, SEA_LEVEL_Y, 20)).toBeUndefined();
+    expect(simulation.getWorld().getPropAtVoxel(20, SEA_LEVEL_Y, 20)?.kind).toBe("tree-oak");
+  });
+
+  it("slows players while they move through water", () => {
+    const createMovementSimulation = (withWater: boolean) =>
+      createTestSimulation("explore", (world) => {
+        if (!withWater) {
+          return;
+        }
+
+        for (let x = 10; x <= 14; x += 1) {
+          world.setVoxel(x, DEFAULT_SURFACE_Y, 10, "water");
+        }
+      });
+
+    const drySimulation = createMovementSimulation(false);
+    const wetSimulation = createMovementSimulation(true);
+    const dryPlayerId = drySimulation.getLocalPlayerId()!;
+    const wetPlayerId = wetSimulation.getLocalPlayerId()!;
+    const dryPlayer = getInternalPlayer(drySimulation, dryPlayerId);
+    const wetPlayer = getInternalPlayer(wetSimulation, wetPlayerId);
+
+    dryPlayer.position = { x: 10.5, y: PLAYER_GROUND_Y, z: 10.5 };
+    dryPlayer.velocity = { x: 0, y: 0, z: 0 };
+    dryPlayer.facing = { x: 1, z: 0 };
+    dryPlayer.grounded = true;
+
+    wetPlayer.position = { x: 10.5, y: PLAYER_GROUND_Y, z: 10.5 };
+    wetPlayer.velocity = { x: 0, y: 0, z: 0 };
+    wetPlayer.facing = { x: 1, z: 0 };
+    wetPlayer.grounded = true;
+
+    advanceSimulation(drySimulation, 30, {
+      [dryPlayerId]: move(1, 0, { lookX: 1, lookZ: 0 })
+    });
+    advanceSimulation(wetSimulation, 30, {
+      [wetPlayerId]: move(1, 0, { lookX: 1, lookZ: 0 })
+    });
+
+    expect(wetSimulation.getPlayerViewState(wetPlayerId)!.position.x).toBeLessThan(
+      drySimulation.getPlayerViewState(dryPlayerId)!.position.x - 0.4
+    );
+  });
+
+  it("adds extra drag to eggs in water", () => {
+    const createEggSimulation = (withWater: boolean) =>
+      createTestSimulation("explore", (world) => {
+        if (!withWater) {
+          return;
+        }
+
+        world.setVoxel(10, DEFAULT_SURFACE_Y, 10, "water");
+        world.setVoxel(11, DEFAULT_SURFACE_Y, 10, "water");
+      });
+
+    const drySimulation = createEggSimulation(false);
+    const wetSimulation = createEggSimulation(true);
+    getInternalEggMap(drySimulation).set("egg-dry", {
+      id: "egg-dry",
+      ownerId: drySimulation.getLocalPlayerId()!,
+      spawnTick: 0,
+      visualSeed: 1,
+      fuseRemaining: 10,
+      grounded: false,
+      orbital: false,
+      explodeOnGroundContact: false,
+      fuseArmedBelowY: null,
+      position: { x: 10.5, y: DEFAULT_SURFACE_Y + 0.4, z: 10.5 },
+      velocity: { x: 4, y: 0, z: 0 }
+    });
+    getInternalEggMap(wetSimulation).set("egg-wet", {
+      id: "egg-wet",
+      ownerId: wetSimulation.getLocalPlayerId()!,
+      spawnTick: 0,
+      visualSeed: 1,
+      fuseRemaining: 10,
+      grounded: false,
+      orbital: false,
+      explodeOnGroundContact: false,
+      fuseArmedBelowY: null,
+      position: { x: 10.5, y: DEFAULT_SURFACE_Y + 0.4, z: 10.5 },
+      velocity: { x: 4, y: 0, z: 0 }
+    });
+
+    advanceSimulation(drySimulation, 10);
+    advanceSimulation(wetSimulation, 10);
+
+    expect(drySimulation.getEggState("egg-dry")!.velocity.x).toBeGreaterThan(
+      wetSimulation.getEggState("egg-wet")!.velocity.x + 0.5
+    );
   });
 
   it("supports multiplayer reset with stable human slots from 2 to 24 players", () => {
@@ -1231,7 +1479,7 @@ describe("OutOfBoundsSimulation", () => {
     expect(simulation.getWorld().getVoxelKind(7, DEFAULT_SURFACE_Y, 6)).toBeUndefined();
   });
 
-  it("requires harvesting before building and spends mass on successful placement", () => {
+  it("lets starting matter place blocks immediately and keeps harvest/build flow balanced", () => {
     const simulation = createTestSimulation("explore", (world) => {
       world.setVoxel(7, DEFAULT_SURFACE_Y, 6, "boundary");
     });
@@ -1249,8 +1497,10 @@ describe("OutOfBoundsSimulation", () => {
       )
     });
 
-    expect(simulation.getWorld().getVoxelKind(8, DEFAULT_SURFACE_Y, 6)).toBeUndefined();
-    expect(simulation.getPlayerState(localPlayerId)!.mass).toBe(simulation.config.startingMass);
+    expect(simulation.getWorld().getVoxelKind(8, DEFAULT_SURFACE_Y, 6)).toBe("ground");
+    expect(simulation.getPlayerState(localPlayerId)!.mass).toBe(
+      simulation.config.startingMass - simulation.config.placeCost
+    );
 
     simulation.step({
       [localPlayerId]: destroy({
@@ -1258,20 +1508,9 @@ describe("OutOfBoundsSimulation", () => {
       })
     });
     expect(simulation.getPlayerState(localPlayerId)!.mass).toBe(
-      simulation.config.startingMass + simulation.config.destroyGain
+      simulation.config.startingMass - simulation.config.placeCost + simulation.config.destroyGain
     );
-
-    simulation.step({
-      [localPlayerId]: place(
-        { x: 8, y: SURFACE_TOP_Y, z: 6 },
-        { x: 0, y: 1, z: 0 }
-      )
-    });
-
-    expect(simulation.getWorld().getVoxelKind(8, DEFAULT_SURFACE_Y, 6)).toBe("ground");
-    expect(simulation.getPlayerState(localPlayerId)!.mass).toBe(
-      simulation.config.startingMass + simulation.config.destroyGain - simulation.config.placeCost
-    );
+    expect(simulation.getPlayerState(localPlayerId)!.mass).toBe(simulation.config.startingMass);
   });
 
   it("treats tree props as solid build blockers without letting players harvest them", () => {
@@ -2007,6 +2246,19 @@ describe("OutOfBoundsSimulation", () => {
     expect(simulation.config.airAcceleration).toBe(13.2);
   });
 
+  it("exposes the tuned default matter economy through the live simulation config", () => {
+    const simulation = new OutOfBoundsSimulation();
+
+    expect(simulation.config.maxMass).toBe(defaultSimulationConfig.maxMass);
+    expect(simulation.config.maxMass).toBe(500);
+    expect(simulation.config.startingMass).toBe(defaultSimulationConfig.startingMass);
+    expect(simulation.config.startingMass).toBe(24);
+    expect(simulation.config.placeCost).toBe(defaultSimulationConfig.placeCost);
+    expect(simulation.config.placeCost).toBe(10);
+    expect(simulation.config.destroyGain).toBe(defaultSimulationConfig.destroyGain);
+    expect(simulation.config.destroyGain).toBe(10);
+  });
+
   it("pushes valid targets and respects cooldown", () => {
     const simulation = createTestSimulation("playNpc");
     const simulationInternals = simulation as unknown as { generateNpcCommand: (player: unknown) => PlayerCommand };
@@ -2198,12 +2450,11 @@ describe("OutOfBoundsSimulation", () => {
     expect(runtimePlayer.position.y).toBeGreaterThan(60);
   });
 
-  it("assigns a fresh target key and hit goal when space float starts without immediately repeating the previous trip", () => {
+  it("starts space float without arming the default super-boom challenge", () => {
     const simulation = createTestSimulation("explore");
     const localPlayerId = simulation.getLocalPlayerId()!;
     const localPlayer = getInternalPlayer(simulation, localPlayerId);
 
-    localPlayer.spaceChallengePreviousKey = "a";
     localPlayer.position = { x: 10.5, y: 59.9, z: 10.5 };
     localPlayer.velocity = { x: 0, y: 12, z: 0 };
     localPlayer.grounded = false;
@@ -2217,23 +2468,17 @@ describe("OutOfBoundsSimulation", () => {
     }, 0.16);
 
     expect(localPlayer.spacePhase).toBe("float");
-    expect(localPlayer.spaceChallengeTargetKey).toMatch(/^[a-z]$/);
-    expect(localPlayer.spaceChallengeTargetKey).not.toBe("a");
+    expect(localPlayer.spaceChallengeTargetKey).toBeNull();
     expect(localPlayer.spaceChallengeHits).toBe(0);
-    expect(localPlayer.spaceChallengeRequiredHits).toBeGreaterThanOrEqual(10);
-    expect(localPlayer.spaceChallengeRequiredHits).toBeLessThanOrEqual(15);
-    expect(simulation.getHudState().spaceChallenge).toEqual({
-      targetKey: localPlayer.spaceChallengeTargetKey,
-      hits: 0,
-      requiredHits: localPlayer.spaceChallengeRequiredHits,
-      phase: "mash"
-    });
+    expect(localPlayer.spaceChallengeRequiredHits).toBe(0);
+    expect(simulation.getHudState().spaceChallenge).toBeNull();
   });
 
-  it("advances only matching challenge key presses and flips into super boom dive on completion", () => {
+  it("ignores typed mash input during default space float and keeps the bomb path disabled", () => {
     const simulation = createTestSimulation("explore");
     const localPlayerId = simulation.getLocalPlayerId()!;
     const localPlayer = getInternalPlayer(simulation, localPlayerId);
+    const startingMass = localPlayer.mass;
 
     localPlayer.position = { x: 10.5, y: 76, z: 10.5 };
     localPlayer.velocity = { x: 0, y: 0.8, z: 0 };
@@ -2241,40 +2486,36 @@ describe("OutOfBoundsSimulation", () => {
     localPlayer.spacePhase = "float";
     localPlayer.spacePhaseRemaining = 5;
     localPlayer.spaceTriggerArmed = false;
-    localPlayer.spaceChallengeTargetKey = "g";
+    localPlayer.spaceChallengeTargetKey = null;
     localPlayer.spaceChallengeHits = 0;
-    localPlayer.spaceChallengeRequiredHits = 5;
+    localPlayer.spaceChallengeRequiredHits = 0;
 
     simulation.step({
       [localPlayerId]: idle({ typedText: "x" })
     });
     expect(localPlayer.spaceChallengeHits).toBe(0);
+    expect(localPlayer.spacePhase).toBe("float");
 
     simulation.step({
       [localPlayerId]: idle({ typedText: "g" })
     });
-    expect(localPlayer.spaceChallengeHits).toBe(1);
+    expect(localPlayer.spaceChallengeHits).toBe(0);
 
     simulation.step({
       [localPlayerId]: idle({ typedText: "gg" })
     });
-    expect(localPlayer.spaceChallengeHits).toBe(3);
+    expect(localPlayer.spaceChallengeHits).toBe(0);
     expect(localPlayer.spacePhase).toBe("float");
 
     simulation.step({
       [localPlayerId]: idle({ typedText: "xgg" })
     });
 
-    expect(localPlayer.spaceChallengeHits).toBe(5);
-    expect(localPlayer.spacePhase).toBe("superBoomDive");
-    expect(localPlayer.mass).toBe(0);
-    expect(localPlayer.velocity.y).toBeLessThanOrEqual(-44);
-    expect(simulation.getHudState().spaceChallenge).toEqual({
-      targetKey: "g",
-      hits: 5,
-      requiredHits: 5,
-      phase: "dive"
-    });
+    expect(localPlayer.spaceChallengeHits).toBe(0);
+    expect(localPlayer.spacePhase).toBe("float");
+    expect(localPlayer.mass).toBe(startingMass);
+    expect(localPlayer.velocity.y).toBeGreaterThan(0);
+    expect(simulation.getHudState().spaceChallenge).toBeNull();
   });
 
   it("allows light drift and orbital egg drops during the float window while keeping push locked", () => {
@@ -2455,6 +2696,7 @@ describe("OutOfBoundsSimulation", () => {
     expect(reentryPlayer.spacePhase).toBe("reentry");
     expect(reentryPlayer.velocity.y).toBeLessThanOrEqual(-12);
     expect(reentryPlayer.jetpackEligible).toBe(false);
+    expect(simulation.getHudState().spaceChallenge).toBeNull();
 
     simulation.step({
       [localPlayerId]: idle()
@@ -2706,7 +2948,7 @@ describe("OutOfBoundsSimulation", () => {
     expect(respawned.invulnerableRemaining).toBeGreaterThan(0);
   });
 
-  it("keeps respawns on the safest spread instead of reusing the seeded initial start", () => {
+  it("respawns at a random valid spawn candidate instead of choosing the safest open slot", () => {
     const simulation = new OutOfBoundsSimulation();
     simulation.reset("playNpc", createArenaDocument(), {
       npcCount: 4,
@@ -2716,26 +2958,37 @@ describe("OutOfBoundsSimulation", () => {
 
     const localPlayerId = simulation.getLocalPlayerId()!;
     const localPlayer = getInternalPlayer(simulation, localPlayerId);
-    const originalSpawn = { ...localPlayer.position };
+    const internals = simulation as unknown as {
+      respawnPlayer: (player: typeof localPlayer) => void;
+      rngState: number;
+      spawnCandidates: Array<{ x: number; y: number; z: number }>;
+      canPlayerFitAt: (position: { x: number; y: number; z: number }) => boolean;
+    };
+    const validSpawnCandidates = internals.spawnCandidates.filter((spawn) => internals.canPlayerFitAt(spawn));
+    expect(validSpawnCandidates.length).toBeGreaterThan(0);
+    const firstRandom = ((Math.imul(0, 1664525) + 1013904223) >>> 0) / 0x100000000;
+    const chosenSpawn =
+      validSpawnCandidates[Math.floor(firstRandom * validSpawnCandidates.length)] ?? validSpawnCandidates[0]!;
     const npcIds = getNpcIds(simulation);
 
     npcIds.forEach((npcId, index) => {
       const npcPlayer = getInternalPlayer(simulation, npcId);
       npcPlayer.position =
         index === 0
-          ? { ...originalSpawn }
+          ? { ...chosenSpawn }
           : { x: 34.5 + index, y: PLAYER_GROUND_Y, z: 36.5 };
       npcPlayer.velocity = { x: 0, y: 0, z: 0 };
       npcPlayer.grounded = true;
     });
 
-    (simulation as unknown as { respawnPlayer: (player: typeof localPlayer) => void }).respawnPlayer(localPlayer);
+    internals.rngState = 0;
+    internals.respawnPlayer(localPlayer);
 
     const respawned = simulation.getPlayerState(localPlayerId)!;
-    expect(getHorizontalDistance(respawned, { position: originalSpawn })).toBeGreaterThan(0.25);
-    expect(getHorizontalDistance(respawned, getInternalPlayer(simulation, npcIds[0]!))).toBeGreaterThanOrEqual(
-      simulation.config.playerRadius * 2 + simulation.config.playerHitSeparationDistance - 0.01
-    );
+    expect(respawned.position.x).toBeCloseTo(chosenSpawn.x, 5);
+    expect(respawned.position.z).toBeCloseTo(chosenSpawn.z, 5);
+    expect(respawned.position.y - chosenSpawn.y).toBeCloseTo(simulation.config.skyDropSpawnHeight, 5);
+    expect(respawned.velocity.y).toBeLessThan(0);
   });
 
   it("ignores hit damage during respawn invulnerability", () => {

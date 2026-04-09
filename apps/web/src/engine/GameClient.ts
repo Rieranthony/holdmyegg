@@ -1,10 +1,14 @@
 import * as THREE from "three";
 import {
+  DEFAULT_CHUNK_SIZE,
   MutableVoxelWorld,
+  chunkCoordsFromPosition,
   createDefaultArenaMap,
+  createVoxelKey,
   getMapPropVoxels,
   normalizeArenaBudgetMapDocument,
-  type MapDocumentV1
+  type MapDocumentV1,
+  type Vec3i
 } from "@out-of-bounds/map";
 import {
   defaultSimulationConfig,
@@ -28,14 +32,18 @@ import {
   aimCameraConfig,
   applyFreeLookDelta,
   chaseCameraConfig,
+  clampLookPitch,
+  clampSpaceLookPitch,
   dampScalar,
   getAimRigState,
   getForwardSpeedRatio,
   getLookDirection,
   getPlanarForwardBetweenPoints,
   getPlanarVectorFromYaw,
+  getSpaceAimRigState,
   getSpeedCameraBlend,
   getYawFromPlanarVector,
+  spaceCameraConfig,
   stepAngleToward
 } from "../game/camera";
 import {
@@ -53,7 +61,9 @@ import { eggBaseGeometry, eggCapGeometry, eggMiddleGeometry } from "../game/eggV
 import { getFallingClusterVisualState } from "../game/fallingClusters";
 import { buildPlayerCommand, initialKeyboardInputState, type KeyboardInputState } from "../game/input";
 import { configureDynamicInstancedMesh, finalizeDynamicInstancedMesh, finalizeStaticInstancedMesh } from "../game/instancedMeshes";
+import { buildTerrainChunkGeometry, meshTerrainChunk } from "../game/terrainMesher";
 import {
+  chickenFeatherGeometry,
   chickenPoseVisualDefaults,
   getChickenHeadFeatherRotation,
   getChickenLowDetailTraceOffsetX,
@@ -96,9 +106,10 @@ import {
   enableSunShadowLayer,
   syncDirectionalLightSunLayer
 } from "../game/sunShadows";
-import { resolveTerrainRaycastHit } from "../game/terrainRaycast";
+import { type TerrainRaycastHit, raycastVoxelWorld, resolveTerrainRaycastHit } from "../game/terrainRaycast";
 import {
   type BlockRenderProfile,
+  cloneTerrainChunkMaterials,
   getBlockRenderProfile,
   getTerrainChunkMaterials,
   getVoxelMaterials,
@@ -207,6 +218,13 @@ interface DynamicOpacityMeshResource {
   opacityAttribute: THREE.InstancedBufferAttribute;
 }
 
+interface FeatherBurstState {
+  active: boolean;
+  createdAt: number;
+  serial: number;
+  origin: THREE.Vector3;
+}
+
 type EggChargeInputSource = "key" | "pointer";
 
 interface EggChargeState {
@@ -226,7 +244,7 @@ interface HoldActionState {
   holdTriggered: boolean;
 }
 
-interface RepeatingPointerActionState {
+interface RepeatingActionState {
   pressed: boolean;
   nextPulseAt: number;
 }
@@ -259,6 +277,27 @@ interface SpacePlanetVisual {
   wobblePhase: number;
 }
 
+interface TerrainOcclusionHit {
+  anchor: THREE.Vector3;
+  direction: THREE.Vector3;
+  distance: number;
+  hit: TerrainRaycastHit;
+}
+
+type CoveredPlayerVisibilityMode = "clear" | "under_structure" | "underground";
+
+interface CoveredPlayerVisibilityResolution {
+  cameraPosition: THREE.Vector3;
+  mode: CoveredPlayerVisibilityMode;
+  occluded: boolean;
+}
+
+interface UndergroundChamberRenderState {
+  group: THREE.Group;
+  chunkMeshes: Map<string, THREE.Mesh>;
+  materials: THREE.MeshStandardMaterial[];
+}
+
 const backgroundColor = "#8fc6e0";
 const runtimeGroundMaterial = new THREE.MeshStandardMaterial({ color: "#050505" });
 const menuGroundMaterial = new THREE.MeshBasicMaterial({ color: backgroundColor });
@@ -266,6 +305,16 @@ const cloudGeometry = new THREE.BoxGeometry(1.6, 0.9, 1.6);
 const skyDropRingGeometry = new THREE.RingGeometry(0.48, 0.72, 24);
 const skyDropBeamGeometry = new THREE.CylinderGeometry(0.16, 0.16, 2, 12, 1, true);
 const speedTraceGeometry = new THREE.PlaneGeometry(0.16, 1.5).translate(0, 0.75, 0);
+const featherBurstPlumeGeometry = new THREE.BoxGeometry(...chickenFeatherGeometry.plumeSize).translate(
+  0,
+  chickenFeatherGeometry.plumePositionY,
+  0
+);
+const featherBurstQuillGeometry = new THREE.BoxGeometry(...chickenFeatherGeometry.quillSize).translate(
+  0,
+  chickenFeatherGeometry.quillPositionY,
+  0
+);
 const clusterTempObject = new THREE.Object3D();
 const cloudTempObject = new THREE.Object3D();
 const voxelFxTempObject = new THREE.Object3D();
@@ -287,6 +336,10 @@ const MAX_EGG_SCATTER_INSTANCES_PER_PROFILE = 64;
 const MAX_HARVEST_BURST_INSTANCES_PER_PROFILE = 128;
 const MAX_EGG_EXPLOSION_BURST_INSTANCES = 512;
 const MAX_EGG_EXPLOSION_SHOCKWAVE_INSTANCES = 32;
+const FEATHER_BURST_PARTICLE_COUNT = 22;
+const MAX_FEATHER_BURSTS = 12;
+const MAX_FEATHER_BURST_INSTANCES = FEATHER_BURST_PARTICLE_COUNT * MAX_FEATHER_BURSTS;
+const FEATHER_BURST_LIFETIME = 0.82;
 const EGG_TRAJECTORY_MAX_POINTS = 56;
 const EGG_TRAJECTORY_TIME_STEP = 0.05;
 const EGG_TRAJECTORY_MAX_DURATION = 2.55;
@@ -322,6 +375,8 @@ const HARVEST_SNAP_SAMPLE_OFFSETS = [
 const MATTER_PULSE_DURATION = 0.72;
 const MATTER_BUBBLE_DURATION = 1.1;
 const MATTER_FEEDBACK_COOLDOWN = 0.5;
+const RESOURCE_BUBBLE_HEAD_OFFSET_Y = 0.62;
+const RESOURCE_BUBBLE_FALLBACK_Y = 1.95;
 const SPACE_TYPING_PRIME_DURATION = 0.22;
 const SPACE_TYPING_MISFIRE_DURATION = 0.16;
 const SPACE_TYPING_MISTAKE_PULSE_DURATION = 0.18;
@@ -344,6 +399,16 @@ const modifierSensitiveRuntimeKeyCodes = new Set([
   "Space"
 ]);
 const voxelFxProfiles = ["earthSurface", "earthSubsoil", "darkness"] as const satisfies readonly BlockRenderProfile[];
+
+const createFeatherBurstStates = (count: number): FeatherBurstState[] =>
+  Array.from({ length: count }, () => ({
+    active: false,
+    createdAt: Number.NEGATIVE_INFINITY,
+    serial: 0,
+    origin: new THREE.Vector3()
+  }));
+
+const hashFeatherBurstSeed = (serial: number, index: number) => ((serial * 73856093) ^ (index * 19349663)) >>> 0;
 const speedTraceLayouts = [
   { angleDeg: 164, screenRadius: 0.68, scaleY: 1.38, width: 0.96, opacity: 0.42, travel: 0.2, speed: 0.94, phase: 0.06 },
   { angleDeg: 144, screenRadius: 0.7, scaleY: 1.55, width: 1.08, opacity: 0.76, travel: 0.28, speed: 1.1, phase: 0.14 },
@@ -397,6 +462,25 @@ const spacePlanetDescriptors = [
 const isRuntimeMode = (mode: ActiveShellMode) =>
   mode === "explore" || mode === "playNpc" || mode === "multiplayer";
 const MULTIPLAYER_SPECTATOR_CAMERA_SPEED = 16;
+const TERRAIN_OCCLUSION_HIP_HEIGHT_RATIO = 0.35;
+const TERRAIN_OCCLUSION_CHEST_HEIGHT_RATIO = 0.7;
+const TERRAIN_OCCLUSION_HEAD_HEIGHT_RATIO = 0.9;
+const COVERED_PLAYER_CAMERA_BUFFER = 0.6;
+const COVERED_PLAYER_PUSH_IN_DAMPING = 10;
+const COVERED_PLAYER_RELEASE_DAMPING = 6;
+const COVERED_PLAYER_RELEASE_EPSILON = 0.05;
+const COVERED_PLAYER_UNDER_STRUCTURE_MAX_CAMERA_PUSH_IN = 0.6;
+const COVERED_PLAYER_UNDERGROUND_MAX_CAMERA_PUSH_IN = 1.25;
+const COVERED_PLAYER_ROOF_SEARCH_HEIGHT = 6;
+const COVERED_PLAYER_COVERAGE_RADIUS = 2;
+const COVERED_PLAYER_UNDERGROUND_MIN_COVERED_COLUMNS = 16;
+const UNDERGROUND_CHAMBER_THICKNESS_LAYERS = 2;
+const TERRAIN_OCCLUSION_RAYCAST_STEP_EPSILON = 0.05;
+
+const getVectorDistance = (
+  left: Pick<THREE.Vector3, "x" | "y" | "z">,
+  right: { x: number; y: number; z: number }
+) => Math.hypot(left.x - right.x, left.y - right.y, left.z - right.z);
 
 const configureStaticInstancedMesh = (mesh: THREE.InstancedMesh, matrices: readonly THREE.Matrix4[]) => {
   mesh.count = matrices.length;
@@ -763,6 +847,78 @@ const createEggVisual = () => {
   } satisfies EggVisual;
 };
 
+const createUndergroundChamberRenderState = (): UndergroundChamberRenderState => {
+  const group = new THREE.Group();
+  group.visible = false;
+  return {
+    group,
+    chunkMeshes: new Map(),
+    materials: cloneTerrainChunkMaterials()
+  };
+};
+
+const clearUndergroundChamberRenderState = (state: UndergroundChamberRenderState) => {
+  for (const mesh of state.chunkMeshes.values()) {
+    mesh.geometry.dispose();
+    state.group.remove(mesh);
+  }
+  state.chunkMeshes.clear();
+  state.group.visible = false;
+};
+
+const disposeUndergroundChamberRenderState = (state: UndergroundChamberRenderState) => {
+  clearUndergroundChamberRenderState(state);
+  for (const material of state.materials) {
+    material.dispose();
+  }
+};
+
+const createCoveredPlayerSilhouetteMaterial = () =>
+  new THREE.MeshBasicMaterial({
+    color: "#ffffff",
+    transparent: true,
+    opacity: 0.45,
+    depthTest: false,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    toneMapped: false
+  });
+
+const clonePlayerSilhouetteRoot = (sourceRoot: THREE.Object3D, material: THREE.MeshBasicMaterial) => {
+  const clone = sourceRoot.clone(true);
+  clone.traverse((object) => {
+    object.renderOrder = 40;
+    object.frustumCulled = false;
+    if (!(object instanceof THREE.Mesh)) {
+      return;
+    }
+
+    object.material = material;
+  });
+  return clone;
+};
+
+const syncObjectTransformsRecursive = (source: THREE.Object3D, target: THREE.Object3D): boolean => {
+  if (source.children.length !== target.children.length) {
+    return false;
+  }
+
+  target.position.copy(source.position);
+  target.quaternion.copy(source.quaternion);
+  target.scale.copy(source.scale);
+  target.visible = source.visible;
+
+  for (let index = 0; index < source.children.length; index += 1) {
+    const sourceChild = source.children[index];
+    const targetChild = target.children[index];
+    if (!sourceChild || !targetChild || !syncObjectTransformsRecursive(sourceChild, targetChild)) {
+      return false;
+    }
+  }
+
+  return true;
+};
+
 export class GameClient {
   static mount(options: GameClientMountOptions) {
     return new GameClient(options);
@@ -782,9 +938,11 @@ export class GameClient {
   private readonly cloudsGroup = new THREE.Group();
   private readonly spaceBackdropGroup = new THREE.Group();
   private readonly terrainGroup = new THREE.Group();
+  private readonly undergroundChamber = createUndergroundChamberRenderState();
   private readonly propsGroup = new THREE.Group();
   private readonly spawnsGroup = new THREE.Group();
   private readonly playersGroup = new THREE.Group();
+  private readonly coveredPlayerSilhouetteGroup = new THREE.Group();
   private readonly eggsGroup = new THREE.Group();
   private readonly voxelFxGroup = new THREE.Group();
   private readonly skyDropsGroup = new THREE.Group();
@@ -800,15 +958,24 @@ export class GameClient {
   private readonly clock = new THREE.Clock();
   private readonly chunkMeshes = new Map<string, THREE.Mesh>();
   private readonly playerVisuals = new Map<string, PlayerVisual>();
+  private readonly playerObservedLives = new Map<string, number>();
   private readonly eggVisuals = new Map<string, EggVisual>();
   private readonly eggScatterMeshes = new Map<BlockRenderProfile, THREE.InstancedMesh>();
   private readonly harvestBurstMeshes = new Map<BlockRenderProfile, DynamicOpacityMeshResource>();
   private readonly skyDropVisuals = new Map<string, SkyDropVisual>();
   private readonly clusterVisuals = new Map<string, ClusterVisual>();
+  private readonly featherBurstStates = createFeatherBurstStates(MAX_FEATHER_BURSTS);
   private readonly pendingDocumentResolvers = new Map<string, (document: MapDocumentV1) => void>();
   private readonly currentLookTarget = new THREE.Vector3();
   private readonly desiredLookTarget = new THREE.Vector3();
   private readonly desiredCameraPosition = new THREE.Vector3();
+  private readonly coveredPlayerResolvedCameraPosition = new THREE.Vector3();
+  private readonly coveredPlayerSilhouetteMaterial = createCoveredPlayerSilhouetteMaterial();
+  private readonly terrainOcclusionHipsAnchor = new THREE.Vector3();
+  private readonly terrainOcclusionChestAnchor = new THREE.Vector3();
+  private readonly terrainOcclusionHeadAnchor = new THREE.Vector3();
+  private readonly terrainOcclusionRayOrigin = new THREE.Vector3();
+  private readonly terrainOcclusionRayDirection = new THREE.Vector3();
   private readonly resourceBubbleScreenPosition = new THREE.Vector3();
   private readonly cloudVisuals: CloudVisual[] = [];
   private readonly spacePlanetVisuals: SpacePlanetVisual[] = [];
@@ -840,6 +1007,9 @@ export class GameClient {
   private readonly speedTraceMaterials: THREE.MeshBasicMaterial[] = [];
   private readonly voxelFxDisposables: THREE.Material[] = [];
   private readonly voxelFxGeometries: THREE.BufferGeometry[] = [];
+  private featherBurstPlumeMesh: DynamicOpacityMeshResource | null = null;
+  private featherBurstQuillMesh: DynamicOpacityMeshResource | null = null;
+  private nextFeatherBurstSerial = 1;
   private readonly currentTerrainStats = {
     chunkCount: 0,
     drawCallCount: 0,
@@ -869,7 +1039,11 @@ export class GameClient {
     startedAt: 0,
     holdTriggered: false
   };
-  private readonly harvestPointerAction: RepeatingPointerActionState = {
+  private readonly harvestPointerAction: RepeatingActionState = {
+    pressed: false,
+    nextPulseAt: 0
+  };
+  private readonly buildKeyAction: RepeatingActionState = {
     pressed: false,
     nextPulseAt: 0
   };
@@ -905,6 +1079,7 @@ export class GameClient {
   private lookPitch = aimCameraConfig.defaultPitch;
   private speedBlend = 0;
   private hasInitializedRuntimeCamera = false;
+  private runtimeCameraUsingSpaceRig = false;
   private hasInitializedSpectatorCamera = false;
   private localPushTraceBurstRemaining = 0;
   private previousLocalPushVisualRemaining = 0;
@@ -933,6 +1108,11 @@ export class GameClient {
   private previousLocalSpacePhase: RuntimePlayerState["spacePhase"] | null = null;
   private localSpaceChallengeTargetKey: string | null = null;
   private localSpaceChallengeHitCount = 0;
+  private coveredPlayerVisibilityMode: CoveredPlayerVisibilityMode = "clear";
+  private coveredPlayerSilhouetteRoot: THREE.Object3D | null = null;
+  private coveredPlayerSilhouetteSource: PlayerVisual | null = null;
+  private undergroundChamberCacheKey: string | null = null;
+  private readonly undergroundChamberSelectedVoxelKeys = new Set<string>();
   private pendingTypedText = "";
   private lastRuntimeInputMismatchWarningKey: string | null = null;
   private lastRuntimeOverlayState: RuntimeOverlayState | null = null;
@@ -1201,6 +1381,11 @@ export class GameClient {
     this.harvestPointerAction.nextPulseAt = 0;
   }
 
+  private resetBuildKeyAction() {
+    this.buildKeyAction.pressed = false;
+    this.buildKeyAction.nextPulseAt = 0;
+  }
+
   private clearEggInputState() {
     this.activeEggKeyCodes.clear();
     this.keyboardState.egg = false;
@@ -1216,6 +1401,7 @@ export class GameClient {
     this.keyboardState.placePressed = false;
     this.keyboardState.pushPressed = false;
     this.resetHarvestPointerAction();
+    this.resetBuildKeyAction();
     this.harvestFocusOverride = null;
     this.resetForwardDoubleTapState();
   }
@@ -1294,12 +1480,18 @@ export class GameClient {
       return;
     }
 
+    const localPlayerVisual = this.playerVisuals.get(localPlayer.id);
     this.camera.updateMatrixWorld();
-    this.resourceBubbleScreenPosition.set(
-      localPlayer.position.x + localPlayer.facing.x * 0.7,
-      localPlayer.position.y + 1.95,
-      localPlayer.position.z + localPlayer.facing.z * 0.7
-    );
+    if (localPlayerVisual?.group.visible) {
+      localPlayerVisual.headPivot.getWorldPosition(this.resourceBubbleScreenPosition);
+      this.resourceBubbleScreenPosition.y += RESOURCE_BUBBLE_HEAD_OFFSET_Y;
+    } else {
+      this.resourceBubbleScreenPosition.set(
+        localPlayer.position.x,
+        localPlayer.position.y + RESOURCE_BUBBLE_FALLBACK_Y,
+        localPlayer.position.z
+      );
+    }
     this.resourceBubbleScreenPosition.project(this.camera);
 
     if (
@@ -1368,7 +1560,9 @@ export class GameClient {
     this.lastRuntimeInputSentAt = Number.NEGATIVE_INFINITY;
     this.lastSentRuntimeInput = null;
     this.lookYaw = null;
+    this.lookPitch = aimCameraConfig.defaultPitch;
     this.hasInitializedRuntimeCamera = false;
+    this.runtimeCameraUsingSpaceRig = false;
     this.hasInitializedSpectatorCamera = false;
     this.resetPointerCaptureState();
     this.pendingResumeAfterPointerLock = false;
@@ -1524,6 +1718,8 @@ export class GameClient {
     this.focusGhost.geometry.dispose();
     (this.focusGhost.material as THREE.Material).dispose();
     this.sunShadows.dispose();
+    disposeUndergroundChamberRenderState(this.undergroundChamber);
+    this.coveredPlayerSilhouetteMaterial.dispose();
     this.resourceBubbleElement?.remove();
     this.resourceBubbleElement = null;
     this.renderer.dispose();
@@ -1543,6 +1739,7 @@ export class GameClient {
     this.spaceBackdropGroup.visible = false;
     this.spaceStars.frustumCulled = false;
     this.spaceBackdropGroup.add(this.spaceStars);
+    this.coveredPlayerSilhouetteGroup.visible = false;
     this.buildSpaceBackdrop();
     this.trackSunShadowMaterials();
 
@@ -1567,9 +1764,11 @@ export class GameClient {
     );
     this.scene.add(
       this.terrainGroup,
+      this.undergroundChamber.group,
       this.propsGroup,
       this.spawnsGroup,
       this.playersGroup,
+      this.coveredPlayerSilhouetteGroup,
       this.eggsGroup,
       this.eggTrajectoryPreview.group,
       this.voxelFxGroup,
@@ -1629,6 +1828,36 @@ export class GameClient {
     this.voxelFxDisposables.push(...this.eggExplosionShockwaveMesh.materials);
     this.voxelFxGeometries.push(this.eggExplosionShockwaveMesh.geometry);
     this.voxelFxGroup.add(this.eggExplosionShockwaveMesh.mesh);
+
+    this.featherBurstPlumeMesh = createDynamicOpacityMeshResource(
+      MAX_FEATHER_BURST_INSTANCES,
+      new THREE.MeshBasicMaterial({
+        color: "#fff9ef",
+        opacity: 1,
+        transparent: true,
+        depthWrite: false,
+        toneMapped: false
+      }),
+      featherBurstPlumeGeometry.clone()
+    );
+    this.voxelFxDisposables.push(...this.featherBurstPlumeMesh.materials);
+    this.voxelFxGeometries.push(this.featherBurstPlumeMesh.geometry);
+    this.voxelFxGroup.add(this.featherBurstPlumeMesh.mesh);
+
+    this.featherBurstQuillMesh = createDynamicOpacityMeshResource(
+      MAX_FEATHER_BURST_INSTANCES,
+      new THREE.MeshBasicMaterial({
+        color: "#d3b169",
+        opacity: 1,
+        transparent: true,
+        depthWrite: false,
+        toneMapped: false
+      }),
+      featherBurstQuillGeometry.clone()
+    );
+    this.voxelFxDisposables.push(...this.featherBurstQuillMesh.materials);
+    this.voxelFxGeometries.push(this.featherBurstQuillMesh.geometry);
+    this.voxelFxGroup.add(this.featherBurstQuillMesh.mesh);
 
     this.speedTraceGroup.visible = false;
     this.speedTraceGroup.position.set(0, 0, -SPEED_TRACE_DEPTH);
@@ -1966,6 +2195,7 @@ export class GameClient {
         new THREE.Mesh(geometry, getTerrainChunkMaterials());
       mesh.frustumCulled = true;
       mesh.geometry = geometry;
+      mesh.material = getTerrainChunkMaterials();
       mesh.position.set(...patch.position);
       configureSunShadowObject(mesh, {
         castShadow: true,
@@ -1981,6 +2211,7 @@ export class GameClient {
     this.currentTerrainStats.drawCallCount = patches.reduce((sum, patch) => sum + patch.drawCallCount, 0);
     this.currentTerrainStats.triangleCount = patches.reduce((sum, patch) => sum + patch.triangleCount, 0);
     if (patches.length > 0) {
+      this.undergroundChamberCacheKey = null;
       this.sunShadows.markDirty();
     }
   }
@@ -2097,6 +2328,9 @@ export class GameClient {
       this.terrainGroup.remove(mesh);
     }
     this.chunkMeshes.clear();
+    clearUndergroundChamberRenderState(this.undergroundChamber);
+    this.undergroundChamberCacheKey = null;
+    this.undergroundChamberSelectedVoxelKeys.clear();
     this.sunShadows.markDirty();
   }
 
@@ -2105,6 +2339,12 @@ export class GameClient {
       this.playersGroup.remove(player.group);
       disposePlayerVisual(player);
     }
+    if (this.coveredPlayerSilhouetteRoot) {
+      this.coveredPlayerSilhouetteGroup.remove(this.coveredPlayerSilhouetteRoot);
+      this.coveredPlayerSilhouetteRoot = null;
+    }
+    this.coveredPlayerSilhouetteSource = null;
+    this.coveredPlayerSilhouetteGroup.visible = false;
     for (const egg of this.eggVisuals.values()) {
       this.eggsGroup.remove(egg.group);
       egg.material.dispose();
@@ -2116,6 +2356,7 @@ export class GameClient {
       this.clustersGroup.remove(cluster.group);
     }
     this.playerVisuals.clear();
+    this.playerObservedLives.clear();
     this.eggVisuals.clear();
     this.skyDropVisuals.clear();
     this.clusterVisuals.clear();
@@ -2129,6 +2370,103 @@ export class GameClient {
     }
     finalizeDynamicOpacityMesh(this.eggExplosionBurstMesh, 0);
     finalizeDynamicOpacityMesh(this.eggExplosionShockwaveMesh, 0);
+    this.clearFeatherBursts();
+  }
+
+  private clearFeatherBursts() {
+    for (const burst of this.featherBurstStates) {
+      burst.active = false;
+      burst.createdAt = Number.NEGATIVE_INFINITY;
+      burst.serial = 0;
+    }
+
+    this.nextFeatherBurstSerial = 1;
+    finalizeDynamicOpacityMesh(this.featherBurstPlumeMesh, 0);
+    finalizeDynamicOpacityMesh(this.featherBurstQuillMesh, 0);
+  }
+
+  private triggerFeatherBurst(
+    origin: {
+      x: number;
+      y: number;
+      z: number;
+    },
+    lostLives = 1,
+    elapsedTime = this.clock.elapsedTime
+  ) {
+    for (let burstIndex = 0; burstIndex < Math.max(1, lostLives); burstIndex += 1) {
+      const reusableBurst =
+        this.featherBurstStates.find(
+          (burst) => !burst.active || elapsedTime - burst.createdAt >= FEATHER_BURST_LIFETIME
+        ) ??
+        this.featherBurstStates.reduce((oldestBurst, burst) =>
+          burst.createdAt < oldestBurst.createdAt ? burst : oldestBurst
+        );
+
+      reusableBurst.active = true;
+      reusableBurst.createdAt = elapsedTime;
+      reusableBurst.serial = this.nextFeatherBurstSerial;
+      reusableBurst.origin.set(origin.x, origin.y + 0.58 + burstIndex * 0.03, origin.z);
+      this.nextFeatherBurstSerial += 1;
+    }
+  }
+
+  private syncFeatherBursts(elapsedTime: number) {
+    if (!this.featherBurstPlumeMesh || !this.featherBurstQuillMesh) {
+      return;
+    }
+
+    let instanceCount = 0;
+    outer: for (const burst of this.featherBurstStates) {
+      if (!burst.active) {
+        continue;
+      }
+
+      const age = (elapsedTime - burst.createdAt) / FEATHER_BURST_LIFETIME;
+      if (age >= 1) {
+        burst.active = false;
+        continue;
+      }
+
+      const opacity = Math.max(0, 1 - age);
+      const spreadAlpha = 0.16 + age * 1.12;
+      for (let particleIndex = 0; particleIndex < FEATHER_BURST_PARTICLE_COUNT; particleIndex += 1) {
+        if (instanceCount >= MAX_FEATHER_BURST_INSTANCES) {
+          break outer;
+        }
+
+        const seed = hashFeatherBurstSeed(burst.serial, particleIndex);
+        const yaw = ((seed % 360) * Math.PI) / 180;
+        const radialDistance = 0.22 + ((seed >>> 3) % 7) * 0.05;
+        const lift = 0.72 + ((seed >>> 6) % 7) * 0.1;
+        const tumbleSpeed = 1.8 + ((seed >>> 9) % 5) * 0.28;
+        const rollDirection = particleIndex % 2 === 0 ? 1 : -1;
+        const scale = Math.max(0.24, 0.82 - age * 0.46) * (0.82 + ((seed >>> 12) % 5) * 0.08);
+        const sway = (((seed >>> 15) % 9) - 4) * 0.012;
+
+        voxelFxTempObject.position.set(
+          burst.origin.x + Math.sin(yaw) * radialDistance * spreadAlpha,
+          burst.origin.y + lift * age - age * age * 0.9 + sway,
+          burst.origin.z + Math.cos(yaw) * radialDistance * spreadAlpha
+        );
+        voxelFxTempObject.rotation.set(
+          0.2 + age * tumbleSpeed * 0.65,
+          yaw + (((seed >>> 20) % 360) * Math.PI) / 180,
+          (((seed >>> 24) % 360) * Math.PI) / 180 + age * tumbleSpeed * rollDirection
+        );
+        voxelFxTempObject.scale.set(scale * 0.82, scale * 1.08, scale * 0.82);
+        voxelFxTempObject.updateMatrix();
+
+        this.featherBurstPlumeMesh.mesh.setMatrixAt(instanceCount, voxelFxTempObject.matrix);
+        this.featherBurstPlumeMesh.opacityAttribute.setX(instanceCount, opacity * (0.9 - age * 0.12));
+        this.featherBurstQuillMesh.mesh.setMatrixAt(instanceCount, voxelFxTempObject.matrix);
+        this.featherBurstQuillMesh.opacityAttribute.setX(instanceCount, opacity * 0.96);
+        instanceCount += 1;
+      }
+    }
+
+    finalizeDynamicOpacityMesh(this.featherBurstPlumeMesh, instanceCount);
+    finalizeDynamicOpacityMesh(this.featherBurstQuillMesh, instanceCount);
   }
 
   private getLocalRuntimePlayer(frame: RuntimeRenderFrame | null = this.latestFrame) {
@@ -2382,7 +2720,7 @@ export class GameClient {
         this.eggTrajectoryRaycaster.ray.direction.copy(segment.multiplyScalar(1 / segmentLength));
         this.eggTrajectoryRaycaster.far = segmentLength;
         const hit = this.eggTrajectoryRaycaster.intersectObjects(
-          [this.terrainGroup, this.propsGroup, this.clustersGroup],
+          [...this.getVisibleTerrainRaycastRoots(), this.propsGroup, this.clustersGroup],
           true
         )[0];
         if (hit) {
@@ -2554,6 +2892,8 @@ export class GameClient {
           return;
         }
         this.keyboardState.placePressed = true;
+        this.buildKeyAction.pressed = true;
+        this.buildKeyAction.nextPulseAt = this.clock.elapsedTime + HARVEST_REPEAT_INTERVAL;
         break;
     }
   };
@@ -2596,6 +2936,9 @@ export class GameClient {
       case "KeyA":
       case "ArrowLeft":
         this.keyboardState.left = false;
+        break;
+      case "KeyF":
+        this.resetBuildKeyAction();
         break;
       case "KeyD":
       case "ArrowRight":
@@ -2784,9 +3127,20 @@ export class GameClient {
     }
   }
 
+  private getVisibleTerrainRaycastRoots() {
+    const roots: THREE.Object3D[] = [];
+    if (this.terrainGroup.visible) {
+      roots.push(this.terrainGroup);
+    }
+    if (this.undergroundChamber.group.visible) {
+      roots.push(this.undergroundChamber.group);
+    }
+    return roots;
+  }
+
   private getTerrainTargetAtPointer(offsetX = 0, offsetY = 0) {
     this.focusRaycaster.setFromCamera(new THREE.Vector2(offsetX, offsetY), this.camera);
-    const intersections = this.focusRaycaster.intersectObjects([this.terrainGroup], true);
+    const intersections = this.focusRaycaster.intersectObjects(this.getVisibleTerrainRaycastRoots(), true);
     const firstHit = intersections[0];
     if (!firstHit) {
       return null;
@@ -2945,6 +3299,14 @@ export class GameClient {
     }
   }
 
+  private queueBuildPulse() {
+    if (!this.pointerLocked || this.runtimePaused) {
+      return;
+    }
+
+    this.keyboardState.placePressed = true;
+  }
+
   private updateHeldHarvest(localPlayer: RuntimePlayerState | null, elapsedTime: number) {
     if (
       !localPlayer ||
@@ -2960,6 +3322,21 @@ export class GameClient {
     this.harvestPointerAction.nextPulseAt = elapsedTime + HARVEST_REPEAT_INTERVAL;
   }
 
+  private updateHeldBuild(localPlayer: RuntimePlayerState | null, elapsedTime: number) {
+    if (
+      !localPlayer ||
+      !this.buildKeyAction.pressed ||
+      !this.pointerLocked ||
+      this.runtimePaused ||
+      elapsedTime < this.buildKeyAction.nextPulseAt
+    ) {
+      return;
+    }
+
+    this.queueBuildPulse();
+    this.buildKeyAction.nextPulseAt = elapsedTime + HARVEST_REPEAT_INTERVAL;
+  }
+
   private performEditorActionFromPointer(event: PointerEvent) {
     const rect = this.canvas.getBoundingClientRect();
     const pointer = new THREE.Vector2(
@@ -2967,7 +3344,10 @@ export class GameClient {
       -((event.clientY - rect.top) / rect.height) * 2 + 1
     );
     this.clickRaycaster.setFromCamera(pointer, this.camera);
-    const intersections = this.clickRaycaster.intersectObjects([this.terrainGroup, this.propsGroup], true);
+    const intersections = this.clickRaycaster.intersectObjects(
+      [...this.getVisibleTerrainRaycastRoots(), this.propsGroup],
+      true
+    );
     const firstHit = intersections[0];
     if (!firstHit) {
       return;
@@ -2997,6 +3377,7 @@ export class GameClient {
       this.updateHoldToThrowState(localPlayer, elapsedTime);
       this.updateEggChargeState(localPlayer, delta, elapsedTime);
       this.updateHeldHarvest(localPlayer, elapsedTime);
+      this.updateHeldBuild(localPlayer, elapsedTime);
       this.sendRuntimeInput(localPlayer, elapsedTime);
       this.applyRuntimeFrame(delta, elapsedTime);
     } else {
@@ -3005,8 +3386,10 @@ export class GameClient {
       this.hideEggTrajectoryPreview();
       this.updateLocalResourceBubble(null, elapsedTime);
       this.emitRuntimeOverlayState(false, elapsedTime);
+      this.clearCoveredPlayerVisibility();
       this.focusOutline.visible = false;
       this.focusGhost.visible = false;
+      this.clearFeatherBursts();
     }
 
     if (this.shouldUseSunShadows()) {
@@ -3023,6 +3406,7 @@ export class GameClient {
   private updateRuntimeCamera(delta: number) {
     const frame = this.latestFrame;
     if (!frame) {
+      this.clearCoveredPlayerVisibility();
       return;
     }
 
@@ -3030,6 +3414,7 @@ export class GameClient {
       ? frame.players.find((entry) => entry.id === frame.localPlayerId) ?? null
       : null;
     if (!player || (!player.fallingOut && (!player.alive || player.respawning))) {
+      this.clearCoveredPlayerVisibility();
       if (this.mode === "multiplayer") {
         this.updateSpectatorCamera(delta, frame.players);
       }
@@ -3044,6 +3429,20 @@ export class GameClient {
       this.hasInitializedRuntimeCamera = false;
     }
 
+    const spaceCameraActive = player.spacePhase !== "none";
+    if (spaceCameraActive !== this.runtimeCameraUsingSpaceRig) {
+      this.hasInitializedRuntimeCamera = false;
+      this.speedBlend = 0;
+      this.lookPitch = spaceCameraActive
+        ? spaceCameraConfig.defaultPitch
+        : clampLookPitch(this.lookPitch);
+      this.runtimeCameraUsingSpaceRig = spaceCameraActive;
+    } else if (spaceCameraActive) {
+      this.lookPitch = clampSpaceLookPitch(this.lookPitch);
+    } else {
+      this.lookPitch = clampLookPitch(this.lookPitch);
+    }
+
     if (this.pendingLookDeltaX !== 0 || this.pendingLookDeltaY !== 0) {
       const nextLook = applyFreeLookDelta(
         {
@@ -3054,7 +3453,8 @@ export class GameClient {
           deltaX: this.pendingLookDeltaX,
           deltaY: this.pendingLookDeltaY
         },
-        this.runtimeControlSettings
+        this.runtimeControlSettings,
+        spaceCameraActive ? spaceCameraConfig : aimCameraConfig
       );
       this.lookYaw = nextLook.yaw;
       this.lookPitch = nextLook.pitch;
@@ -3062,24 +3462,33 @@ export class GameClient {
       this.pendingLookDeltaY = 0;
     }
 
-    const initialAimState = getAimRigState(
-      player.position,
-      this.lookYaw ?? getYawFromPlanarVector(player.facing),
-      this.lookPitch,
-      this.speedBlend
-    );
-    const forwardSpeedRatio = getForwardSpeedRatio(player.velocity, initialAimState.planarForward, 6);
-    const targetSpeedBlend = getSpeedCameraBlend(forwardSpeedRatio);
-    this.speedBlend = dampScalar(this.speedBlend, targetSpeedBlend, 7, delta);
+    const lookYaw = this.lookYaw ?? getYawFromPlanarVector(player.facing);
+    if (spaceCameraActive) {
+      this.speedBlend = 0;
+    } else {
+      const initialAimState = getAimRigState(player.position, lookYaw, this.lookPitch, this.speedBlend);
+      const forwardSpeedRatio = getForwardSpeedRatio(player.velocity, initialAimState.planarForward, 6);
+      const targetSpeedBlend = getSpeedCameraBlend(forwardSpeedRatio);
+      this.speedBlend = dampScalar(this.speedBlend, targetSpeedBlend, 7, delta);
+    }
 
-    const aimState = getAimRigState(
-      player.position,
-      this.lookYaw ?? getYawFromPlanarVector(player.facing),
-      this.lookPitch,
-      this.speedBlend
-    );
+    const aimState = spaceCameraActive
+      ? getSpaceAimRigState(player.position, lookYaw, this.lookPitch)
+      : getAimRigState(player.position, lookYaw, this.lookPitch, this.speedBlend);
     this.desiredLookTarget.set(aimState.aimTarget.x, aimState.aimTarget.y, aimState.aimTarget.z);
     this.desiredCameraPosition.set(aimState.cameraPosition.x, aimState.cameraPosition.y, aimState.cameraPosition.z);
+    const coveredPlayerVisibility = spaceCameraActive
+      ? {
+          cameraPosition: this.desiredCameraPosition.clone(),
+          mode: "clear" as const,
+          occluded: false
+        }
+      : this.resolveCoveredPlayerVisibility(player, this.desiredCameraPosition);
+    if (spaceCameraActive) {
+      this.clearCoveredPlayerVisibility();
+    } else {
+      this.desiredCameraPosition.copy(coveredPlayerVisibility.cameraPosition);
+    }
 
     if (!this.hasInitializedRuntimeCamera) {
       this.hasInitializedRuntimeCamera = true;
@@ -3090,9 +3499,23 @@ export class GameClient {
       return;
     }
 
-    const positionDamping = 1 - Math.exp(-delta * (chaseCameraConfig.positionDamping + 3));
+    const currentDistanceToAimPivot = getVectorDistance(this.camera.position, aimState.aimPivot);
+    const desiredDistanceToAimPivot = getVectorDistance(this.desiredCameraPosition, aimState.aimPivot);
+    const releasingOcclusion =
+      !coveredPlayerVisibility.occluded &&
+      currentDistanceToAimPivot + COVERED_PLAYER_RELEASE_EPSILON < desiredDistanceToAimPivot;
+    const positionDampingRate = coveredPlayerVisibility.occluded
+      ? COVERED_PLAYER_PUSH_IN_DAMPING
+      : releasingOcclusion
+        ? COVERED_PLAYER_RELEASE_DAMPING
+        : chaseCameraConfig.positionDamping + 3;
+    const positionDamping = 1 - Math.exp(-delta * positionDampingRate);
     const lookTargetDamping = 1 - Math.exp(-delta * (chaseCameraConfig.lookTargetDamping + 3));
-    const rising = player.velocity.y > 0 && this.desiredCameraPosition.y > this.camera.position.y;
+    const rising =
+      !coveredPlayerVisibility.occluded &&
+      !releasingOcclusion &&
+      player.velocity.y > 0 &&
+      this.desiredCameraPosition.y > this.camera.position.y;
     const verticalPositionDamping = rising ? 1 - Math.exp(-delta * 24) : positionDamping;
     const verticalLookTargetDamping = rising ? 1 - Math.exp(-delta * 26) : lookTargetDamping;
     this.camera.position.x = THREE.MathUtils.lerp(this.camera.position.x, this.desiredCameraPosition.x, positionDamping);
@@ -3115,6 +3538,401 @@ export class GameClient {
     }
     this.camera.lookAt(this.currentLookTarget);
     this.cameraForward = getPlanarForwardBetweenPoints(this.camera.position, this.currentLookTarget);
+  }
+
+  private clearCoveredPlayerVisibility() {
+    this.coveredPlayerVisibilityMode = "clear";
+    this.terrainGroup.visible = true;
+    this.undergroundChamber.group.visible = false;
+    this.coveredPlayerSilhouetteGroup.visible = false;
+  }
+
+  private resolveCoveredColumnCount(player: RuntimePlayerState) {
+    const baseX = Math.floor(player.position.x);
+    const baseZ = Math.floor(player.position.z);
+    const headY = player.position.y + defaultSimulationConfig.playerHeight * TERRAIN_OCCLUSION_HEAD_HEIGHT_RATIO;
+    const startY = Math.max(0, Math.ceil(headY));
+    const endY = Math.min(this.runtimeWorld.size.y - 1, Math.floor(headY + COVERED_PLAYER_ROOF_SEARCH_HEIGHT));
+    let coveredCount = 0;
+    let centerCovered = false;
+
+    for (let zOffset = -COVERED_PLAYER_COVERAGE_RADIUS; zOffset <= COVERED_PLAYER_COVERAGE_RADIUS; zOffset += 1) {
+      for (let xOffset = -COVERED_PLAYER_COVERAGE_RADIUS; xOffset <= COVERED_PLAYER_COVERAGE_RADIUS; xOffset += 1) {
+        const x = baseX + xOffset;
+        const z = baseZ + zOffset;
+        let covered = false;
+
+        if (x >= 0 && x < this.runtimeWorld.size.x && z >= 0 && z < this.runtimeWorld.size.z) {
+          for (let y = startY; y <= endY; y += 1) {
+            if (!this.runtimeWorld.getVoxelKind(x, y, z)) {
+              continue;
+            }
+
+            covered = true;
+            coveredCount += 1;
+            break;
+          }
+        }
+
+        if (xOffset === 0 && zOffset === 0) {
+          centerCovered = covered;
+        }
+      }
+    }
+
+    return {
+      centerCovered,
+      coveredCount
+    };
+  }
+
+  private isPlayerUnderground(player: RuntimePlayerState) {
+    const coverage = this.resolveCoveredColumnCount(player);
+    return coverage.centerCovered && coverage.coveredCount >= COVERED_PLAYER_UNDERGROUND_MIN_COVERED_COLUMNS;
+  }
+
+  private raycastTerrainOccluder(origin: THREE.Vector3, target: THREE.Vector3) {
+    this.terrainOcclusionRayDirection.copy(target).sub(origin);
+    const maxDistance = this.terrainOcclusionRayDirection.length();
+    if (maxDistance <= Number.EPSILON) {
+      return null;
+    }
+
+    this.terrainOcclusionRayDirection.divideScalar(maxDistance);
+    let travelled = 0;
+    this.terrainOcclusionRayOrigin.copy(origin);
+
+    while (travelled <= maxDistance) {
+      const remainingDistance = maxDistance - travelled;
+      if (remainingDistance <= Number.EPSILON) {
+        return null;
+      }
+
+      const hit = raycastVoxelWorld(
+        this.runtimeWorld,
+        this.terrainOcclusionRayOrigin,
+        this.terrainOcclusionRayDirection,
+        remainingDistance
+      );
+      if (!hit) {
+        return null;
+      }
+
+      const hitDistance = hit.distance ?? 0;
+      const totalDistance = travelled + hitDistance;
+      if (this.runtimeWorld.getVoxelKind(hit.voxel.x, hit.voxel.y, hit.voxel.z)) {
+        return {
+          anchor: origin,
+          direction: this.terrainOcclusionRayDirection.clone(),
+          distance: totalDistance,
+          hit
+        } satisfies TerrainOcclusionHit;
+      }
+
+      travelled += Math.max(hitDistance + TERRAIN_OCCLUSION_RAYCAST_STEP_EPSILON, TERRAIN_OCCLUSION_RAYCAST_STEP_EPSILON);
+      this.terrainOcclusionRayOrigin.copy(origin).addScaledVector(this.terrainOcclusionRayDirection, travelled);
+    }
+
+    return null;
+  }
+
+  private collectCoveredPlayerHits(player: RuntimePlayerState, desiredCameraPosition: THREE.Vector3) {
+    this.terrainOcclusionHipsAnchor.set(
+      player.position.x,
+      player.position.y + defaultSimulationConfig.playerHeight * TERRAIN_OCCLUSION_HIP_HEIGHT_RATIO,
+      player.position.z
+    );
+    this.terrainOcclusionChestAnchor.set(
+      player.position.x,
+      player.position.y + defaultSimulationConfig.playerHeight * TERRAIN_OCCLUSION_CHEST_HEIGHT_RATIO,
+      player.position.z
+    );
+    this.terrainOcclusionHeadAnchor.set(
+      player.position.x,
+      player.position.y + defaultSimulationConfig.playerHeight * TERRAIN_OCCLUSION_HEAD_HEIGHT_RATIO,
+      player.position.z
+    );
+
+    return [
+      this.raycastTerrainOccluder(this.terrainOcclusionHipsAnchor, desiredCameraPosition),
+      this.raycastTerrainOccluder(this.terrainOcclusionChestAnchor, desiredCameraPosition),
+      this.raycastTerrainOccluder(this.terrainOcclusionHeadAnchor, desiredCameraPosition)
+    ].filter((hit): hit is TerrainOcclusionHit => hit !== null);
+  }
+
+  private clampCoveredPlayerCamera(
+    desiredCameraPosition: THREE.Vector3,
+    hits: readonly TerrainOcclusionHit[],
+    maxPushIn: number
+  ) {
+    if (hits.length === 0) {
+      this.coveredPlayerResolvedCameraPosition.copy(desiredCameraPosition);
+      return {
+        cameraPosition: this.coveredPlayerResolvedCameraPosition,
+        occluded: false
+      };
+    }
+
+    const nearestHit = hits.reduce((nearest, candidate) =>
+      candidate.distance < nearest.distance ? candidate : nearest
+    );
+    const desiredDistance = desiredCameraPosition.distanceTo(nearestHit.anchor);
+    const stopDistance = Math.max(0, nearestHit.distance - COVERED_PLAYER_CAMERA_BUFFER);
+    const minimumDistance = Math.max(0, desiredDistance - maxPushIn);
+    const resolvedDistance = Math.max(minimumDistance, Math.min(desiredDistance, stopDistance));
+
+    this.coveredPlayerResolvedCameraPosition
+      .copy(nearestHit.anchor)
+      .addScaledVector(nearestHit.direction, resolvedDistance);
+
+    return {
+      cameraPosition: this.coveredPlayerResolvedCameraPosition,
+      occluded: resolvedDistance + 1e-4 < desiredDistance
+    };
+  }
+
+  private collectUndergroundAirSeedCells(player: RuntimePlayerState) {
+    const seeds = new Map<string, Vec3i>();
+    const heightSamples = [
+      player.position.y + 0.05,
+      player.position.y + defaultSimulationConfig.playerHeight * TERRAIN_OCCLUSION_CHEST_HEIGHT_RATIO
+    ];
+    const footprintOffsets = [
+      [0, 0],
+      [0.22, 0.22],
+      [0.22, -0.22],
+      [-0.22, 0.22],
+      [-0.22, -0.22]
+    ] as const;
+
+    for (const sampleY of heightSamples) {
+      for (const [xOffset, zOffset] of footprintOffsets) {
+        const x = Math.floor(player.position.x + xOffset);
+        const y = Math.floor(sampleY);
+        const z = Math.floor(player.position.z + zOffset);
+        if (
+          x < 0 ||
+          x >= this.runtimeWorld.size.x ||
+          y < 0 ||
+          y >= this.runtimeWorld.size.y ||
+          z < 0 ||
+          z >= this.runtimeWorld.size.z
+        ) {
+          continue;
+        }
+
+        const key = createVoxelKey(x, y, z);
+        if (!seeds.has(key)) {
+          seeds.set(key, { x, y, z });
+        }
+      }
+    }
+
+    return [...seeds.values()];
+  }
+
+  private rebuildUndergroundChamber(player: RuntimePlayerState) {
+    const playerCell = {
+      x: Math.floor(player.position.x),
+      y: Math.floor(player.position.y),
+      z: Math.floor(player.position.z)
+    };
+    const playerChunk = chunkCoordsFromPosition(playerCell.x, playerCell.y, playerCell.z, DEFAULT_CHUNK_SIZE);
+    const cacheKey = [
+      this.runtimeWorld.getTerrainRevision(),
+      `${playerCell.x},${playerCell.y},${playerCell.z}`,
+      `${playerChunk.x},${playerChunk.y},${playerChunk.z}`
+    ].join("|");
+
+    if (this.undergroundChamberCacheKey === cacheKey) {
+      this.undergroundChamber.group.visible = this.undergroundChamber.chunkMeshes.size > 0;
+      return;
+    }
+
+    clearUndergroundChamberRenderState(this.undergroundChamber);
+    this.undergroundChamberSelectedVoxelKeys.clear();
+
+    const minBounds = {
+      x: Math.max(0, (playerChunk.x - 1) * DEFAULT_CHUNK_SIZE),
+      y: Math.max(0, (playerChunk.y - 1) * DEFAULT_CHUNK_SIZE),
+      z: Math.max(0, (playerChunk.z - 1) * DEFAULT_CHUNK_SIZE)
+    };
+    const maxBounds = {
+      x: Math.min(this.runtimeWorld.size.x - 1, (playerChunk.x + 2) * DEFAULT_CHUNK_SIZE - 1),
+      y: Math.min(this.runtimeWorld.size.y - 1, (playerChunk.y + 2) * DEFAULT_CHUNK_SIZE - 1),
+      z: Math.min(this.runtimeWorld.size.z - 1, (playerChunk.z + 2) * DEFAULT_CHUNK_SIZE - 1)
+    };
+
+    const reachableAir = new Set<string>();
+    const queue: Vec3i[] = [];
+    const enqueueAir = (x: number, y: number, z: number) => {
+      if (
+        x < minBounds.x || x > maxBounds.x ||
+        y < minBounds.y || y > maxBounds.y ||
+        z < minBounds.z || z > maxBounds.z
+      ) {
+        return;
+      }
+      if (
+        x < 0 || x >= this.runtimeWorld.size.x ||
+        y < 0 || y >= this.runtimeWorld.size.y ||
+        z < 0 || z >= this.runtimeWorld.size.z
+      ) {
+        return;
+      }
+      if (this.runtimeWorld.getVoxelKind(x, y, z)) {
+        return;
+      }
+
+      const key = createVoxelKey(x, y, z);
+      if (reachableAir.has(key)) {
+        return;
+      }
+
+      reachableAir.add(key);
+      queue.push({ x, y, z });
+    };
+
+    for (const seed of this.collectUndergroundAirSeedCells(player)) {
+      enqueueAir(seed.x, seed.y, seed.z);
+    }
+
+    const floodOffsets = [
+      { x: 1, y: 0, z: 0 },
+      { x: -1, y: 0, z: 0 },
+      { x: 0, y: 1, z: 0 },
+      { x: 0, y: -1, z: 0 },
+      { x: 0, y: 0, z: 1 },
+      { x: 0, y: 0, z: -1 }
+    ] as const;
+
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      for (const offset of floodOffsets) {
+        enqueueAir(current.x + offset.x, current.y + offset.y, current.z + offset.z);
+      }
+    }
+
+    for (const airKey of reachableAir) {
+      const [airX, airY, airZ] = airKey.split(",").map(Number);
+      for (const offset of floodOffsets) {
+        const solidX = airX + offset.x;
+        const solidY = airY + offset.y;
+        const solidZ = airZ + offset.z;
+        const kind = this.runtimeWorld.getVoxelKind(solidX, solidY, solidZ);
+        if (!kind) {
+          continue;
+        }
+
+        for (let depth = 0; depth <= UNDERGROUND_CHAMBER_THICKNESS_LAYERS; depth += 1) {
+          const selectedX = solidX + offset.x * depth;
+          const selectedY = solidY + offset.y * depth;
+          const selectedZ = solidZ + offset.z * depth;
+          const selectedKind = this.runtimeWorld.getVoxelKind(selectedX, selectedY, selectedZ);
+          if (!selectedKind) {
+            break;
+          }
+
+          this.undergroundChamberSelectedVoxelKeys.add(createVoxelKey(selectedX, selectedY, selectedZ));
+        }
+      }
+    }
+
+    const selectedVoxels = [...this.undergroundChamberSelectedVoxelKeys]
+      .map((key) => {
+        const [x, y, z] = key.split(",").map(Number);
+        const kind = this.runtimeWorld.getVoxelKind(x, y, z);
+        return kind ? { x, y, z, kind } : null;
+      })
+      .filter((voxel): voxel is MapDocumentV1["voxels"][number] => voxel !== null);
+
+    if (selectedVoxels.length > 0) {
+      const chamberWorld = new MutableVoxelWorld({
+        version: this.worldDocument.version,
+        meta: { ...this.worldDocument.meta },
+        size: { ...this.worldDocument.size },
+        boundary: { ...this.worldDocument.boundary },
+        spawns: [],
+        props: [],
+        voxels: selectedVoxels
+      });
+
+      for (const chunk of chamberWorld.buildVisibleChunks()) {
+        const meshData = meshTerrainChunk(chunk);
+        const geometry = buildTerrainChunkGeometry(meshData);
+        const mesh = new THREE.Mesh(geometry, this.undergroundChamber.materials);
+        mesh.frustumCulled = true;
+        mesh.position.set(meshData.chunkOffset.x, meshData.chunkOffset.y, meshData.chunkOffset.z);
+        this.undergroundChamber.group.add(mesh);
+        this.undergroundChamber.chunkMeshes.set(chunk.key, mesh);
+      }
+    }
+
+    this.undergroundChamberCacheKey = cacheKey;
+    this.undergroundChamber.group.visible = this.undergroundChamber.chunkMeshes.size > 0;
+  }
+
+  private resolveCoveredPlayerVisibility(
+    player: RuntimePlayerState,
+    desiredCameraPosition: THREE.Vector3
+  ): CoveredPlayerVisibilityResolution {
+    if (this.presentation === "menu" || !isRuntimeMode(this.mode)) {
+      this.clearCoveredPlayerVisibility();
+      this.coveredPlayerResolvedCameraPosition.copy(desiredCameraPosition);
+      return {
+        cameraPosition: this.coveredPlayerResolvedCameraPosition,
+        mode: "clear",
+        occluded: false
+      };
+    }
+
+    const terrainBlockerHits = this.collectCoveredPlayerHits(player, desiredCameraPosition);
+
+    if (this.isPlayerUnderground(player)) {
+      this.rebuildUndergroundChamber(player);
+      this.terrainGroup.visible = false;
+      this.coveredPlayerSilhouetteGroup.visible = false;
+      this.coveredPlayerVisibilityMode = "underground";
+      const cameraResolution = this.clampCoveredPlayerCamera(
+        desiredCameraPosition,
+        terrainBlockerHits,
+        COVERED_PLAYER_UNDERGROUND_MAX_CAMERA_PUSH_IN
+      );
+
+      return {
+        cameraPosition: cameraResolution.cameraPosition,
+        mode: "underground",
+        occluded: cameraResolution.occluded
+      };
+    }
+
+    this.terrainGroup.visible = true;
+    this.undergroundChamber.group.visible = false;
+
+    if (terrainBlockerHits.length > 0) {
+      this.coveredPlayerVisibilityMode = "under_structure";
+      this.coveredPlayerSilhouetteGroup.visible = true;
+      const cameraResolution = this.clampCoveredPlayerCamera(
+        desiredCameraPosition,
+        terrainBlockerHits,
+        COVERED_PLAYER_UNDER_STRUCTURE_MAX_CAMERA_PUSH_IN
+      );
+
+      return {
+        cameraPosition: cameraResolution.cameraPosition,
+        mode: "under_structure",
+        occluded: cameraResolution.occluded
+      };
+    }
+
+    this.coveredPlayerVisibilityMode = "clear";
+    this.coveredPlayerSilhouetteGroup.visible = false;
+    this.coveredPlayerResolvedCameraPosition.copy(desiredCameraPosition);
+    return {
+      cameraPosition: this.coveredPlayerResolvedCameraPosition,
+      mode: "clear",
+      occluded: false
+    };
   }
 
   private updateSpectatorCamera(delta: number, players: RuntimePlayerState[]) {
@@ -3265,7 +4083,7 @@ export class GameClient {
     this.playerShadowRaycaster.far = Math.max(this.worldDocument.size.y + 32, position.y + 32);
 
     const intersections = this.playerShadowRaycaster.intersectObjects(
-      [this.terrainGroup, this.propsGroup, this.clustersGroup],
+      [...this.getVisibleTerrainRaycastRoots(), this.propsGroup, this.clustersGroup],
       true
     );
     const firstHit = intersections.find((intersection) => intersection.point.y <= position.y + 0.5);
@@ -3434,14 +4252,20 @@ export class GameClient {
       this.updateEggLaunchPreview(null, elapsedTime);
       this.updateLocalResourceBubble(null, elapsedTime);
       this.emitRuntimeOverlayState(false, elapsedTime);
+      this.syncFeatherBursts(elapsedTime);
       return;
     }
 
     const localPlayer = frame.localPlayerId
       ? frame.players.find((player) => player.id === frame.localPlayerId) ?? null
       : null;
+    const hadLocalSpaceChallenge = this.localSpaceChallengeTargetKey !== null;
     this.syncLocalSpaceChallengeState();
-    if (localPlayer?.spacePhase === "reentry" && this.previousLocalSpacePhase === "float") {
+    if (
+      localPlayer?.spacePhase === "reentry" &&
+      this.previousLocalSpacePhase === "float" &&
+      hadLocalSpaceChallenge
+    ) {
       this.triggerSpaceFailFeedback(elapsedTime);
     }
     if (localPlayer?.spacePhase === "superBoomImpact" && this.previousLocalSpacePhase !== "superBoomImpact") {
@@ -3459,11 +4283,13 @@ export class GameClient {
     this.syncVoxelBursts(frame.voxelBursts ?? []);
     this.syncSkyDrops(frame.skyDrops, elapsedTime);
     this.syncClusters(frame.fallingClusters, elapsedTime);
+    this.syncFeatherBursts(elapsedTime);
   }
 
   private syncPlayers(players: RuntimePlayerState[], localPlayerId: string | null, delta: number, elapsedTime: number) {
     const seen = new Set<string>();
     const horizontalDamping = 1 - Math.exp(-delta * 10);
+    let localPlayerVisual: PlayerVisual | null = null;
 
     for (const player of players) {
       const isLocal = player.id === localPlayerId;
@@ -3481,8 +4307,16 @@ export class GameClient {
         this.playersGroup.add(visual.group);
         this.playerVisuals.set(player.id, visual);
       }
+      if (isLocal) {
+        localPlayerVisual = visual;
+      }
 
       seen.add(player.id);
+      const previousLivesRemaining = this.playerObservedLives.get(player.id);
+      if (previousLivesRemaining !== undefined && player.livesRemaining < previousLivesRemaining) {
+        this.triggerFeatherBurst(player.position, previousLivesRemaining - player.livesRemaining, elapsedTime);
+      }
+      this.playerObservedLives.set(player.id, player.livesRemaining);
       const playerVisible = player.fallingOut || (player.alive && !player.respawning);
       visual.group.visible = playerVisible;
       const superBoomDive = player.spacePhase === "superBoomDive";
@@ -3795,6 +4629,51 @@ export class GameClient {
       disposePlayerVisual(visual);
       this.playerVisuals.delete(playerId);
     }
+
+    this.updateCoveredPlayerSilhouette(localPlayerVisual);
+  }
+
+  private ensureCoveredPlayerSilhouette(sourceVisual: PlayerVisual) {
+    if (this.coveredPlayerSilhouetteSource === sourceVisual && this.coveredPlayerSilhouetteRoot) {
+      return this.coveredPlayerSilhouetteRoot;
+    }
+
+    if (this.coveredPlayerSilhouetteRoot) {
+      this.coveredPlayerSilhouetteGroup.remove(this.coveredPlayerSilhouetteRoot);
+    }
+
+    const clone = clonePlayerSilhouetteRoot(sourceVisual.root, this.coveredPlayerSilhouetteMaterial);
+    this.coveredPlayerSilhouetteGroup.add(clone);
+    this.coveredPlayerSilhouetteSource = sourceVisual;
+    this.coveredPlayerSilhouetteRoot = clone;
+    return clone;
+  }
+
+  private updateCoveredPlayerSilhouette(localVisual: PlayerVisual | null) {
+    if (
+      !localVisual ||
+      this.coveredPlayerVisibilityMode !== "under_structure" ||
+      !localVisual.group.visible
+    ) {
+      this.coveredPlayerSilhouetteGroup.visible = false;
+      return;
+    }
+
+    this.coveredPlayerSilhouetteMaterial.color.copy(localVisual.ringMaterial.color);
+    this.coveredPlayerSilhouetteGroup.position.copy(localVisual.group.position);
+    this.coveredPlayerSilhouetteGroup.quaternion.copy(localVisual.group.quaternion);
+    this.coveredPlayerSilhouetteGroup.scale.copy(localVisual.group.scale);
+
+    let silhouetteRoot = this.ensureCoveredPlayerSilhouette(localVisual);
+    if (!syncObjectTransformsRecursive(localVisual.root, silhouetteRoot)) {
+      this.coveredPlayerSilhouetteGroup.remove(silhouetteRoot);
+      this.coveredPlayerSilhouetteSource = null;
+      this.coveredPlayerSilhouetteRoot = null;
+      silhouetteRoot = this.ensureCoveredPlayerSilhouette(localVisual);
+      syncObjectTransformsRecursive(localVisual.root, silhouetteRoot);
+    }
+
+    this.coveredPlayerSilhouetteGroup.visible = true;
   }
 
   private syncEggs(eggs: RuntimeEggState[], elapsedTime: number) {

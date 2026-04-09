@@ -4,6 +4,7 @@ import {
   aimCameraConfig,
   applyFreeLookDelta,
   clampLookPitch,
+  clampSpaceLookPitch,
   dampScalar,
   getAimRigState,
   getAimTarget,
@@ -12,8 +13,10 @@ import {
   getPlanarForwardBetweenPoints,
   getPlanarVectorFromYaw,
   getRuntimeFocusRayDistance,
+  getSpaceAimRigState,
   getSpeedCameraBlend,
   getYawFromPlanarVector,
+  spaceCameraConfig,
   stepAngleToward
 } from "./camera";
 
@@ -94,6 +97,18 @@ describe("free-look helpers", () => {
     );
 
     expect(clampLookPitch(next.pitch)).toBeCloseTo(aimCameraConfig.minPitch, 5);
+  });
+
+  it("lets the space camera pitch move within a steeper centered range", () => {
+    const next = applyFreeLookDelta(
+      { yaw: 0, pitch: spaceCameraConfig.defaultPitch },
+      { deltaX: 0, deltaY: 400 },
+      defaultRuntimeControlSettings,
+      spaceCameraConfig
+    );
+
+    expect(next.pitch).toBeCloseTo(spaceCameraConfig.minPitch, 5);
+    expect(clampSpaceLookPitch(spaceCameraConfig.defaultPitch + 1)).toBeCloseTo(spaceCameraConfig.maxPitch, 5);
   });
 
   it("scales free-look mouse deltas with the saved sensitivity setting", () => {
@@ -181,5 +196,28 @@ describe("free-look helpers", () => {
     expect(rayDistance).toBeGreaterThan(minimumReach);
     expect(rayDistance).toBeGreaterThan(4.5);
     expect(slowRig.shoulderOffset).toBe(0);
+  });
+
+  it("places the space camera directly above the player while keeping horizontal aim", () => {
+    const spaceAim = getSpaceAimRigState({ x: 10, y: 2, z: 8 }, Math.PI / 2, spaceCameraConfig.defaultPitch);
+
+    expect(spaceAim.aimTarget.x).toBeCloseTo(spaceAim.aimPivot.x, 5);
+    expect(spaceAim.aimTarget.y).toBeCloseTo(spaceAim.aimPivot.y, 5);
+    expect(spaceAim.aimTarget.z).toBeCloseTo(spaceAim.aimPivot.z, 5);
+    expect(spaceAim.cameraPosition.x).toBeLessThan(spaceAim.aimPivot.x);
+    expect(spaceAim.cameraPosition.z).toBeCloseTo(spaceAim.aimPivot.z, 5);
+    expect(spaceAim.cameraPosition.y).toBeGreaterThan(spaceAim.aimPivot.y);
+    expect(spaceAim.planarForward.x).toBeCloseTo(1, 5);
+    expect(spaceAim.planarForward.z).toBeCloseTo(0, 5);
+  });
+
+  it("uses a steeper orbit pitch for the space rig than the normal chase aim", () => {
+    const normalAim = getAimRigState({ x: 10, y: 2, z: 8 }, 0, aimCameraConfig.defaultPitch, 0);
+    const spaceAim = getSpaceAimRigState({ x: 10, y: 2, z: 8 }, 0, spaceCameraConfig.defaultPitch);
+
+    expect(spaceAim.lookDirection.y).toBeLessThan(normalAim.lookDirection.y);
+    expect(spaceAim.aimTarget).toEqual(spaceAim.aimPivot);
+    expect(spaceAim.cameraPosition.z).toBeLessThan(spaceAim.aimPivot.z);
+    expect(spaceAim.cameraPosition.y).toBeGreaterThan(spaceAim.aimPivot.y);
   });
 });

@@ -1,4 +1,4 @@
-import { createRef } from "react";
+import { createRef, StrictMode } from "react";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDefaultArenaMap } from "@out-of-bounds/map";
@@ -76,15 +76,37 @@ describe("GameHost", () => {
         initialDocument,
         initialMode: "explore",
         matchColorSeed: 17,
-        onDiagnostics,
-        onEditorStateChange,
-        onHudStateChange,
-        onPauseStateChange,
-        onReadyToDisplay,
-        onStatus
+        onDiagnostics: expect.any(Function),
+        onEditorStateChange: expect.any(Function),
+        onHudStateChange: expect.any(Function),
+        onPauseStateChange: expect.any(Function),
+        onReadyToDisplay: expect.any(Function),
+        onStatus: expect.any(Function)
       })
     );
     expect(screen.getByTestId("runtime-reticle")).toBeInTheDocument();
+  });
+
+  it("keeps the mounted client alive across StrictMode probe mounts", async () => {
+    render(
+      <StrictMode>
+        <GameHost
+          initialDocument={createDefaultArenaMap()}
+          matchColorSeed={21}
+          mode="explore"
+        />
+      </StrictMode>
+    );
+
+    await waitFor(() => {
+      expect(gameClientState.mount).toHaveBeenCalledTimes(1);
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    expect(gameClientState.mockClient.dispose).not.toHaveBeenCalled();
   });
 
   it("keeps the same mounted client when only the shell mode changes", async () => {
@@ -240,12 +262,61 @@ describe("GameHost", () => {
     );
 
     await waitFor(() => {
-      expect(gameClientState.mount).toHaveBeenCalledWith(
-        expect.objectContaining({
-          onReadyToDisplay
-        })
-      );
+      expect(gameClientState.mount).toHaveBeenCalledTimes(1);
     });
+
+    const mountOptions = gameClientState.mount.mock.calls[0]?.[0] as {
+      onReadyToDisplay?: () => void;
+    };
+
+    act(() => {
+      mountOptions.onReadyToDisplay?.();
+    });
+
+    expect(onReadyToDisplay).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the same mounted client when callback props change and uses the latest callback", async () => {
+    const initialDocument = createDefaultArenaMap();
+    const firstOnStatus = vi.fn();
+    const nextOnStatus = vi.fn();
+
+    const { rerender } = render(
+      <GameHost
+        initialDocument={initialDocument}
+        matchColorSeed={13}
+        mode="explore"
+        onStatus={firstOnStatus}
+      />
+    );
+
+    await waitFor(() => {
+      expect(gameClientState.mount).toHaveBeenCalledTimes(1);
+    });
+
+    const mountOptions = gameClientState.mount.mock.calls[0]?.[0] as {
+      onStatus?: (message: string) => void;
+    };
+
+    gameClientState.mount.mockClear();
+
+    rerender(
+      <GameHost
+        initialDocument={initialDocument}
+        matchColorSeed={13}
+        mode="explore"
+        onStatus={nextOnStatus}
+      />
+    );
+
+    expect(gameClientState.mount).not.toHaveBeenCalled();
+
+    act(() => {
+      mountOptions.onStatus?.("Fresh status");
+    });
+
+    expect(firstOnStatus).not.toHaveBeenCalled();
+    expect(nextOnStatus).toHaveBeenCalledWith("Fresh status");
   });
 
   it("forwards a custom worker factory to the mounted client", async () => {
@@ -342,6 +413,8 @@ describe("GameHost", () => {
 
     unmount();
 
-    expect(gameClientState.mockClient.dispose).toHaveBeenCalledTimes(1);
+    await waitFor(() => {
+      expect(gameClientState.mockClient.dispose).toHaveBeenCalledTimes(1);
+    });
   });
 });

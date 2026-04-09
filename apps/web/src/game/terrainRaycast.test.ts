@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { raycastVoxelWorld, resolveTerrainRaycastHit } from "./terrainRaycast";
 
 const createTinyWorld = (
-  voxels: Array<{ x: number; y: number; z: number; kind: "ground" | "boundary" | "hazard" }>,
+  voxels: Array<{ x: number; y: number; z: number; kind: "ground" | "boundary" | "hazard" | "water" }>,
   props: MapDocumentV1["props"] = []
 ) =>
   new MutableVoxelWorld({
@@ -101,5 +101,18 @@ describe("raycastVoxelWorld", () => {
 
     expect(raycastVoxelWorld(world, { x: 2.5, y: 1.5, z: 3.5 }, { x: 1, y: 0, z: 0 }, 0.4)).toBeNull();
     expect(raycastVoxelWorld(world, { x: 3.5, y: 4, z: 4.5 }, { x: 0, y: -1, z: 0 }, 8)).toBeNull();
+  });
+
+  it("ignores water and continues to the nearest blocking voxel", () => {
+    const world = createTinyWorld([
+      { x: 2, y: 1, z: 2, kind: "ground" },
+      { x: 2, y: 2, z: 2, kind: "water" }
+    ]);
+
+    expect(raycastVoxelWorld(world, { x: 2.5, y: 4, z: 2.5 }, { x: 0, y: -1, z: 0 }, 8)).toEqual({
+      voxel: { x: 2, y: 1, z: 2 },
+      normal: { x: 0, y: 1, z: 0 },
+      distance: 2
+    });
   });
 });

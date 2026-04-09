@@ -6,6 +6,7 @@ import {
   DEFAULT_GROUND_TOP_Y,
   DEFAULT_MOUNTAIN_PEAK_RISE,
   DEFAULT_SURFACE_Y,
+  DEFAULT_WATER_TABLE_Y,
   getDefaultArenaSummitBounds
 } from "../default-map";
 import { EXPOSED_FACE_BITS } from "../utils";
@@ -33,7 +34,7 @@ const createTinyDocument = ({
   voxels,
   spawns = []
 }: {
-  voxels: Array<{ x: number; y: number; z: number; kind: "ground" | "boundary" | "hazard" }>;
+  voxels: Array<{ x: number; y: number; z: number; kind: "ground" | "boundary" | "hazard" | "water" }>;
   spawns?: MapDocumentV1["spawns"];
 }): MapDocumentV1 => ({
     version: 1,
@@ -51,7 +52,7 @@ const createTinyDocument = ({
   });
 
 const createTinyWorld = (
-  voxels: Array<{ x: number; y: number; z: number; kind: "ground" | "boundary" | "hazard" }>,
+  voxels: Array<{ x: number; y: number; z: number; kind: "ground" | "boundary" | "hazard" | "water" }>,
   spawns: MapDocumentV1["spawns"] = []
 ) => new MutableVoxelWorld(createTinyDocument({ voxels, spawns }));
 
@@ -143,6 +144,37 @@ describe("MutableVoxelWorld", () => {
     expect(world.getTopSolidY(4, 4)).toBe(0);
   });
 
+  it("tracks water occupancy separately from blocking terrain", () => {
+    const world = createTinyWorld([
+      { x: 4, y: 0, z: 4, kind: "ground" },
+      { x: 4, y: 1, z: 4, kind: "water" },
+      { x: 4, y: 2, z: 4, kind: "water" }
+    ]);
+
+    expect(world.hasOccupiedVoxel(4, 2, 4)).toBe(true);
+    expect(world.hasWater(4, 2, 4)).toBe(true);
+    expect(world.hasBlockingVoxel(4, 2, 4)).toBe(false);
+    expect(world.getOccupiedKind(4, 2, 4)).toBe("water");
+    expect(world.getTopWaterY(4, 4)).toBe(2);
+    expect(world.getTopSolidY(4, 4)).toBe(0);
+    expect(world.getTopBlockingY(4, 4)).toBe(0);
+  });
+
+  it("keeps terrain and water faces exposed against each other", () => {
+    const world = createTinyWorld([
+      { x: 4, y: 1, z: 4, kind: "ground" },
+      { x: 5, y: 1, z: 4, kind: "water" }
+    ]);
+    const chunkVoxels = world.buildVisibleChunks()[0]?.voxels ?? [];
+    const groundVoxel = chunkVoxels.find((voxel) => voxel.position.x === 4);
+    const waterVoxel = chunkVoxels.find((voxel) => voxel.position.x === 5);
+
+    expect(groundVoxel).toBeDefined();
+    expect(waterVoxel).toBeDefined();
+    expect((groundVoxel!.faceMask ?? 0) & EXPOSED_FACE_BITS.posX).toBe(EXPOSED_FACE_BITS.posX);
+    expect((waterVoxel!.faceMask ?? 0) & EXPOSED_FACE_BITS.negX).toBe(EXPOSED_FACE_BITS.negX);
+  });
+
   it("keeps spawn ids monotonic after deletions", () => {
     const world = createTinyWorld([], [
       { id: "spawn-1", x: 4.5, y: 1.05, z: 4.5 },
@@ -178,6 +210,15 @@ describe("MutableVoxelWorld", () => {
     const rebuiltAfterRemove = world.buildVisibleChunksForKeys(dirtyAfterRemove);
 
     expect(normalizeChunks(rebuiltAfterRemove)).toEqual(normalizeChunks(fullAfterRemove));
+  });
+
+  it("seeds authored water outside the default arena footprint", () => {
+    const world = new MutableVoxelWorld(createDefaultArenaMap());
+
+    expect(world.getTopWaterY(0, 0)).toBe(DEFAULT_WATER_TABLE_Y);
+    expect(world.getTopSolidY(0, 0)).toBe(-1);
+    expect(world.getTopWaterY(16, 16)).toBe(-1);
+    expect(world.getTopGroundY(16, 16)).toBe(DEFAULT_GROUND_TOP_Y);
   });
 
   it("records exposed face masks for isolated and adjacent voxels", () => {

@@ -15,8 +15,8 @@ describe("ShortcutLegend", () => {
         bindings={[
           {
             action: "Build",
-            detail: "tap F to place a block",
-            pauseDetail: "place a block",
+            detail: "hold F to place blocks",
+            pauseDetail: "hold to build",
             keys: ["F"]
           }
         ]}
@@ -25,9 +25,18 @@ describe("ShortcutLegend", () => {
     );
 
     expect(screen.getByText("Build")).toBeInTheDocument();
-    expect(screen.getByText("place a block")).toBeInTheDocument();
+    expect(screen.getByText("hold to build")).toBeInTheDocument();
     expect(screen.getByText("F")).toBeInTheDocument();
     expect(screen.queryByText("+")).not.toBeInTheDocument();
+  });
+
+  it("describes build as held F in the runtime bindings", () => {
+    const binding = getRuntimeShortcutBindings().find((entry) => entry.action === "Build");
+
+    expect(binding).toMatchObject({
+      detail: "hold F to place blocks",
+      keys: ["F"]
+    });
   });
 
   it("describes harvest as held LMB in the runtime bindings", () => {

@@ -1,10 +1,65 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import type { HudState } from "@out-of-bounds/sim";
 import type { RuntimeOverlayState } from "../engine/types";
 import { Hud } from "./Hud";
 
-const createHudState = (eggStatus: HudState["eggStatus"]): HudState => ({
+const defaultLocalPlayer: NonNullable<HudState["localPlayer"]> = {
+  id: "human-1",
+  name: "You",
+  alive: true,
+  grounded: true,
+  mass: 84,
+  maxMass: 500,
+  livesRemaining: 3,
+  maxLives: 3,
+  respawning: false,
+  invulnerableRemaining: 0,
+  stunRemaining: 0
+};
+
+const createHudState = (
+  eggStatus: HudState["eggStatus"],
+  {
+    localPlayer,
+    ...overrides
+  }: Partial<HudState> & {
+    localPlayer?: Partial<NonNullable<HudState["localPlayer"]>>;
+  } = {}
+): HudState => ({
+  mode: "explore",
+  localPlayerId: "human-1",
+  localPlayer: {
+    ...defaultLocalPlayer,
+    ...localPlayer
+  },
+  eggStatus,
+  spaceChallenge: null,
+  ranking: [{ id: "human-1", name: "You", alive: true }],
+  ...overrides
+});
+
+const readyEggStatus: HudState["eggStatus"] = {
+  reason: "ready",
+  hasMatter: true,
+  ready: true,
+  activeCount: 0,
+  maxActiveCount: 2,
+  cost: 42,
+  cooldownRemaining: 0,
+  cooldownDuration: 1.6,
+  canQuickEgg: true,
+  canChargedThrow: true
+};
+
+const createReadyHudState = (
+  overrides: Partial<HudState> & {
+    localPlayer?: Partial<NonNullable<HudState["localPlayer"]>>;
+  } = {}
+) =>
+  createHudState(readyEggStatus, overrides);
+
+const createHudStateWithoutEgg = (): HudState => ({
   mode: "explore",
   localPlayerId: "human-1",
   localPlayer: {
@@ -13,14 +68,14 @@ const createHudState = (eggStatus: HudState["eggStatus"]): HudState => ({
     alive: true,
     grounded: true,
     mass: 84,
-    maxMass: 300,
+    maxMass: 500,
     livesRemaining: 3,
     maxLives: 3,
     respawning: false,
     invulnerableRemaining: 0,
     stunRemaining: 0
   },
-  eggStatus,
+  eggStatus: null,
   spaceChallenge: null,
   ranking: [{ id: "human-1", name: "You", alive: true }]
 });
@@ -35,6 +90,46 @@ const inactiveOverlayState: RuntimeOverlayState = {
 };
 
 describe("Hud", () => {
+  it("can switch from runtime mode to editor mode without breaking hook order", () => {
+    const { rerender } = render(
+      <Hud
+        hudState={createReadyHudState()}
+        mode="explore"
+        overlayState={inactiveOverlayState}
+      />
+    );
+
+    expect(() =>
+      rerender(
+        <Hud
+          hudState={createReadyHudState()}
+          mode="editor"
+          overlayState={inactiveOverlayState}
+        />
+      )
+    ).not.toThrow();
+  });
+
+  it("can clear a populated hud state without throwing", () => {
+    const { rerender } = render(
+      <Hud
+        hudState={createReadyHudState()}
+        mode="explore"
+        overlayState={inactiveOverlayState}
+      />
+    );
+
+    expect(() =>
+      rerender(
+        <Hud
+          hudState={null}
+          mode="explore"
+          overlayState={inactiveOverlayState}
+        />
+      )
+    ).not.toThrow();
+  });
+
   it("renders only the shared egg icon when launch is cooling down", () => {
     render(
       <Hud
@@ -88,6 +183,20 @@ describe("Hud", () => {
     expect(screen.queryByText("0 / 2")).not.toBeInTheDocument();
   });
 
+  it("keeps the space overlay hidden when the default space flow has no challenge armed", () => {
+    render(
+      <Hud
+        hudState={createReadyHudState()}
+        mode="explore"
+        overlayState={inactiveOverlayState}
+      />
+    );
+
+    expect(screen.queryByTestId("space-typing-overlay")).not.toBeInTheDocument();
+    expect(screen.queryByText("MASH THIS KEY")).not.toBeInTheDocument();
+    expect(screen.queryByText("TOO SLOW")).not.toBeInTheDocument();
+  });
+
   it("keeps the icon visible without labels when the player is dry", () => {
     render(
       <Hud
@@ -133,7 +242,169 @@ describe("Hud", () => {
       />
     );
 
-    expect(screen.getByTestId("hud-matter-meter")).toHaveClass("hud-meter--pulse");
+    expect(screen.getByTestId("hud-matter")).toHaveClass("hud-matter--pulse");
+  });
+
+  it("always renders three feathers and dims the spent ones", () => {
+    render(
+      <Hud
+        hudState={createReadyHudState({
+          localPlayer: {
+            livesRemaining: 2
+          }
+        })}
+        mode="explore"
+        overlayState={inactiveOverlayState}
+      />
+    );
+
+    expect(screen.getByTestId("hud-health").children).toHaveLength(3);
+    expect(screen.getByTestId("hud-feather-1")).toHaveAttribute("data-state", "active");
+    expect(screen.getByTestId("hud-feather-2")).toHaveAttribute("data-state", "active");
+    expect(screen.getByTestId("hud-feather-3")).toHaveAttribute("data-state", "spent");
+  });
+
+  it("turns the final feather red and blinking at one life", () => {
+    render(
+      <Hud
+        hudState={createReadyHudState({
+          localPlayer: {
+            livesRemaining: 1
+          }
+        })}
+        mode="explore"
+        overlayState={inactiveOverlayState}
+      />
+    );
+
+    expect(screen.getByTestId("hud-feather-1")).toHaveAttribute("data-state", "critical");
+    expect(screen.getByTestId("hud-feather-1")).toHaveClass("hud-feather--critical");
+    expect(screen.getByTestId("hud-feather-2")).toHaveAttribute("data-state", "spent");
+    expect(screen.getByTestId("hud-feather-3")).toHaveAttribute("data-state", "spent");
+  });
+
+  it("renders matter as a voxel with a number instead of a meter", () => {
+    render(
+      <Hud
+        hudState={createReadyHudState()}
+        mode="explore"
+        overlayState={inactiveOverlayState}
+      />
+    );
+
+    expect(screen.getByTestId("hud-matter")).toHaveAttribute("data-state", "normal");
+    expect(screen.getByTestId("hud-matter-cube")).toBeInTheDocument();
+    expect(screen.getByTestId("hud-matter-amount")).toHaveTextContent("84/500");
+    expect(screen.queryByTestId("hud-matter-meter")).not.toBeInTheDocument();
+  });
+
+  it("shows the weaker warning state when matter is below egg cost", () => {
+    render(
+      <Hud
+        hudState={createReadyHudState({
+          localPlayer: {
+            mass: 18
+          }
+        })}
+        mode="explore"
+        overlayState={inactiveOverlayState}
+      />
+    );
+
+    expect(screen.getByTestId("hud-matter")).toHaveAttribute("data-state", "warning");
+    expect(screen.getByTestId("hud-matter-amount")).toHaveTextContent("18/500");
+  });
+
+  it("shows the critical red blink state when matter is empty", () => {
+    render(
+      <Hud
+        hudState={createReadyHudState({
+          localPlayer: {
+            mass: 0
+          }
+        })}
+        mode="explore"
+        overlayState={inactiveOverlayState}
+      />
+    );
+
+    expect(screen.getByTestId("hud-matter")).toHaveAttribute("data-state", "empty");
+    expect(screen.getByTestId("hud-matter")).toHaveClass("hud-matter--empty");
+    expect(screen.getByTestId("hud-matter-amount")).toHaveTextContent("0/500");
+  });
+
+  it("does not show the old mode or idle grounded copy", () => {
+    render(
+      <Hud
+        hudState={createReadyHudState()}
+        mode="explore"
+        overlayState={inactiveOverlayState}
+      />
+    );
+
+    expect(screen.queryByText("EXPLORE")).not.toBeInTheDocument();
+    expect(screen.queryByText("Grounded")).not.toBeInTheDocument();
+    expect(screen.queryByText("Airborne")).not.toBeInTheDocument();
+  });
+
+  it("bounces the matter cube upward when matter increases", async () => {
+    const { rerender } = render(
+      <Hud
+        hudState={createReadyHudState({
+          localPlayer: {
+            mass: 84
+          }
+        })}
+        mode="explore"
+        overlayState={inactiveOverlayState}
+      />
+    );
+
+    rerender(
+      <Hud
+        hudState={createReadyHudState({
+          localPlayer: {
+            mass: 96
+          }
+        })}
+        mode="explore"
+        overlayState={inactiveOverlayState}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("hud-matter")).toHaveClass("hud-matter--gain");
+    });
+  });
+
+  it("plays the spend reaction when matter is used", async () => {
+    const { rerender } = render(
+      <Hud
+        hudState={createReadyHudState({
+          localPlayer: {
+            mass: 84
+          }
+        })}
+        mode="explore"
+        overlayState={inactiveOverlayState}
+      />
+    );
+
+    rerender(
+      <Hud
+        hudState={createReadyHudState({
+          localPlayer: {
+            mass: 42
+          }
+        })}
+        mode="explore"
+        overlayState={inactiveOverlayState}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("hud-matter")).toHaveClass("hud-matter--spend");
+    });
   });
 
   it("renders the centered mash challenge with optimistic local progress", () => {
@@ -310,5 +581,19 @@ describe("Hud", () => {
 
     expect(screen.getByTestId("space-typing-fail")).toHaveTextContent("MISS");
     expect(screen.getByText("TOO SLOW")).toBeInTheDocument();
+  });
+
+  it("renders the HUD without the egg widget when egg status is unavailable", () => {
+    render(
+      <Hud
+        hudState={createHudStateWithoutEgg()}
+        mode="explore"
+        overlayState={inactiveOverlayState}
+      />
+    );
+
+    expect(screen.queryByTestId("hud-egg-card")).not.toBeInTheDocument();
+    expect(screen.getByTestId("hud-health")).toBeInTheDocument();
+    expect(screen.getByTestId("hud-matter")).toBeInTheDocument();
   });
 });

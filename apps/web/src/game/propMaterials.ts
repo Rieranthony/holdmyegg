@@ -1,6 +1,6 @@
 import * as THREE from "three";
 
-export const PIXEL_TEXTURE_SIZE = 8;
+export const PIXEL_TEXTURE_SIZE = 16;
 
 export const propTexturePalette = {
   b: "#8b5a2b",
@@ -34,6 +34,10 @@ const createPixelTexture = (rows: string[]) => {
 
   rows.forEach((row, y) => {
     [...row].forEach((token, x) => {
+      if (token === ".") {
+        return;
+      }
+
       const hex = propTexturePalette[token as keyof typeof propTexturePalette];
       if (!hex) {
         throw new Error(`Unknown prop texture token "${token}" at ${x},${y}`);
@@ -60,104 +64,180 @@ const createPixelTexture = (rows: string[]) => {
   return texture;
 };
 
-const createStandardMaterial = (texture: THREE.Texture) =>
+const createStandardMaterial = (
+  texture: THREE.Texture,
+  overrides: Partial<THREE.MeshStandardMaterialParameters> = {}
+) =>
   new THREE.MeshStandardMaterial({
     color: "#ffffff",
     map: texture,
     roughness: 1,
-    metalness: 0
+    metalness: 0,
+    ...overrides
   });
 
 export const propTextureRows = {
   bark: [
-    "bBbBbBbB",
-    "BbBbBbBb",
-    "bBbBBbBb",
-    "BbBbBbBb",
-    "bBBbBbBb",
-    "BbBbBBbB",
-    "bBbBbBbB",
-    "BbBbBbBb"
+    "bBbBbBbBBbBbBbBb",
+    "BbBbBbBbbBbBbBbB",
+    "bBbBBbBbbBbBBbBb",
+    "BbBbBbBbBbBbBbBb",
+    "bBBbBbBbbBBbBbBb",
+    "BbBbBBbBBbBbBBbB",
+    "bBbBbBbBbBbBbBbB",
+    "BbBbBbBbbBbBbBbB",
+    "bBbBBbBbbBbBBbBb",
+    "BbBbBbBbBbBbBbBb",
+    "bBBbBbBbbBBbBbBb",
+    "BbBbBBbBBbBbBBbB",
+    "bBbBbBbBbBbBbBbB",
+    "BbBbBbBbbBbBbBbB",
+    "bBbBBbBbbBbBBbBb",
+    "BbBbBbBbBbBbBbBb"
   ],
   leaves: [
-    "lLllLllL",
-    "LlLllLll",
-    "llLLllLl",
-    "LllLllLl",
-    "llLllLLl",
-    "LllLLllL",
-    "llLllLll",
-    "LllLllLl"
+    "lLllLllLLllLllLl",
+    "LlLllLlllLllLllL",
+    "llLLllLlllLLllLl",
+    "LllLllLlLllLllLl",
+    "llLllLLlllLllLLl",
+    "LllLLllLLllLLllL",
+    "llLllLlllLllLlll",
+    "LllLllLlLllLllLl",
+    "lLllLllLLllLllLl",
+    "LlLllLlllLllLllL",
+    "llLLllLlllLLllLl",
+    "LllLllLlLllLllLl",
+    "llLllLLlllLllLLl",
+    "LllLLllLLllLLllL",
+    "llLllLlllLllLlll",
+    "LllLllLlLllLllLl"
   ],
   nest: [
-    "nNnnNnnN",
-    "NnnNNnnn",
-    "nnNnnNnN",
-    "NnnnNnnN",
-    "nnNNnnNn",
-    "NnnnNnnN",
-    "nnNnnNNn",
-    "NnnNnnnN"
+    "nNnnNnnNnNnnNnnN",
+    "NnnNNnnnNnnNNnnn",
+    "nnNnnNnNnnNnnNnN",
+    "NnnnNnnNNnnnNnnN",
+    "nnNNnnNnnnNNnnNn",
+    "NnnnNnnNNnnnNnnN",
+    "nnNnnNNnnnNnnNNn",
+    "NnnNnnnNNnnNnnnN",
+    "nNnnNnnNnNnnNnnN",
+    "NnnNNnnnNnnNNnnn",
+    "nnNnnNnNnnNnnNnN",
+    "NnnnNnnNNnnnNnnN",
+    "nnNNnnNnnnNNnnNn",
+    "NnnnNnnNNnnnNnnN",
+    "nnNnnNNnnnNnnNNn",
+    "NnnNnnnNNnnNnnnN"
   ],
   grass: [
-    "gGGgGGgG",
-    "GgGGgGGg",
-    "gGGgGGgG",
-    "GGggGGgg",
-    "gGGGGgGG",
-    "GgGGgGGg",
-    "gGGgGGgG",
-    "GGggGGgg"
+    "................",
+    ".......g........",
+    "......gG........",
+    "......GG....g...",
+    "..g...gG....GG..",
+    "..G...GG...gGG..",
+    "..GG..gG...GGG..",
+    "..gG..GG..gGGg..",
+    "..GG..GG..GGGg..",
+    "..gG.gGG..gGGG..",
+    "..GG.GGg..GGGg..",
+    "..gGGGGG.gGGGG..",
+    "..GGGGGg.GGGGg..",
+    "...GGGG..GGGG...",
+    "...gGG....gGG...",
+    "................"
   ],
   stem: [
-    "ssssssss",
-    "sSsSsSsS",
-    "ssssssss",
-    "sSsSsSsS",
-    "ssssssss",
-    "sSsSsSsS",
-    "ssssssss",
-    "sSsSsSsS"
+    "................",
+    "................",
+    "................",
+    "................",
+    ".......s........",
+    ".......S........",
+    ".......s........",
+    ".......S........",
+    ".......s........",
+    ".......S........",
+    ".......s........",
+    ".......S........",
+    ".......s........",
+    ".......S........",
+    ".......s........",
+    "................"
   ],
   egg: [
-    "eeeeeeee",
-    "eweeeewe",
-    "eeeeeeee",
-    "eeeweeee",
-    "eeeeeeee",
-    "eweeeewe",
-    "eeeeeeee",
-    "eeeweeee"
+    "eeeeeeeeeeeeeeee",
+    "eweeeeweeeeeeewe",
+    "eeeeeeeeeeeeeeee",
+    "eeeweeeeeeeweeee",
+    "eeeeeeeeeeeeeeee",
+    "eweeeeweeeeeeewe",
+    "eeeeeeeeeeeeeeee",
+    "eeeweeeeeeeweeee",
+    "eeeeeeeeeeeeeeee",
+    "eweeeeweeeeeeewe",
+    "eeeeeeeeeeeeeeee",
+    "eeeweeeeeeeweeee",
+    "eeeeeeeeeeeeeeee",
+    "eweeeeweeeeeeewe",
+    "eeeeeeeeeeeeeeee",
+    "eeeweeeeeeeweeee"
   ],
   flowerYellow: [
-    "yyyyyyyy",
-    "ycyyyycy",
-    "yyyyyyyy",
-    "yycyyyyy",
-    "yyyyyyyy",
-    "ycyyyycy",
-    "yyyyyyyy",
-    "yycyyyyy"
+    "................",
+    "................",
+    "......yyy.......",
+    ".....yyyyy......",
+    "....yycycyy.....",
+    "....yyyyyyy.....",
+    "....yycycyy.....",
+    ".....yyyyy......",
+    "......yyy.......",
+    ".......s........",
+    ".......S........",
+    ".......s........",
+    "......sS........",
+    "......Ss........",
+    ".......s........",
+    "................"
   ],
   flowerPink: [
-    "pppppppp",
-    "pcppppcp",
-    "pppppppp",
-    "ppcppppp",
-    "pppppppp",
-    "pcppppcp",
-    "pppppppp",
-    "ppcppppp"
+    "................",
+    "................",
+    "......pp........",
+    ".....pppp.......",
+    "....ppcppp......",
+    "....pppppp......",
+    ".....pppp.......",
+    "......pp........",
+    ".....pppp.......",
+    ".......s........",
+    ".......S........",
+    ".......s........",
+    "......sS........",
+    "......Ss........",
+    ".......s........",
+    "................"
   ],
   flowerWhite: [
-    "wwwwwwww",
-    "wcwwwwcw",
-    "wwwwwwww",
-    "wwcwwwww",
-    "wwwwwwww",
-    "wcwwwwcw",
-    "wwwwwwww",
-    "wwcwwwww"
+    "................",
+    "................",
+    ".......w........",
+    ".....wwwww......",
+    "......wcw.......",
+    "....wwcwcww.....",
+    "......wcw.......",
+    ".....wwwww......",
+    ".......w........",
+    ".......s........",
+    ".......S........",
+    ".......s........",
+    "......sS........",
+    "......Ss........",
+    ".......s........",
+    "................"
   ]
 } as const;
 
@@ -177,10 +257,10 @@ export const propMaterials = {
   bark: createStandardMaterial(textures.bark),
   leaves: createStandardMaterial(textures.leaves),
   nest: createStandardMaterial(textures.nest),
-  grass: createStandardMaterial(textures.grass),
-  stem: createStandardMaterial(textures.stem),
+  grass: createStandardMaterial(textures.grass, { transparent: true, alphaTest: 0.5, side: THREE.DoubleSide }),
+  stem: createStandardMaterial(textures.stem, { transparent: true, alphaTest: 0.5, side: THREE.DoubleSide }),
   egg: createStandardMaterial(textures.egg),
-  flowerYellow: createStandardMaterial(textures.flowerYellow),
-  flowerPink: createStandardMaterial(textures.flowerPink),
-  flowerWhite: createStandardMaterial(textures.flowerWhite)
+  flowerYellow: createStandardMaterial(textures.flowerYellow, { transparent: true, alphaTest: 0.5, side: THREE.DoubleSide }),
+  flowerPink: createStandardMaterial(textures.flowerPink, { transparent: true, alphaTest: 0.5, side: THREE.DoubleSide }),
+  flowerWhite: createStandardMaterial(textures.flowerWhite, { transparent: true, alphaTest: 0.5, side: THREE.DoubleSide })
 };

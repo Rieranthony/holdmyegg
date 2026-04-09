@@ -14,7 +14,7 @@ export interface RendererQualityProfile {
   dpr: [number, number];
   decorationDensity: number;
   enableClouds: boolean;
-  enableBirds: boolean;
+  skyBirdCount: number;
   enableAtmosphereSky: boolean;
   maxImpactBursts: number;
   maxEggDebrisInstances: number;
@@ -29,7 +29,7 @@ const highProfile = (gpu: TierResult | null): RendererQualityProfile => ({
   dpr: [1, 1.5],
   decorationDensity: 1,
   enableClouds: true,
-  enableBirds: true,
+  skyBirdCount: 3,
   enableAtmosphereSky: true,
   maxImpactBursts: 18,
   maxEggDebrisInstances: 120,
@@ -47,7 +47,7 @@ const mediumProfile = (gpu: TierResult | null): RendererQualityProfile => ({
   dpr: [1, 1.25],
   decorationDensity: 0.68,
   enableClouds: true,
-  enableBirds: false,
+  skyBirdCount: 2,
   enableAtmosphereSky: true,
   maxImpactBursts: 12,
   maxEggDebrisInstances: 72,
@@ -65,7 +65,7 @@ const lowProfile = (gpu: TierResult | null): RendererQualityProfile => ({
   dpr: [1, 1],
   decorationDensity: 0.4,
   enableClouds: false,
-  enableBirds: false,
+  skyBirdCount: 1,
   enableAtmosphereSky: false,
   maxImpactBursts: 8,
   maxEggDebrisInstances: 36,

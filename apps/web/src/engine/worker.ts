@@ -302,7 +302,7 @@ const applyEditorAction = (voxel: { x: number; y: number; z: number }, normal: {
       y: voxel.y + normal.y,
       z: voxel.z + normal.z
     };
-    if (editorWorld.hasSolid(placement.x, placement.y, placement.z)) {
+    if (editorWorld.hasOccupiedVoxel(placement.x, placement.y, placement.z)) {
       postStatus("That space is already occupied.");
     } else {
       dirtyChunkKeys = [...editorWorld.setVoxel(placement.x, placement.y, placement.z, editorState.blockKind)];

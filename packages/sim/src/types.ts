@@ -255,10 +255,18 @@ export interface AuthoritativeEggScatterDebrisState extends RuntimeEggScatterDeb
   visualSeed: number;
 }
 
+export interface WaterFloodState {
+  active: boolean;
+  breachLevelY: number;
+  currentLevelY: number;
+  targetLevelY: number;
+}
+
 export interface AuthoritativeHazardState {
   fallingClusters: AuthoritativeFallingClusterState[];
   skyDrops: AuthoritativeSkyDropState[];
   eggScatterDebris: AuthoritativeEggScatterDebrisState[];
+  waterFlood: WaterFloodState;
 }
 
 export interface AuthoritativeMatchStats {
@@ -282,6 +290,7 @@ export type TerrainDeltaOperation = "set" | "remove";
 export type TerrainDeltaSource =
   | "destroy"
   | "place"
+  | "water_flood"
   | "projectile_explosion"
   | "super_boom_explosion"
   | "egg_scatter_settle"
@@ -493,6 +502,7 @@ export interface SimulationSnapshot {
   terrainRevision: number;
   localPlayerId: string | null;
   players: PlayerViewState[];
+  waterFlood: WaterFloodState;
   fallingClusters: FallingClusterViewState[];
   eggs: EggViewState[];
   eggScatterDebris: EggScatterDebrisViewState[];

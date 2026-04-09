@@ -1,10 +1,12 @@
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import type { HudState, OutOfBoundsSimulation } from "@out-of-bounds/sim";
-import type { RuntimeOverlayState } from "../engine/types";
-import type { ActiveMode } from "./GameCanvas";
+import type { ActiveMode, RuntimeOverlayState } from "../engine/types";
 import { EggIcon } from "./EggIcon";
+import { FeatherIcon } from "./FeatherIcon";
+import { MatterCubeIcon } from "./MatterCubeIcon";
 
-const getModeLabel = (mode: ActiveMode) => (mode === "playNpc" ? "PLAY NPC" : mode.toUpperCase());
+const hudFeatherSlotCount = 3;
+type MatterFeedbackState = "idle" | "gain" | "spend";
 
 const areHudStatesEqual = (left: HudState, right: HudState) => {
   if (left.mode !== right.mode || left.localPlayerId !== right.localPlayerId) {
@@ -73,6 +75,30 @@ const areHudStatesEqual = (left: HudState, right: HudState) => {
   });
 };
 
+const useRuntimeHudState = (runtime: OutOfBoundsSimulation | undefined, mode: ActiveMode) => {
+  const [hudState, setHudState] = useState<HudState | null>(() =>
+    mode === "editor" ? null : runtime?.getHudState() ?? null
+  );
+
+  useEffect(() => {
+    if (mode === "editor" || !runtime) {
+      setHudState(null);
+      return;
+    }
+
+    const syncHudState = () => {
+      const next = runtime.getHudState();
+      setHudState((current) => (current && areHudStatesEqual(current, next) ? current : next));
+    };
+
+    syncHudState();
+    const interval = window.setInterval(syncHudState, 250);
+    return () => window.clearInterval(interval);
+  }, [mode, runtime]);
+
+  return hudState;
+};
+
 export function Hud({
   runtime,
   mode,
@@ -84,47 +110,47 @@ export function Hud({
   hudState?: HudState | null;
   overlayState?: RuntimeOverlayState | null;
 }) {
-  const [hudState, setHudState] = useState(() => externalHudState ?? runtime?.getHudState() ?? null);
+  const runtimeHudState = useRuntimeHudState(runtime, mode);
+  const hudState =
+    mode === "editor"
+      ? null
+      : externalHudState !== undefined
+        ? externalHudState
+        : runtimeHudState;
 
-  useEffect(() => {
-    if (externalHudState !== undefined) {
-      setHudState(externalHudState);
-      return;
-    }
-
-    if (!runtime) {
-      setHudState(null);
-      return;
-    }
-
-    if (mode === "editor") {
-      return;
-    }
-
-    setHudState(runtime.getHudState());
-    const interval = window.setInterval(() => {
-      const next = runtime.getHudState();
-      setHudState((current) => (current && areHudStatesEqual(current, next) ? current : next));
-    }, 250);
-
-    return () => window.clearInterval(interval);
-  }, [externalHudState, mode, runtime]);
-
-  if (mode === "editor") {
+  if (!hudState || hudState.localPlayer === null) {
     return null;
   }
 
-  if (!hudState) {
-    return null;
-  }
+  return (
+    <HudContent
+      hudState={hudState}
+      localPlayer={hudState.localPlayer}
+      overlayState={overlayState}
+    />
+  );
+}
 
-  const localPlayer = hudState.localPlayer;
-  if (!localPlayer) {
-    return null;
-  }
-  const massWidth = `${(localPlayer.mass / localPlayer.maxMass) * 100}%`;
-  const featherText = "^".repeat(localPlayer.livesRemaining).padEnd(localPlayer.maxLives, ".");
+function HudContent({
+  hudState,
+  localPlayer,
+  overlayState
+}: {
+  hudState: HudState;
+  localPlayer: NonNullable<HudState["localPlayer"]>;
+  overlayState: RuntimeOverlayState | null;
+}) {
+  const [matterFeedback, setMatterFeedback] = useState<MatterFeedbackState>("idle");
+  const previousRoundedMassRef = useRef<number | null>(null);
   const eggStatus = hudState.eggStatus;
+  const visibleLives = Math.max(0, Math.min(localPlayer.livesRemaining, hudFeatherSlotCount));
+  const roundedMass = Math.max(0, Math.round(localPlayer.mass));
+  const roundedMaxMass = Math.max(roundedMass, Math.round(localPlayer.maxMass));
+  const isHpCritical = visibleLives === 1;
+  const isMatterEmpty = localPlayer.mass <= 0;
+  const isMatterWarning = !isMatterEmpty && eggStatus !== null && localPlayer.mass < eggStatus.cost;
+  const matterState = isMatterEmpty ? "empty" : isMatterWarning ? "warning" : "normal";
+  const matterAmountText = `${roundedMass}/${roundedMaxMass}`;
   const spaceChallenge = hudState.spaceChallenge;
   const hitCount =
     spaceChallenge && overlayState?.spaceLocalTargetKey === spaceChallenge.targetKey
@@ -154,17 +180,44 @@ export function Hud({
       ? `Smashed ${localPlayer.stunRemaining.toFixed(1)}s`
       : localPlayer.invulnerableRemaining > 0
         ? `Shielded ${localPlayer.invulnerableRemaining.toFixed(1)}s`
-        : localPlayer.grounded
-          ? "Grounded"
-          : "Airborne";
+        : null;
   const hasRanking = hudState.ranking.length > 1;
-  const matterMeterClassName = [
-    "meter",
-    "hud-meter",
-    overlayState?.matterPulseActive ? "hud-meter--pulse" : ""
+  const matterClassName = [
+    "hud-matter",
+    `hud-matter--${matterState}`,
+    matterFeedback !== "idle" ? `hud-matter--${matterFeedback}` : "",
+    overlayState?.matterPulseActive ? "hud-matter--pulse" : ""
   ]
     .filter(Boolean)
     .join(" ");
+
+  useEffect(() => {
+    const previousRoundedMass = previousRoundedMassRef.current;
+    if (previousRoundedMass === null) {
+      previousRoundedMassRef.current = roundedMass;
+      return;
+    }
+
+    if (roundedMass > previousRoundedMass) {
+      setMatterFeedback("gain");
+    } else if (roundedMass < previousRoundedMass) {
+      setMatterFeedback("spend");
+    }
+
+    previousRoundedMassRef.current = roundedMass;
+  }, [roundedMass]);
+
+  useEffect(() => {
+    if (matterFeedback === "idle") {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setMatterFeedback("idle");
+    }, 420);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [matterFeedback]);
 
   return (
     <div className="hud">
@@ -278,27 +331,72 @@ export function Hud({
         </section>
       )}
       <section
-        aria-label="Player status"
-        className="hud-status"
+        aria-label="Player vitals"
+        className="hud-vitals"
       >
-        <div className="hud-status__row hud-status__row--top">
-          <span className="hud-kicker">{getModeLabel(mode)}</span>
-          <span className="hud-status__text">{statusText}</span>
-        </div>
-        <div className="hud-status__row">
-          <span className="hud-inline-label">Feathers</span>
-          <span className="hud-inline-value">{featherText}</span>
-          <span className="hud-inline-meta">{localPlayer.livesRemaining} / {localPlayer.maxLives}</span>
-        </div>
-        <div className="hud-status__row hud-status__row--matter">
-          <span className="hud-inline-label">Matter</span>
-          <div className={matterMeterClassName} data-testid="hud-matter-meter">
-            <div
-              className="meter-fill"
-              style={{ width: massWidth }}
-            />
+        {statusText && <div className="hud-vitals__captions">
+          <span className="hud-vitals__status">{statusText}</span>
+        </div>}
+        <div className="hud-vitals__cluster">
+          <div
+            aria-label={`Feathers ${visibleLives} of ${hudFeatherSlotCount}`}
+            className="hud-health"
+            data-testid="hud-health"
+          >
+            {Array.from({ length: hudFeatherSlotCount }, (_, index) => {
+              const isActive = index < visibleLives;
+              const isCritical = isHpCritical && isActive;
+              const featherState = isCritical ? "critical" : isActive ? "active" : "spent";
+
+              return (
+                <span
+                  className={[
+                    "hud-feather",
+                    isActive ? "hud-feather--active" : "hud-feather--spent",
+                    isCritical ? "hud-feather--critical" : ""
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
+                  data-state={featherState}
+                  data-testid={`hud-feather-${index + 1}`}
+                  key={index}
+                >
+                  <FeatherIcon
+                    className="hud-feather__icon"
+                    tone={isCritical ? "critical" : "default"}
+                  />
+                </span>
+              );
+            })}
           </div>
-          <span className="hud-inline-meta">{Math.round(localPlayer.mass)} / {Math.round(localPlayer.maxMass)}</span>
+          <div
+            aria-label={`Matter ${roundedMass} of ${roundedMaxMass}`}
+            className={matterClassName}
+            data-state={matterState}
+            data-testid="hud-matter"
+          >
+            <span className="hud-matter__voxel-orbit" aria-hidden="true">
+              <MatterCubeIcon
+                className="hud-matter__cube"
+                testId="hud-matter-cube"
+              />
+              <span className="hud-matter__shard hud-matter__shard--left">
+                <MatterCubeIcon className="hud-matter__shard-icon" />
+              </span>
+              <span className="hud-matter__shard hud-matter__shard--right">
+                <MatterCubeIcon className="hud-matter__shard-icon" />
+              </span>
+              <span className="hud-matter__shadow" />
+            </span>
+            <span className="hud-matter__copy">
+              <span
+                className="hud-matter__amount"
+                data-testid="hud-matter-amount"
+              >
+                {matterAmountText}
+              </span>
+            </span>
+          </div>
         </div>
       </section>
       {hasRanking && (

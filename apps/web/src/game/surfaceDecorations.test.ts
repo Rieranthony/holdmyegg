@@ -2,7 +2,7 @@ import { MutableVoxelWorld, type MapDocumentV1, type VoxelCell } from "@out-of-b
 import { describe, expect, it } from "vitest";
 import { buildSurfaceDecorations } from "./surfaceDecorations";
 
-const getDecorationSpacing = (kind: string) => (kind === "grass" ? 1.7 : 2.2);
+const getDecorationSpacing = (kind: string) => (kind === "grass" ? 1.55 : 1.95);
 
 const createFlatArenaDocument = (): MapDocumentV1 => {
   const voxels: VoxelCell[] = [];
@@ -48,5 +48,18 @@ describe("buildSurfaceDecorations", () => {
         )
       )
     ).toBe(true);
+  });
+
+  it("keeps flowers off water-covered columns and produces a healthier flower mix", () => {
+    const document = createFlatArenaDocument();
+    document.voxels.push({ x: 5, y: 1, z: 5, kind: "water" });
+    document.voxels.push({ x: 5, y: 2, z: 5, kind: "water" });
+    const world = new MutableVoxelWorld(document);
+    const decorations = buildSurfaceDecorations(world);
+    const flowerCount = decorations.filter((decoration) => decoration.kind !== "grass").length;
+
+    expect(decorations.some((decoration) => Math.floor(decoration.x) === 5 && Math.floor(decoration.z) === 5)).toBe(false);
+    expect(flowerCount).toBeGreaterThan(0);
+    expect(flowerCount / decorations.length).toBeGreaterThan(0.25);
   });
 });

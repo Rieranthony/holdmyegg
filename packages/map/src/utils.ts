@@ -88,7 +88,12 @@ export const chunkKeyFromPosition = (
 export const isInBounds = (size: Vec3i, x: number, y: number, z: number) =>
   x >= 0 && x < size.x && y >= 0 && y < size.y && z >= 0 && z < size.z;
 
-export const isSolidKind = (kind: BlockKind | undefined) => kind !== undefined;
+export const isLiquidBlockKind = (kind: BlockKind | undefined) => kind === "water";
+
+export const isBlockingBlockKind = (kind: BlockKind | undefined) =>
+  kind === "ground" || kind === "boundary" || kind === "hazard";
+
+export const isSolidKind = isBlockingBlockKind;
 
 export const hasExposedFace = (faceMask: ExposedFaceMask, faceBit: number) => (faceMask & faceBit) !== 0;
 

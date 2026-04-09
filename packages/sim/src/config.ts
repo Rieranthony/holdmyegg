@@ -48,11 +48,11 @@ export const eggImpactConfigDefaults = {
 
 export const defaultSimulationConfig: SimulationConfig = {
   tickRate: 60,
-  maxMass: 300,
+  maxMass: 500,
   startingMass: 24,
   pushCost: 18,
-  destroyGain: 18,
-  placeCost: 28,
+  destroyGain: 10,
+  placeCost: 10,
   interactRange: 4.5,
   gravity: 34,
   jumpSpeed: 11,

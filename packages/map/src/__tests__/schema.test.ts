@@ -21,7 +21,8 @@ const createTinyDocument = (): MapDocumentV1 => ({
   props: [],
   voxels: [
     { x: 4, y: 0, z: 4, kind: "ground" },
-    { x: 5, y: 0, z: 4, kind: "boundary" }
+    { x: 5, y: 0, z: 4, kind: "boundary" },
+    { x: 6, y: 0, z: 4, kind: "water" }
   ]
 });
 
@@ -62,5 +63,6 @@ describe("map schemas and serialization", () => {
     expect(roundTripped.meta.updatedAt).not.toBe("2000-01-01T00:00:00.000Z");
     expect(roundTripped.props).toEqual([{ id: "prop-1", kind: "tree-oak", x: 10, y: 1, z: 10 }]);
     expect(roundTripped.voxels.some((voxel) => voxel.x === 12 && voxel.y === 3 && voxel.z === 12)).toBe(true);
+    expect(roundTripped.voxels.some((voxel) => voxel.x === 6 && voxel.y === 0 && voxel.z === 4 && voxel.kind === "water")).toBe(true);
   });
 });

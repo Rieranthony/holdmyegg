@@ -32,10 +32,8 @@ interface WorldPropsRenderState {
 
 const nestTwigGeometry = new THREE.BoxGeometry(0.5, 0.12, 0.16);
 const nestEggGeometry = new THREE.BoxGeometry(0.18, 0.22, 0.18);
-const grassBladeGeometry = new THREE.BoxGeometry(0.08, 0.46, 0.18);
-const flowerStemGeometry = new THREE.BoxGeometry(0.08, 0.4, 0.08);
-const flowerPetalGeometry = new THREE.BoxGeometry(0.12, 0.12, 0.12);
-const flowerCenterGeometry = new THREE.BoxGeometry(0.1, 0.1, 0.1);
+const grassCardGeometry = new THREE.PlaneGeometry(0.56, 0.82);
+const flowerCardGeometry = new THREE.PlaneGeometry(0.72, 0.92);
 const parentObject = new THREE.Object3D();
 const childObject = new THREE.Object3D();
 
@@ -56,18 +54,13 @@ const nestEggLocalTransforms = [
 ] as const satisfies readonly StaticInstanceTransform[];
 
 const grassLocalTransforms = [
-  { position: [0, 0.2, 0] },
-  { position: [0.07, 0.18, -0.03], rotation: [0, 0.6, 0.22] },
-  { position: [-0.06, 0.17, 0.04], rotation: [0, -0.48, -0.18] }
+  { position: [0, 0.38, 0] },
+  { position: [0, 0.38, 0], rotation: [0, Math.PI / 2, 0] }
 ] as const satisfies readonly StaticInstanceTransform[];
 
-const flowerStemLocalTransform = [{ position: [0, 0.16, 0] }] as const satisfies readonly StaticInstanceTransform[];
-const flowerCenterLocalTransform = [{ position: [0, 0.38, 0] }] as const satisfies readonly StaticInstanceTransform[];
-const flowerPetalLocalTransforms = [
-  { position: [0.12, 0.38, 0] },
-  { position: [-0.12, 0.38, 0] },
-  { position: [0, 0.38, 0.12] },
-  { position: [0, 0.38, -0.12] }
+const flowerCardLocalTransforms = [
+  { position: [0, 0.44, 0] },
+  { position: [0, 0.44, 0], rotation: [0, Math.PI / 2, 0] }
 ] as const satisfies readonly StaticInstanceTransform[];
 
 const hashString = (value: string) => {
@@ -188,11 +181,9 @@ const buildNestMatrices = (world: MutableVoxelWorld) => {
 
 const buildDecorationMatrices = (decorations: SurfaceDecoration[]) => {
   const grassMatrices: THREE.Matrix4[] = [];
-  const flowerStemMatrices: THREE.Matrix4[] = [];
-  const flowerCenterMatrices: THREE.Matrix4[] = [];
-  const flowerYellowPetalMatrices: THREE.Matrix4[] = [];
-  const flowerPinkPetalMatrices: THREE.Matrix4[] = [];
-  const flowerWhitePetalMatrices: THREE.Matrix4[] = [];
+  const flowerYellowMatrices: THREE.Matrix4[] = [];
+  const flowerPinkMatrices: THREE.Matrix4[] = [];
+  const flowerWhiteMatrices: THREE.Matrix4[] = [];
 
   for (const decoration of decorations) {
     const parentTransform: StaticInstanceTransform = {
@@ -206,25 +197,21 @@ const buildDecorationMatrices = (decorations: SurfaceDecoration[]) => {
       continue;
     }
 
-    flowerStemMatrices.push(...composeMatrices(parentTransform, flowerStemLocalTransform));
-    flowerCenterMatrices.push(...composeMatrices(parentTransform, flowerCenterLocalTransform));
-    const petalMatrices = composeMatrices(parentTransform, flowerPetalLocalTransforms);
+    const flowerMatrices = composeMatrices(parentTransform, flowerCardLocalTransforms);
     if (decoration.kind === "flower-yellow") {
-      flowerYellowPetalMatrices.push(...petalMatrices);
+      flowerYellowMatrices.push(...flowerMatrices);
     } else if (decoration.kind === "flower-pink") {
-      flowerPinkPetalMatrices.push(...petalMatrices);
+      flowerPinkMatrices.push(...flowerMatrices);
     } else {
-      flowerWhitePetalMatrices.push(...petalMatrices);
+      flowerWhiteMatrices.push(...flowerMatrices);
     }
   }
 
   return {
     grassMatrices,
-    flowerStemMatrices,
-    flowerCenterMatrices,
-    flowerYellowPetalMatrices,
-    flowerPinkPetalMatrices,
-    flowerWhitePetalMatrices
+    flowerYellowMatrices,
+    flowerPinkMatrices,
+    flowerWhiteMatrices
   };
 };
 
@@ -361,34 +348,24 @@ function WorldPropsMeshes({
         matrices={renderState.nestMatrices.eggMatrices}
       />
       <StaticInstancedMesh
-        geometry={grassBladeGeometry}
+        geometry={grassCardGeometry}
         material={propMaterials.grass}
         matrices={renderState.decorationMatrices.grassMatrices}
       />
       <StaticInstancedMesh
-        geometry={flowerStemGeometry}
-        material={propMaterials.stem}
-        matrices={renderState.decorationMatrices.flowerStemMatrices}
-      />
-      <StaticInstancedMesh
-        geometry={flowerPetalGeometry}
+        geometry={flowerCardGeometry}
         material={propMaterials.flowerYellow}
-        matrices={renderState.decorationMatrices.flowerYellowPetalMatrices}
+        matrices={renderState.decorationMatrices.flowerYellowMatrices}
       />
       <StaticInstancedMesh
-        geometry={flowerPetalGeometry}
+        geometry={flowerCardGeometry}
         material={propMaterials.flowerPink}
-        matrices={renderState.decorationMatrices.flowerPinkPetalMatrices}
+        matrices={renderState.decorationMatrices.flowerPinkMatrices}
       />
       <StaticInstancedMesh
-        geometry={flowerPetalGeometry}
+        geometry={flowerCardGeometry}
         material={propMaterials.flowerWhite}
-        matrices={renderState.decorationMatrices.flowerWhitePetalMatrices}
-      />
-      <StaticInstancedMesh
-        geometry={flowerCenterGeometry}
-        material={propMaterials.egg}
-        matrices={renderState.decorationMatrices.flowerCenterMatrices}
+        matrices={renderState.decorationMatrices.flowerWhiteMatrices}
       />
     </group>
   );

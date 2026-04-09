@@ -258,9 +258,9 @@ function PlayerAvatar({
     const tauntAnchor = tauntAnchorRef.current;
     if (tauntAnchor) {
       tauntAnchor.position.set(
-        0.84,
-        avatar.position.y + chickenModelRig.headPivotY + poseState.headYOffset + 0.46,
-        0.18
+        0,
+        avatar.position.y + chickenModelRig.headPivotY + poseState.headYOffset + 0.58,
+        0.12
       );
     }
     lowDetailHead.rotation.x = poseState.headPitch * 0.76;

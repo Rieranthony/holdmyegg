@@ -61,4 +61,24 @@ describe("useEditorSession", () => {
 
     expect(result.current.editorWorld.listProps()).toHaveLength(0);
   });
+
+  it("supports placing water blocks in the editor", () => {
+    const onStatus = vi.fn();
+    const { result } = renderHook(() => useEditorSession({ onStatus }));
+
+    act(() => {
+      result.current.applyDocument(createEditorArenaDocument());
+      result.current.setTool("add");
+      result.current.setBlockKind("water");
+    });
+
+    act(() => {
+      result.current.handleEditorInteract({
+        voxel: { x: 8, y: 0, z: 8 },
+        normal: { x: 0, y: 1, z: 0 }
+      });
+    });
+
+    expect(result.current.editorWorld.getVoxelKind(8, 1, 8)).toBe("water");
+  });
 });

@@ -20,7 +20,7 @@ const createHudState = (mode: "explore" | "playNpc", playerName = "You"): HudSta
     alive: true,
     grounded: true,
     mass: 24,
-    maxMass: 300,
+    maxMass: 500,
     livesRemaining: 3,
     maxLives: 3,
     respawning: false,
@@ -642,7 +642,7 @@ describe("App", () => {
 
     expect(screen.getByText("Matter")).toBeInTheDocument();
     expect(screen.getByText("Feathers")).toBeInTheDocument();
-    expect(screen.getByText("24 / 300")).toBeInTheDocument();
+    expect(screen.getByText("24 / 500")).toBeInTheDocument();
     expect(screen.queryByText("MATTER FLOW")).not.toBeInTheDocument();
     expect(screen.queryByText("Jump / Fly")).not.toBeInTheDocument();
     expect(screen.queryByText("Drop Eggs")).not.toBeInTheDocument();

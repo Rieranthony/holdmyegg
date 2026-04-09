@@ -36,8 +36,14 @@ export interface SunShadowWorldState {
   lightMargin: number;
 }
 
+interface TrackedMaterialState {
+  onBeforeCompile: THREE.Material["onBeforeCompile"];
+  customProgramCacheKey: THREE.Material["customProgramCacheKey"];
+}
+
 export class SunShadows {
   private readonly trackedMaterials = new Set<THREE.Material>();
+  private readonly trackedMaterialState = new Map<THREE.Material, TrackedMaterialState>();
   private csm: CSM | null = null;
   private enabled = false;
   private dirty = true;
@@ -68,7 +74,11 @@ export class SunShadows {
       }
 
       this.trackedMaterials.add(material);
-      this.csm?.setupMaterial(material);
+      this.trackedMaterialState.set(material, {
+        onBeforeCompile: material.onBeforeCompile,
+        customProgramCacheKey: material.customProgramCacheKey
+      });
+      this.applyCsmMaterial(material);
       material.needsUpdate = true;
     }
   }
@@ -152,7 +162,9 @@ export class SunShadows {
 
     this.dirty = false;
     this.lightStateSignature = nextSignature;
-    this.renderer.shadowMap.needsUpdate = true;
+    if (this.renderer.shadowMap) {
+      this.renderer.shadowMap.needsUpdate = true;
+    }
     this.shadowMapRefreshCount += 1;
     return true;
   }
@@ -170,10 +182,12 @@ export class SunShadows {
 
   private enable() {
     this.ensureCsm();
-    this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.BasicShadowMap;
-    this.renderer.shadowMap.autoUpdate = false;
-    this.renderer.shadowMap.needsUpdate = true;
+    if (this.renderer.shadowMap) {
+      this.renderer.shadowMap.enabled = true;
+      this.renderer.shadowMap.type = THREE.BasicShadowMap;
+      this.renderer.shadowMap.autoUpdate = false;
+      this.renderer.shadowMap.needsUpdate = true;
+    }
     this.markDirty();
   }
 
@@ -181,9 +195,12 @@ export class SunShadows {
     this.csm?.remove();
     this.csm?.dispose();
     this.csm = null;
-    this.renderer.shadowMap.enabled = false;
-    this.renderer.shadowMap.autoUpdate = true;
-    this.renderer.shadowMap.needsUpdate = false;
+    this.restoreTrackedMaterials();
+    if (this.renderer.shadowMap) {
+      this.renderer.shadowMap.enabled = false;
+      this.renderer.shadowMap.autoUpdate = true;
+      this.renderer.shadowMap.needsUpdate = false;
+    }
     this.lightStateSignature = "";
     this.dirty = true;
   }
@@ -214,13 +231,42 @@ export class SunShadows {
     }
 
     for (const material of this.trackedMaterials) {
-      csm.setupMaterial(material);
-      material.needsUpdate = true;
+      this.applyCsmMaterial(material, csm);
     }
 
     this.csm = csm;
     this.lightStateSignature = "";
     this.markDirty();
+  }
+
+  private applyCsmMaterial(material: THREE.Material, csm = this.csm) {
+    if (!csm) {
+      return;
+    }
+
+    const trackedState = this.trackedMaterialState.get(material);
+    csm.setupMaterial(material);
+    if (!trackedState) {
+      material.needsUpdate = true;
+      return;
+    }
+
+    const csmOnBeforeCompile = material.onBeforeCompile;
+    material.onBeforeCompile = (shader, renderer) => {
+      csmOnBeforeCompile.call(material, shader, renderer);
+      trackedState.onBeforeCompile.call(material, shader, renderer);
+    };
+    material.customProgramCacheKey = () =>
+      `${trackedState.customProgramCacheKey.call(material)}|sun-shadows`;
+    material.needsUpdate = true;
+  }
+
+  private restoreTrackedMaterials() {
+    for (const [material, trackedState] of this.trackedMaterialState) {
+      material.onBeforeCompile = trackedState.onBeforeCompile;
+      material.customProgramCacheKey = trackedState.customProgramCacheKey;
+      material.needsUpdate = true;
+    }
   }
 }
 

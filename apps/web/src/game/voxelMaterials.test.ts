@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { describe, expect, it } from "vitest";
 import {
+  cloneTerrainChunkMaterials,
   getBlockRenderProfile,
   getTerrainChunkMaterials,
   getTerrainMaterialIndex,
@@ -12,8 +13,8 @@ import {
 describe("voxelMaterials", () => {
   it("creates tiny nearest-neighbor pixel textures", () => {
     expect(voxelTextures.earthTop).toBeInstanceOf(THREE.DataTexture);
-    expect(voxelTextures.earthTop.image.width).toBe(8);
-    expect(voxelTextures.earthTop.image.height).toBe(8);
+    expect(voxelTextures.earthTop.image.width).toBe(16);
+    expect(voxelTextures.earthTop.image.height).toBe(16);
     expect(voxelTextures.earthTop.magFilter).toBe(THREE.NearestFilter);
     expect(voxelTextures.earthTop.minFilter).toBe(THREE.NearestFilter);
     expect(voxelTextures.earthTop.generateMipmaps).toBe(false);
@@ -32,10 +33,13 @@ describe("voxelMaterials", () => {
       "earthSurfaceSide",
       "earthSurfaceBottom",
       "earthSubsoil",
-      "darkness"
+      "darkness",
+      "waterTop",
+      "waterSide"
     ]);
     expect(getTerrainMaterialIndex("earthSurfaceTop")).not.toBe(getTerrainMaterialIndex("earthSurfaceSide"));
     expect(getTerrainMaterialIndex("earthSubsoil")).not.toBe(getTerrainMaterialIndex("darkness"));
+    expect(getTerrainMaterialIndex("waterTop")).not.toBe(getTerrainMaterialIndex("waterSide"));
   });
 
   it("exposes grouped standard materials for stable terrain rendering", () => {
@@ -51,5 +55,26 @@ describe("voxelMaterials", () => {
     expect(terrainMaterialsByKey.earthSurfaceBottom.map).toBe(voxelTextures.earthBottom);
     expect(terrainMaterialsByKey.earthSubsoil.map).toBe(voxelTextures.earthBottom);
     expect(terrainMaterialsByKey.darkness.map).toBe(voxelTextures.darkness);
+    expect(terrainMaterialsByKey.waterTop.map).toBe(voxelTextures.waterTop);
+    expect(terrainMaterialsByKey.waterSide.map).toBe(voxelTextures.waterSide);
+    expect(terrainMaterialsByKey.waterTop.transparent).toBe(true);
+    expect(terrainMaterialsByKey.waterSide.transparent).toBe(true);
+    expect(terrainMaterialsByKey.waterTop.depthWrite).toBe(false);
+    expect(terrainMaterialsByKey.waterSide.depthWrite).toBe(false);
+  });
+
+  it("clones terrain chunk materials for chamber rendering without mutating the shared terrain set", () => {
+    const baseMaterials = getTerrainChunkMaterials();
+    const clones = cloneTerrainChunkMaterials();
+
+    expect(clones).toHaveLength(terrainMaterialOrder.length);
+    clones.forEach((material: THREE.MeshStandardMaterial, index: number) => {
+      expect(material).toBeInstanceOf(THREE.MeshStandardMaterial);
+      expect(material).not.toBe(baseMaterials[index]);
+      expect(material.map).toBe(baseMaterials[index]?.map ?? null);
+      expect(material.transparent).toBe(baseMaterials[index]?.transparent ?? false);
+      expect(material.opacity).toBe(baseMaterials[index]?.opacity ?? 1);
+      expect(material.depthWrite).toBe(baseMaterials[index]?.depthWrite ?? true);
+    });
   });
 });

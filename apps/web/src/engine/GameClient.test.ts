@@ -1,6 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as THREE from "three";
-import { MutableVoxelWorld, createDefaultArenaMap } from "@out-of-bounds/map";
+import { MutableVoxelWorld, createDefaultArenaMap, createVoxelKey } from "@out-of-bounds/map";
+import { defaultSimulationConfig } from "@out-of-bounds/sim";
+import {
+  aimCameraConfig,
+  getAimRigState,
+  getSpaceAimRigState,
+  getYawFromPlanarVector,
+  spaceCameraConfig
+} from "../game/camera";
 import {
   getChickenHeadFeatherRotation,
   getChickenPoseVisualState,
@@ -10,7 +18,10 @@ import {
   wingFeatherletOffsets
 } from "../game/playerVisuals";
 import { chickenModelRig } from "../game/sceneAssets";
+import { meshTerrainChunk } from "../game/terrainMesher";
+import { raycastVoxelWorld } from "../game/terrainRaycast";
 import { propMaterials } from "../game/propMaterials";
+import { getTerrainChunkMaterials } from "../game/voxelMaterials";
 import { unpackRuntimeInputCommand } from "./runtimeInput";
 
 const animationFrameState = vi.hoisted(() => {
@@ -208,6 +219,17 @@ const setNavigatorPlatform = (platform: string) => {
   });
 };
 
+const getResourceBubbleCoordinates = (client: GameClient) => {
+  const bubble = (client as any).resourceBubbleElement as HTMLDivElement | null;
+  expect(bubble).not.toBeNull();
+  expect(bubble?.style.display).toBe("inline-flex");
+
+  return {
+    left: Number.parseFloat(bubble!.style.left),
+    top: Number.parseFloat(bubble!.style.top)
+  };
+};
+
 const createReadyRuntimeFrame = (overrides: Record<string, unknown> = {}) => ({
   tick: 1,
   time: 0,
@@ -222,7 +244,7 @@ const createReadyRuntimeFrame = (overrides: Record<string, unknown> = {}) => ({
       alive: true,
       grounded: true,
       mass: 84,
-      maxMass: 300,
+      maxMass: defaultSimulationConfig.maxMass,
       livesRemaining: 3,
       maxLives: 3,
       respawning: false,
@@ -285,6 +307,193 @@ const createReadyRuntimeFrame = (overrides: Record<string, unknown> = {}) => ({
   fallingClusters: [],
   ...overrides
 });
+
+const createCenteredReadyRuntimeFrame = (overrides: Record<string, unknown> = {}) =>
+  createReadyRuntimeFrame({
+    players: [
+      {
+        ...(createReadyRuntimeFrame().players[0] as object),
+        position: { x: 16, y: 2, z: 16 }
+      }
+    ],
+    ...overrides
+  });
+
+const createTerrainChunkPatch = () => {
+  const world = new MutableVoxelWorld(createDefaultArenaMap());
+  const chunk = world.buildVisibleChunks()[0];
+  expect(chunk).toBeDefined();
+  const mesh = meshTerrainChunk(chunk!);
+
+  return {
+    key: chunk!.key,
+    position: [mesh.chunkOffset.x, mesh.chunkOffset.y, mesh.chunkOffset.z] as [number, number, number],
+    materialGroups: mesh.materialGroups.map((group) => ({
+      materialIndex: group.materialIndex,
+      start: group.start,
+      count: group.count
+    })),
+    visibleVoxelCount: mesh.visibleVoxelCount,
+    triangleCount: mesh.triangleCount,
+    drawCallCount: mesh.drawCallCount,
+    positions: new Float32Array(mesh.positions),
+    normals: new Float32Array(mesh.normals),
+    uvs: new Float32Array(mesh.uvs),
+    colors: new Float32Array(mesh.colors),
+    indices: new Uint32Array(mesh.indices)
+  };
+};
+
+const createEmptyArenaDocument = () => {
+  const document = createDefaultArenaMap();
+  return {
+    ...document,
+    props: [],
+    voxels: []
+  };
+};
+
+const resolveDesiredRuntimeCameraState = (frame: ReturnType<typeof createReadyRuntimeFrame>) => {
+  const player = frame.players[0]!;
+  const aimState =
+    player.spacePhase === "none"
+      ? getAimRigState(player.position, getYawFromPlanarVector(player.facing), aimCameraConfig.defaultPitch, 0)
+      : getSpaceAimRigState(player.position, getYawFromPlanarVector(player.facing));
+
+  return {
+    player,
+    aimPivot: new THREE.Vector3(aimState.aimPivot.x, aimState.aimPivot.y, aimState.aimPivot.z),
+    aimTarget: new THREE.Vector3(aimState.aimTarget.x, aimState.aimTarget.y, aimState.aimTarget.z),
+    cameraPosition: new THREE.Vector3(
+      aimState.cameraPosition.x,
+      aimState.cameraPosition.y,
+      aimState.cameraPosition.z
+    ),
+    anchors: {
+      hips: new THREE.Vector3(
+        player.position.x,
+        player.position.y + defaultSimulationConfig.playerHeight * 0.35,
+        player.position.z
+      ),
+      chest: new THREE.Vector3(
+        player.position.x,
+        player.position.y + defaultSimulationConfig.playerHeight * 0.7,
+        player.position.z
+      ),
+      head: new THREE.Vector3(
+        player.position.x,
+        player.position.y + defaultSimulationConfig.playerHeight * 0.9,
+        player.position.z
+      )
+    }
+  };
+};
+
+const getCameraOccluderVoxel = (
+  client: GameClient,
+  anchor: keyof ReturnType<typeof resolveDesiredRuntimeCameraState>["anchors"] = "chest",
+  alphaCandidates = [0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85]
+) => {
+  const frame = (client as any).latestFrame as ReturnType<typeof createReadyRuntimeFrame>;
+  const { anchors, cameraPosition } = resolveDesiredRuntimeCameraState(frame);
+  const start = anchors[anchor].clone();
+  const end = cameraPosition.clone();
+  const world = (client as any).runtimeWorld as MutableVoxelWorld;
+  const direction = end.clone().sub(start);
+  const distance = direction.length();
+  direction.divideScalar(distance);
+
+  for (const alpha of alphaCandidates) {
+    const sample = start.clone().lerp(end, alpha);
+    const voxel = {
+      x: Math.floor(sample.x),
+      y: Math.floor(sample.y),
+      z: Math.floor(sample.z)
+    };
+    if (
+      voxel.x >= 0 &&
+      voxel.x < world.size.x &&
+      voxel.y >= 0 &&
+      voxel.y < world.size.y &&
+      voxel.z >= 0 &&
+      voxel.z < world.size.z
+    ) {
+      const occluderWorld = world.clone();
+      occluderWorld.setVoxel(voxel.x, voxel.y, voxel.z, "ground");
+      const hit = raycastVoxelWorld(occluderWorld, start, direction, distance);
+
+      if (
+        hit &&
+        hit.voxel.x === voxel.x &&
+        hit.voxel.y === voxel.y &&
+        hit.voxel.z === voxel.z
+      ) {
+        return voxel;
+      }
+    }
+  }
+
+  throw new Error("Could not find a raycast-visible occluder voxel on the runtime camera path.");
+};
+
+const fillSolidBox = (
+  world: MutableVoxelWorld,
+  min: { x: number; y: number; z: number },
+  max: { x: number; y: number; z: number },
+  kind: "ground" | "boundary" | "hazard" | "water" = "ground"
+) => {
+  for (let x = min.x; x <= max.x; x += 1) {
+    for (let y = min.y; y <= max.y; y += 1) {
+      for (let z = min.z; z <= max.z; z += 1) {
+        world.setVoxel(x, y, z, kind);
+      }
+    }
+  }
+};
+
+const carveAirBox = (
+  world: MutableVoxelWorld,
+  min: { x: number; y: number; z: number },
+  max: { x: number; y: number; z: number }
+) => {
+  for (let x = min.x; x <= max.x; x += 1) {
+    for (let y = min.y; y <= max.y; y += 1) {
+      for (let z = min.z; z <= max.z; z += 1) {
+        world.removeVoxel(x, y, z);
+      }
+    }
+  }
+};
+
+const buildCoveredChamber = (
+  world: MutableVoxelWorld,
+  {
+    centerX,
+    floorY,
+    centerZ
+  }: {
+    centerX: number;
+    floorY: number;
+    centerZ: number;
+  }
+) => {
+  fillSolidBox(
+    world,
+    { x: centerX - 6, y: floorY, z: centerZ - 6 },
+    { x: centerX + 6, y: floorY + 6, z: centerZ + 6 }
+  );
+  carveAirBox(
+    world,
+    { x: centerX - 2, y: floorY + 1, z: centerZ - 2 },
+    { x: centerX + 2, y: floorY + 3, z: centerZ + 2 }
+  );
+};
+
+const stepCoveredPlayerVisibility = (client: GameClient, frame: ReturnType<typeof createReadyRuntimeFrame>) => {
+  (client as any).latestFrame = frame;
+  (client as any).updateRuntimeCamera(1 / 60);
+  (client as any).syncPlayers(frame.players, frame.localPlayerId, 1 / 60, 0);
+};
 
 describe("GameClient", () => {
   beforeEach(() => {
@@ -488,6 +697,447 @@ describe("GameClient", () => {
     client.dispose();
   });
 
+  it("tracks the shared terrain chunk materials with sun shadows and excludes chamber materials", () => {
+    const client = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 44,
+      qualityTier: "high"
+    });
+
+    const trackedMaterials = csmTestState.instances[0]?.setupMaterial.mock.calls.map(([material]) => material) ?? [];
+    const chamberMaterials = ((client as any).undergroundChamber as { materials: THREE.MeshStandardMaterial[] }).materials;
+
+    expect(trackedMaterials).toEqual(expect.arrayContaining(getTerrainChunkMaterials()));
+    expect(trackedMaterials.some((material) => chamberMaterials.includes(material))).toBe(false);
+
+    client.dispose();
+  });
+
+  it("keeps the normal chase camera distance and clear visibility mode in open space", () => {
+    const client = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createEmptyArenaDocument(),
+      initialMode: "explore",
+      matchColorSeed: 45
+    });
+
+    const frame = createCenteredReadyRuntimeFrame();
+    const expectedCamera = resolveDesiredRuntimeCameraState(frame).cameraPosition;
+    stepCoveredPlayerVisibility(client, frame);
+
+    const camera = (client as any).camera as THREE.PerspectiveCamera;
+
+    expect(camera.position.x).toBeCloseTo(expectedCamera.x, 5);
+    expect(camera.position.y).toBeCloseTo(expectedCamera.y, 5);
+    expect(camera.position.z).toBeCloseTo(expectedCamera.z, 5);
+    expect((client as any).coveredPlayerVisibilityMode).toBe("clear");
+    expect(((client as any).terrainGroup as THREE.Group).visible).toBe(true);
+    expect(((client as any).undergroundChamber as { group: THREE.Group }).group.visible).toBe(false);
+    expect(((client as any).coveredPlayerSilhouetteGroup as THREE.Group).visible).toBe(false);
+
+    client.dispose();
+  });
+
+  it("switches to the top-down space rig for every active space phase", () => {
+    const client = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createEmptyArenaDocument(),
+      initialMode: "explore",
+      matchColorSeed: 452
+    });
+
+    for (const spacePhase of ["float", "reentry", "superBoomDive", "superBoomImpact"] as const) {
+      const frame = createCenteredReadyRuntimeFrame({
+        players: [
+          {
+            ...(createCenteredReadyRuntimeFrame().players[0] as object),
+            grounded: false,
+            spacePhase,
+            spacePhaseRemaining: spacePhase === "superBoomImpact" ? 0.1 : 2.2,
+            position: { x: 16, y: 64, z: 16 },
+            velocity: { x: 0, y: spacePhase === "reentry" || spacePhase === "superBoomDive" ? -12 : 1.2, z: 0 },
+            facing: { x: 0, z: 1 }
+          }
+        ]
+      });
+      const expected = resolveDesiredRuntimeCameraState(frame);
+
+      (client as any).latestFrame = frame;
+      (client as any).lookYaw = getYawFromPlanarVector(frame.players[0]!.facing);
+      (client as any).lookPitch = spaceCameraConfig.defaultPitch;
+      (client as any).hasInitializedRuntimeCamera = false;
+      (client as any).runtimeCameraUsingSpaceRig = false;
+      (client as any).updateRuntimeCamera(1 / 60);
+
+      const camera = (client as any).camera as THREE.PerspectiveCamera;
+      const currentLookTarget = (client as any).currentLookTarget as THREE.Vector3;
+
+      expect(camera.position.x).toBeCloseTo(expected.cameraPosition.x, 5);
+      expect(camera.position.y).toBeCloseTo(expected.cameraPosition.y, 5);
+      expect(camera.position.z).toBeCloseTo(expected.cameraPosition.z, 5);
+      expect(currentLookTarget.x).toBeCloseTo(frame.players[0]!.position.x, 5);
+      expect(currentLookTarget.z).toBeCloseTo(frame.players[0]!.position.z, 5);
+      expect(currentLookTarget.y).toBeCloseTo(frame.players[0]!.position.y + aimCameraConfig.aimPivotHeight, 5);
+      expect(camera.position.y).toBeGreaterThan(currentLookTarget.y);
+      expect((client as any).coveredPlayerVisibilityMode).toBe("clear");
+    }
+
+    client.dispose();
+  });
+
+  it("keeps the chicken centered in space while mouse look still changes the orbit angle", () => {
+    const client = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createEmptyArenaDocument(),
+      initialMode: "explore",
+      matchColorSeed: 454
+    });
+
+    const frame = createCenteredReadyRuntimeFrame({
+      players: [
+        {
+          ...(createCenteredReadyRuntimeFrame().players[0] as object),
+          grounded: false,
+          spacePhase: "float" as const,
+          spacePhaseRemaining: 2.4,
+          position: { x: 16, y: 64, z: 16 },
+          velocity: { x: 0, y: 1.2, z: 0 },
+          facing: { x: 0, z: 1 }
+        }
+      ]
+    });
+
+    (client as any).latestFrame = frame;
+    (client as any).hasInitializedRuntimeCamera = false;
+    (client as any).updateRuntimeCamera(1 / 60);
+
+    const initialCamera = ((client as any).camera as THREE.PerspectiveCamera).position.clone();
+    (client as any).pendingLookDeltaX = 60;
+    (client as any).pendingLookDeltaY = -120;
+    (client as any).updateRuntimeCamera(1 / 60);
+
+    const camera = (client as any).camera as THREE.PerspectiveCamera;
+    const currentLookTarget = (client as any).currentLookTarget as THREE.Vector3;
+
+    expect(currentLookTarget.x).toBeCloseTo(frame.players[0]!.position.x, 5);
+    expect(currentLookTarget.z).toBeCloseTo(frame.players[0]!.position.z, 5);
+    expect(camera.position.distanceTo(initialCamera)).toBeGreaterThan(0.1);
+    expect(camera.position.y).toBeGreaterThan(currentLookTarget.y);
+
+    client.dispose();
+  });
+
+  it("returns from the top-down space rig to the normal chase camera after landing", () => {
+    const client = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createEmptyArenaDocument(),
+      initialMode: "explore",
+      matchColorSeed: 453
+    });
+
+    const spaceFrame = createCenteredReadyRuntimeFrame({
+      players: [
+        {
+          ...(createCenteredReadyRuntimeFrame().players[0] as object),
+          grounded: false,
+          spacePhase: "float" as const,
+          spacePhaseRemaining: 2.4,
+          position: { x: 16, y: 64, z: 16 },
+          velocity: { x: 0, y: 1.2, z: 0 },
+          facing: { x: 1, z: 0 }
+        }
+      ]
+    });
+    (client as any).latestFrame = spaceFrame;
+    (client as any).hasInitializedRuntimeCamera = false;
+    (client as any).updateRuntimeCamera(1 / 60);
+
+    const landingFrame = createCenteredReadyRuntimeFrame({
+      players: [
+        {
+          ...(createCenteredReadyRuntimeFrame().players[0] as object),
+          grounded: true,
+          spacePhase: "none" as const,
+          position: { x: 16, y: 2, z: 16 },
+          velocity: { x: 0, y: 0, z: 0 },
+          facing: { x: 1, z: 0 }
+        }
+      ]
+    });
+    const expectedLanding = resolveDesiredRuntimeCameraState(landingFrame);
+    (client as any).latestFrame = landingFrame;
+    (client as any).hasInitializedRuntimeCamera = false;
+    (client as any).updateRuntimeCamera(1 / 60);
+
+    const camera = (client as any).camera as THREE.PerspectiveCamera;
+
+    expect(camera.position.x).toBeCloseTo(expectedLanding.cameraPosition.x, 5);
+    expect(camera.position.y).toBeCloseTo(expectedLanding.cameraPosition.y, 5);
+    expect(camera.position.z).toBeCloseTo(expectedLanding.cameraPosition.z, 5);
+    expect(camera.position.x).not.toBeCloseTo(landingFrame.players[0]!.position.x, 5);
+
+    client.dispose();
+  });
+
+  it("enters underground mode only when the player is broadly covered and swaps to the chamber renderer", () => {
+    const client = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createEmptyArenaDocument(),
+      initialMode: "explore",
+      matchColorSeed: 451
+    });
+
+    const frame = createCenteredReadyRuntimeFrame();
+    buildCoveredChamber((client as any).runtimeWorld as MutableVoxelWorld, {
+      centerX: Math.floor(frame.players[0]!.position.x),
+      floorY: 1,
+      centerZ: Math.floor(frame.players[0]!.position.z)
+    });
+
+    stepCoveredPlayerVisibility(client, frame);
+
+    expect((client as any).coveredPlayerVisibilityMode).toBe("underground");
+    expect(((client as any).terrainGroup as THREE.Group).visible).toBe(false);
+    expect(((client as any).undergroundChamber as { group: THREE.Group }).group.visible).toBe(true);
+    expect(((client as any).coveredPlayerSilhouetteGroup as THREE.Group).visible).toBe(false);
+    expect(((client as any).undergroundChamber as { chunkMeshes: Map<string, THREE.Mesh> }).chunkMeshes.size).toBeGreaterThan(0);
+
+    client.dispose();
+  });
+
+  it("treats narrow bridge blockers as under-structure visibility and renders the player silhouette", () => {
+    const client = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createEmptyArenaDocument(),
+      initialMode: "explore",
+      matchColorSeed: 45
+    });
+
+    const frame = createCenteredReadyRuntimeFrame();
+    (client as any).latestFrame = frame;
+    const blocker = getCameraOccluderVoxel(client, "chest");
+    ((client as any).runtimeWorld as MutableVoxelWorld).setVoxel(blocker.x, blocker.y, blocker.z, "ground");
+
+    stepCoveredPlayerVisibility(client, frame);
+
+    const silhouetteGroup = (client as any).coveredPlayerSilhouetteGroup as THREE.Group;
+    const silhouetteMaterial = (client as any).coveredPlayerSilhouetteMaterial as THREE.MeshBasicMaterial;
+    const localVisual = ((client as any).playerVisuals as Map<string, unknown>).get(frame.localPlayerId!) as {
+      ringMaterial: THREE.MeshBasicMaterial;
+    };
+    const silhouetteMesh = silhouetteGroup
+      .getObjectByProperty("isMesh", true) as THREE.Mesh | null;
+
+    expect((client as any).coveredPlayerVisibilityMode).toBe("under_structure");
+    expect(((client as any).terrainGroup as THREE.Group).visible).toBe(true);
+    expect(((client as any).undergroundChamber as { group: THREE.Group }).group.visible).toBe(false);
+    expect(silhouetteGroup.visible).toBe(true);
+    expect((client as any).coveredPlayerSilhouetteRoot).not.toBeNull();
+    expect(silhouetteMesh).not.toBeNull();
+    expect((silhouetteMesh as THREE.Mesh).material).toBe(silhouetteMaterial);
+    expect(silhouetteMaterial.color.getHex()).toBe(localVisual.ringMaterial.color.getHex());
+
+    client.dispose();
+  });
+
+  it("only renders the connected underground chamber and keeps a disconnected nearby cavity hidden", () => {
+    const client = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createEmptyArenaDocument(),
+      initialMode: "explore",
+      matchColorSeed: 47
+    });
+
+    const frame = createCenteredReadyRuntimeFrame();
+    const world = (client as any).runtimeWorld as MutableVoxelWorld;
+    buildCoveredChamber(world, {
+      centerX: Math.floor(frame.players[0]!.position.x),
+      floorY: 1,
+      centerZ: Math.floor(frame.players[0]!.position.z)
+    });
+    fillSolidBox(world, { x: 22, y: 1, z: 13 }, { x: 28, y: 7, z: 19 });
+    carveAirBox(world, { x: 24, y: 2, z: 15 }, { x: 26, y: 4, z: 17 });
+
+    stepCoveredPlayerVisibility(client, frame);
+
+    const selected = (client as any).undergroundChamberSelectedVoxelKeys as Set<string>;
+    expect(selected.has(createVoxelKey(13, 3, 16))).toBe(true);
+    expect(selected.has(createVoxelKey(24, 3, 16))).toBe(false);
+
+    client.dispose();
+  });
+
+  it("adds two extra terrain layers behind chamber boundary walls", () => {
+    const client = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createEmptyArenaDocument(),
+      initialMode: "explore",
+      matchColorSeed: 471
+    });
+
+    const frame = createCenteredReadyRuntimeFrame();
+    buildCoveredChamber((client as any).runtimeWorld as MutableVoxelWorld, {
+      centerX: Math.floor(frame.players[0]!.position.x),
+      floorY: 1,
+      centerZ: Math.floor(frame.players[0]!.position.z)
+    });
+
+    stepCoveredPlayerVisibility(client, frame);
+
+    const selected = (client as any).undergroundChamberSelectedVoxelKeys as Set<string>;
+    expect(selected.has(createVoxelKey(13, 3, 16))).toBe(true);
+    expect(selected.has(createVoxelKey(12, 3, 16))).toBe(true);
+    expect(selected.has(createVoxelKey(11, 3, 16))).toBe(true);
+
+    client.dispose();
+  });
+
+  it("does not trigger covered-player visibility from props alone", () => {
+    const client = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createEmptyArenaDocument(),
+      initialMode: "explore",
+      matchColorSeed: 48
+    });
+
+    const frame = createCenteredReadyRuntimeFrame();
+    (client as any).latestFrame = frame;
+    const blocker = getCameraOccluderVoxel(client, "chest");
+    ((client as any).runtimeWorld as MutableVoxelWorld).setProp("tree-oak", blocker.x, blocker.y, blocker.z);
+
+    stepCoveredPlayerVisibility(client, frame);
+
+    expect((client as any).coveredPlayerVisibilityMode).toBe("clear");
+    expect(((client as any).undergroundChamber as { group: THREE.Group }).group.visible).toBe(false);
+    expect(((client as any).coveredPlayerSilhouetteGroup as THREE.Group).visible).toBe(false);
+
+    client.dispose();
+  });
+
+  it("disables both covered-player modes when no live local player is available", () => {
+    const client = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createEmptyArenaDocument(),
+      initialMode: "explore",
+      matchColorSeed: 49
+    });
+
+    const frame = createReadyRuntimeFrame({
+      players: [
+        {
+          ...(createReadyRuntimeFrame().players[0] as object),
+          alive: false,
+          respawning: true
+        }
+      ]
+    });
+
+    stepCoveredPlayerVisibility(client, frame);
+
+    expect((client as any).coveredPlayerVisibilityMode).toBe("clear");
+    expect(((client as any).undergroundChamber as { group: THREE.Group }).group.visible).toBe(false);
+    expect(((client as any).coveredPlayerSilhouetteGroup as THREE.Group).visible).toBe(false);
+
+    client.dispose();
+  });
+
+  it("caps underground camera zoom-in to at most 1.25 world units", () => {
+    const client = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createEmptyArenaDocument(),
+      initialMode: "explore",
+      matchColorSeed: 52
+    });
+
+    const frame = createCenteredReadyRuntimeFrame();
+    buildCoveredChamber((client as any).runtimeWorld as MutableVoxelWorld, {
+      centerX: Math.floor(frame.players[0]!.position.x),
+      floorY: 1,
+      centerZ: Math.floor(frame.players[0]!.position.z)
+    });
+
+    const expected = resolveDesiredRuntimeCameraState(frame);
+    stepCoveredPlayerVisibility(client, frame);
+
+    const camera = (client as any).camera as THREE.PerspectiveCamera;
+    const desiredDistance = expected.cameraPosition.distanceTo(expected.aimPivot);
+    const actualDistance = camera.position.distanceTo(expected.aimPivot);
+
+    expect((client as any).coveredPlayerVisibilityMode).toBe("underground");
+    expect(desiredDistance - actualDistance).toBeGreaterThan(0);
+    expect(desiredDistance - actualDistance).toBeLessThanOrEqual(1.25 + 1e-3);
+
+    client.dispose();
+  });
+
+  it("caps under-structure zoom-in to 0.6 world units and clears the silhouette when line of sight returns", () => {
+    const client = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createEmptyArenaDocument(),
+      initialMode: "explore",
+      matchColorSeed: 46
+    });
+
+    const frame = createCenteredReadyRuntimeFrame();
+    const expected = resolveDesiredRuntimeCameraState(frame);
+    (client as any).latestFrame = frame;
+    const blocker = getCameraOccluderVoxel(client, "chest");
+    ((client as any).runtimeWorld as MutableVoxelWorld).setVoxel(blocker.x, blocker.y, blocker.z, "ground");
+
+    stepCoveredPlayerVisibility(client, frame);
+
+    const camera = (client as any).camera as THREE.PerspectiveCamera;
+    const desiredDistance = expected.cameraPosition.distanceTo(expected.aimPivot);
+    const occludedDistance = camera.position.distanceTo(expected.aimPivot);
+
+    expect((client as any).coveredPlayerVisibilityMode).toBe("under_structure");
+    expect(desiredDistance - occludedDistance).toBeGreaterThan(0);
+    expect(desiredDistance - occludedDistance).toBeLessThanOrEqual(0.6 + 1e-3);
+
+    ((client as any).runtimeWorld as MutableVoxelWorld).removeVoxel(blocker.x, blocker.y, blocker.z);
+    stepCoveredPlayerVisibility(client, frame);
+
+    const releasedDistance = ((client as any).camera as THREE.PerspectiveCamera).position.distanceTo(expected.aimPivot);
+    expect((client as any).coveredPlayerVisibilityMode).toBe("clear");
+    expect(releasedDistance).toBeGreaterThan(occludedDistance);
+    expect(releasedDistance).toBeLessThan(desiredDistance);
+    expect(((client as any).coveredPlayerSilhouetteGroup as THREE.Group).visible).toBe(false);
+
+    client.dispose();
+  });
+
+  it("reuses the shared terrain materials across terrain patch updates", () => {
+    const client = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 50
+    });
+
+    const patch = createTerrainChunkPatch();
+    (client as any).applyTerrainPatches([patch]);
+
+    const firstMesh = (client as any).chunkMeshes.get(patch.key) as THREE.Mesh | undefined;
+    const firstMaterials = firstMesh?.material as THREE.Material[] | undefined;
+    expect(firstMaterials).toHaveLength(getTerrainChunkMaterials().length);
+    firstMaterials?.forEach((material, index) => {
+      expect(material).toBe(getTerrainChunkMaterials()[index]);
+    });
+
+    (client as any).applyTerrainPatches([patch]);
+
+    const secondMesh = (client as any).chunkMeshes.get(patch.key) as THREE.Mesh | undefined;
+    const secondMaterials = secondMesh?.material as THREE.Material[] | undefined;
+    expect(secondMesh).toBe(firstMesh);
+    secondMaterials?.forEach((material, index) => {
+      expect(material).toBe(getTerrainChunkMaterials()[index]);
+    });
+
+    client.dispose();
+  });
+
   it("applies authoritative frame payloads to the local replica without changing render ownership", () => {
     const canvas = createCanvas();
     const client = GameClient.mount({
@@ -516,7 +1166,13 @@ describe("GameClient", () => {
           hazards: {
             fallingClusters: [],
             skyDrops: [],
-            eggScatterDebris: []
+            eggScatterDebris: [],
+            waterFlood: {
+              active: false,
+              breachLevelY: 0,
+              currentLevelY: 0,
+              targetLevelY: 0
+            }
           },
           stats: {
             terrainRevision: 4
@@ -900,6 +1556,189 @@ describe("GameClient", () => {
 
     expect((client as any).playerVisuals.get("human-1").paletteName).toBe("mint");
     expect((client as any).playerVisuals.get("npc-1").paletteName).toBe(npcPaletteName);
+
+    client.dispose();
+  });
+
+  it("spawns a feather burst when a player loses a life during play", () => {
+    const client = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 23
+    });
+
+    const player = {
+      id: "human-1",
+      name: "You",
+      kind: "human",
+      alive: true,
+      fallingOut: false,
+      grounded: true,
+      mass: 24,
+      livesRemaining: 3,
+      maxLives: 3,
+      respawning: false,
+      invulnerableRemaining: 0,
+      stunRemaining: 0,
+      pushVisualRemaining: 0,
+      position: { x: 4, y: 2, z: 5 },
+      velocity: { x: 0, y: 0, z: 0 },
+      facing: { x: 1, z: 0 },
+      jetpackActive: false,
+      eliminatedAt: null
+    };
+
+    (client as any).syncPlayers([player], "human-1", 1 / 60, 1.25);
+    (client as any).syncFeatherBursts(1.25);
+
+    const plumeMesh = (client as any).featherBurstPlumeMesh.mesh as THREE.InstancedMesh;
+    const quillMesh = (client as any).featherBurstQuillMesh.mesh as THREE.InstancedMesh;
+
+    expect(plumeMesh.count).toBe(0);
+    expect(quillMesh.count).toBe(0);
+
+    (client as any).syncPlayers(
+      [
+        {
+          ...player,
+          livesRemaining: 2,
+          position: { x: 4.2, y: 2.1, z: 5.1 }
+        }
+      ],
+      "human-1",
+      1 / 60,
+      1.35
+    );
+    (client as any).syncFeatherBursts(1.35);
+
+    expect(plumeMesh.visible).toBe(true);
+    expect(plumeMesh.count).toBeGreaterThan(0);
+    expect(quillMesh.visible).toBe(true);
+    expect(quillMesh.count).toBe(plumeMesh.count);
+
+    client.dispose();
+  });
+
+  it("spawns a feather burst even when the player immediately enters a respawning ring-out state", () => {
+    const client = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 29
+    });
+
+    const player = {
+      id: "human-1",
+      name: "You",
+      kind: "human",
+      alive: true,
+      fallingOut: false,
+      grounded: true,
+      mass: 24,
+      livesRemaining: 3,
+      maxLives: 3,
+      respawning: false,
+      invulnerableRemaining: 0,
+      stunRemaining: 0,
+      pushVisualRemaining: 0,
+      position: { x: 8, y: 2, z: 8 },
+      velocity: { x: 0, y: 0, z: 0 },
+      facing: { x: 0, z: 1 },
+      jetpackActive: false,
+      eliminatedAt: null
+    };
+
+    (client as any).syncPlayers([player], "human-1", 1 / 60, 1.5);
+    (client as any).syncPlayers(
+      [
+        {
+          ...player,
+          grounded: false,
+          fallingOut: true,
+          livesRemaining: 2,
+          respawning: true,
+          position: { x: 8.4, y: 1.6, z: 8.3 },
+          velocity: { x: 0.4, y: -1.8, z: 0.2 }
+        }
+      ],
+      "human-1",
+      1 / 60,
+      1.62
+    );
+    (client as any).syncFeatherBursts(1.62);
+
+    const plumeMesh = (client as any).featherBurstPlumeMesh.mesh as THREE.InstancedMesh;
+    expect(plumeMesh.count).toBeGreaterThan(0);
+    expect((client as any).playerVisuals.get("human-1").group.visible).toBe(true);
+
+    client.dispose();
+  });
+
+  it("does not backfill feather bursts on first sight or after runtime entity clears", () => {
+    const client = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 31
+    });
+
+    const plumeMesh = (client as any).featherBurstPlumeMesh.mesh as THREE.InstancedMesh;
+    const player = {
+      id: "human-1",
+      name: "You",
+      kind: "human",
+      alive: true,
+      fallingOut: false,
+      grounded: true,
+      mass: 24,
+      livesRemaining: 2,
+      maxLives: 3,
+      respawning: false,
+      invulnerableRemaining: 0,
+      stunRemaining: 0,
+      pushVisualRemaining: 0,
+      position: { x: 6, y: 2, z: 6 },
+      velocity: { x: 0, y: 0, z: 0 },
+      facing: { x: 1, z: 0 },
+      jetpackActive: false,
+      eliminatedAt: null
+    };
+
+    (client as any).syncPlayers([player], "human-1", 1 / 60, 1.25);
+    (client as any).syncFeatherBursts(1.25);
+    expect(plumeMesh.count).toBe(0);
+
+    (client as any).syncPlayers(
+      [
+        {
+          ...player,
+          livesRemaining: 1
+        }
+      ],
+      "human-1",
+      1 / 60,
+      1.35
+    );
+    (client as any).syncFeatherBursts(1.35);
+    expect(plumeMesh.count).toBeGreaterThan(0);
+
+    (client as any).clearRuntimeEntities();
+    expect(plumeMesh.count).toBe(0);
+
+    (client as any).syncPlayers(
+      [
+        {
+          ...player,
+          livesRemaining: 1
+        }
+      ],
+      "human-1",
+      1 / 60,
+      1.45
+    );
+    (client as any).syncFeatherBursts(1.45);
+    expect(plumeMesh.count).toBe(0);
 
     client.dispose();
   });
@@ -1789,6 +2628,74 @@ describe("GameClient", () => {
     client.dispose();
   });
 
+  it("repeats held F builds on the harvest cadence and stops on release", () => {
+    const client = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 371
+    });
+
+    const worker = MockWorker.instances[0]!;
+    const firstTarget = {
+      voxel: { x: 4, y: 2, z: 5 },
+      normal: { x: 0, y: 1, z: 0 }
+    };
+    const secondTarget = {
+      voxel: { x: 5, y: 2, z: 5 },
+      normal: { x: 0, y: 1, z: 0 }
+    };
+
+    (client as any).pointerLocked = true;
+    (client as any).runtimePaused = false;
+    (client as any).latestFrame = createReadyRuntimeFrame();
+    (client as any).focusedTarget = firstTarget;
+
+    (client as any).handleKeyDown({
+      code: "KeyF",
+      preventDefault: vi.fn(),
+      target: window,
+      metaKey: false,
+      ctrlKey: false,
+      repeat: false
+    });
+
+    (client as any).sendRuntimeInput((client as any).getLocalRuntimePlayer(), 0);
+    let lastMessage = worker.postMessage.mock.calls.at(-1)?.[0];
+    let command = unpackRuntimeInputCommand(lastMessage.buffer);
+
+    expect(command.place).toBe(true);
+    expect(command.targetVoxel).toEqual(firstTarget.voxel);
+    expect((client as any).keyboardState.placePressed).toBe(false);
+
+    (client as any).focusedTarget = secondTarget;
+    (client as any).updateHeldBuild((client as any).getLocalRuntimePlayer(), 0.05);
+    expect((client as any).keyboardState.placePressed).toBe(false);
+
+    (client as any).updateHeldBuild((client as any).getLocalRuntimePlayer(), 0.11);
+    expect((client as any).keyboardState.placePressed).toBe(true);
+
+    (client as any).sendRuntimeInput((client as any).getLocalRuntimePlayer(), 0.11);
+    lastMessage = worker.postMessage.mock.calls.at(-1)?.[0];
+    command = unpackRuntimeInputCommand(lastMessage.buffer);
+
+    expect(command.place).toBe(true);
+    expect(command.targetVoxel).toEqual(secondTarget.voxel);
+    expect(command.targetNormal).toEqual(secondTarget.normal);
+
+    const messageCountAfterRepeat = worker.postMessage.mock.calls.length;
+    (client as any).handleKeyUp({
+      code: "KeyF"
+    });
+    (client as any).updateHeldBuild((client as any).getLocalRuntimePlayer(), 0.22);
+    expect((client as any).keyboardState.placePressed).toBe(false);
+
+    (client as any).sendRuntimeInput((client as any).getLocalRuntimePlayer(), 0.12);
+    expect(worker.postMessage.mock.calls).toHaveLength(messageCountAfterRepeat);
+
+    client.dispose();
+  });
+
   it("does not place on F when no build target is focused", () => {
     const client = GameClient.mount({
       canvas: createCanvas(),
@@ -2302,6 +3209,88 @@ describe("GameClient", () => {
     host.remove();
   });
 
+  it("keeps the runtime matter bubble centered overhead when the chicken turns in place", () => {
+    const host = document.createElement("div");
+    const canvas = createCanvas();
+    host.appendChild(canvas);
+    document.body.appendChild(host);
+    const client = GameClient.mount({
+      canvas,
+      initialDocument: createEmptyArenaDocument(),
+      initialMode: "explore",
+      matchColorSeed: 54
+    });
+
+    (client as any).pointerLocked = true;
+    (client as any).runtimePaused = false;
+    (client as any).triggerNotEnoughMatterFeedback();
+    (client as any).latestFrame = createCenteredReadyRuntimeFrame();
+    (client as any).updateRuntimeCamera(1 / 60);
+    (client as any).applyRuntimeFrame(1 / 60, 0.1);
+
+    const initialBubblePosition = getResourceBubbleCoordinates(client);
+
+    (client as any).latestFrame = createCenteredReadyRuntimeFrame({
+      players: [
+        {
+          ...(createCenteredReadyRuntimeFrame().players[0] as object),
+          facing: { x: 0, z: 1 }
+        }
+      ]
+    });
+    (client as any).updateRuntimeCamera(1 / 60);
+    (client as any).applyRuntimeFrame(1 / 60, 0.2);
+
+    const turnedBubblePosition = getResourceBubbleCoordinates(client);
+
+    expect(turnedBubblePosition.left).toBeCloseTo(initialBubblePosition.left, 0);
+    expect(Math.abs(turnedBubblePosition.left - initialBubblePosition.left)).toBeLessThan(6);
+    expect(Math.abs(turnedBubblePosition.top - initialBubblePosition.top)).toBeLessThan(6);
+
+    client.dispose();
+    host.remove();
+  });
+
+  it("updates the runtime matter bubble position when the chicken moves between frames", () => {
+    const host = document.createElement("div");
+    const canvas = createCanvas();
+    host.appendChild(canvas);
+    document.body.appendChild(host);
+    const client = GameClient.mount({
+      canvas,
+      initialDocument: createEmptyArenaDocument(),
+      initialMode: "explore",
+      matchColorSeed: 54
+    });
+
+    (client as any).pointerLocked = true;
+    (client as any).runtimePaused = false;
+    (client as any).triggerNotEnoughMatterFeedback();
+    (client as any).latestFrame = createCenteredReadyRuntimeFrame();
+    (client as any).updateRuntimeCamera(1 / 60);
+    (client as any).applyRuntimeFrame(1 / 60, 0.1);
+
+    const initialBubblePosition = getResourceBubbleCoordinates(client);
+
+    (client as any).latestFrame = createCenteredReadyRuntimeFrame({
+      players: [
+        {
+          ...(createCenteredReadyRuntimeFrame().players[0] as object),
+          position: { x: 16, y: 5.4, z: 16 }
+        }
+      ]
+    });
+    (client as any).updateRuntimeCamera(1 / 60);
+    (client as any).applyRuntimeFrame(1 / 60, 0.2);
+
+    const movedBubblePosition = getResourceBubbleCoordinates(client);
+
+    expect(Math.abs(movedBubblePosition.top - initialBubblePosition.top)).toBeGreaterThan(4.5);
+
+    client.dispose();
+    host.remove();
+  });
+
   it("does not send immediate egg throws when egg availability is blocked", () => {
     const client = GameClient.mount({
       canvas: createCanvas(),
@@ -2668,6 +3657,62 @@ describe("GameClient", () => {
       spaceSuccessPulseActive: true,
       spaceLocalTargetKey: "w",
       spaceLocalHitCount: 3
+    });
+
+    client.dispose();
+  });
+
+  it("does not fire a fail pulse when normal space float falls into reentry without a challenge", () => {
+    const onRuntimeOverlayChange = vi.fn();
+    const client = GameClient.mount({
+      canvas: createCanvas(),
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 431,
+      onRuntimeOverlayChange
+    });
+
+    (client as any).latestFrame = createReadyRuntimeFrame({
+      players: [
+        {
+          ...(createReadyRuntimeFrame().players[0] as object),
+          grounded: false,
+          spacePhase: "float" as const,
+          spacePhaseRemaining: 0.3,
+          position: { x: 8, y: 60, z: 8 },
+          velocity: { x: 0, y: 1.2, z: 0 }
+        }
+      ]
+    });
+    (client as any).applyRuntimeFrame(0.1, 1);
+
+    (client as any).latestFrame = createReadyRuntimeFrame({
+      players: [
+        {
+          ...(createReadyRuntimeFrame().players[0] as object),
+          grounded: false,
+          spacePhase: "reentry" as const,
+          spacePhaseRemaining: 0,
+          position: { x: 8, y: 58, z: 8 },
+          velocity: { x: 0, y: -12, z: 0 }
+        }
+      ]
+    });
+    (client as any).applyRuntimeFrame(0.1, 1.2);
+
+    expect(onRuntimeOverlayChange).toHaveBeenCalled();
+    expect(onRuntimeOverlayChange).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        spaceFailPulseActive: true
+      })
+    );
+    expect(onRuntimeOverlayChange).toHaveBeenLastCalledWith({
+      matterPulseActive: false,
+      spaceFailPulseActive: false,
+      spaceMistakePulseActive: false,
+      spaceSuccessPulseActive: false,
+      spaceLocalTargetKey: null,
+      spaceLocalHitCount: 0
     });
 
     client.dispose();

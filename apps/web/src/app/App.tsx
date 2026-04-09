@@ -11,7 +11,6 @@ import { flushSync } from "react-dom";
 import { createDefaultArenaMap, type MapDocumentV1 } from "@out-of-bounds/map";
 import type { GameMode, HudState } from "@out-of-bounds/sim";
 import { ChickenPreview } from "../components/ChickenPreview";
-import { preloadGameCanvas } from "../components/GameCanvasBoundary";
 import { Hud } from "../components/Hud";
 import { MultiplayerRoomCards } from "../components/MultiplayerRoomCards";
 import { MultiplayerRoomOverlay } from "../components/MultiplayerRoomOverlay";
@@ -286,10 +285,6 @@ export function App({
   }, [pauseState]);
 
   useEffect(() => () => clearLaunchTimers(), [clearLaunchTimers]);
-
-  useEffect(() => {
-    preloadGameCanvas();
-  }, []);
 
   useEffect(() => {
     const unsubscribe = multiplayerClient.subscribe(setMultiplayer);

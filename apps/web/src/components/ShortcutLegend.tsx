@@ -36,8 +36,8 @@ export const getRuntimeShortcutBindings = (): ShortcutBinding[] => [
   },
   {
     action: "Build",
-    detail: "tap F to place a block",
-    pauseDetail: "place a block",
+    detail: "hold F to place blocks",
+    pauseDetail: "hold to build",
     keys: ["F"],
   },
   {

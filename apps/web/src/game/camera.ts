@@ -15,6 +15,11 @@ export interface PointerLookDelta {
   deltaY: number;
 }
 
+export interface LookPitchBounds {
+  minPitch: number;
+  maxPitch: number;
+}
+
 export interface ChaseRigScalars {
   chaseDistance: number;
   heightOffset: number;
@@ -52,6 +57,13 @@ export const aimCameraConfig = {
   aimPivotHeight: 1.6,
   shoulderOffset: 0,
   defaultPitch: (-22 * Math.PI) / 180
+} as const;
+
+export const spaceCameraConfig = {
+  distance: 18,
+  minPitch: (-82 * Math.PI) / 180,
+  maxPitch: (-58 * Math.PI) / 180,
+  defaultPitch: (-72 * Math.PI) / 180
 } as const;
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
@@ -109,12 +121,18 @@ export const getSpeedCameraBlend = (forwardSpeedRatio: number) => {
   return clamp((forwardSpeedRatio - 0.65) / 0.35, 0, 1);
 };
 
-export const clampLookPitch = (pitch: number) => clamp(pitch, aimCameraConfig.minPitch, aimCameraConfig.maxPitch);
+export const clampLookPitch = (
+  pitch: number,
+  bounds: LookPitchBounds = aimCameraConfig
+) => clamp(pitch, bounds.minPitch, bounds.maxPitch);
+
+export const clampSpaceLookPitch = (pitch: number) => clampLookPitch(pitch, spaceCameraConfig);
 
 export const applyFreeLookDelta = (
   angles: AimAngles,
   delta: PointerLookDelta,
-  settings: RuntimeControlSettings = defaultRuntimeControlSettings
+  settings: RuntimeControlSettings = defaultRuntimeControlSettings,
+  pitchBounds: LookPitchBounds = aimCameraConfig
 ): AimAngles => {
   const normalizedSettings = normalizeRuntimeControlSettings(settings);
   const horizontalDirection = normalizedSettings.invertLookX ? -1 : 1;
@@ -134,7 +152,8 @@ export const applyFreeLookDelta = (
         delta.deltaY *
           verticalDirection *
           aimCameraConfig.pitchSensitivity *
-          sensitivity
+          sensitivity,
+      pitchBounds
     )
   };
 };
@@ -213,6 +232,27 @@ export const getAimRigState = (position: Vector3, yaw: number, pitch: number, sp
     lookDirection,
     aimTarget,
     cameraPosition,
+    planarForward: normalizePlanarVector(lookDirection.x, lookDirection.z)
+  };
+};
+
+export const getSpaceAimRigState = (
+  position: Vector3,
+  yaw: number,
+  pitch = spaceCameraConfig.defaultPitch
+): AimRigState => {
+  const aimPivot = getAimPivot(position);
+  const lookDirection = getLookDirection(yaw, clampSpaceLookPitch(pitch));
+
+  return {
+    aimPivot,
+    lookDirection,
+    aimTarget: { ...aimPivot },
+    cameraPosition: {
+      x: aimPivot.x - lookDirection.x * spaceCameraConfig.distance,
+      y: aimPivot.y - lookDirection.y * spaceCameraConfig.distance,
+      z: aimPivot.z - lookDirection.z * spaceCameraConfig.distance
+    },
     planarForward: normalizePlanarVector(lookDirection.x, lookDirection.z)
   };
 };

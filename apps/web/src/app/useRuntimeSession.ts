@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 import { normalizeArenaBudgetMapDocument, type MapDocumentV1 } from "@out-of-bounds/map";
 import { OutOfBoundsSimulation, type GameMode } from "@out-of-bounds/sim";
-import type { ActiveMode } from "../components/GameCanvas";
+import type { ActiveMode } from "../engine/types";
 
 export type AppMode = "menu" | ActiveMode;
 

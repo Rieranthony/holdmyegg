@@ -7,14 +7,14 @@ import {
   type MapPropKind,
   type MapDocumentV1
 } from "@out-of-bounds/map";
-import type { EditorTool } from "../components/GameCanvas";
+import type { EditorTool } from "../engine/types";
 import type { VoxelInteractPayload } from "../components/VoxelWorld";
 
 interface UseEditorSessionOptions {
   onStatus: (message: string) => void;
 }
 
-export const blockKindOptions: BlockKind[] = ["ground", "boundary", "hazard"];
+export const blockKindOptions: BlockKind[] = ["ground", "boundary", "hazard", "water"];
 export const propKindOptions: MapPropKind[] = ["tree-oak"];
 
 export function useEditorSession({ onStatus }: UseEditorSessionOptions) {
@@ -72,7 +72,7 @@ export function useEditorSession({ onStatus }: UseEditorSessionOptions) {
           y: voxel.y + normal.y,
           z: voxel.z + normal.z
         };
-        if (editorWorld.hasSolid(placement.x, placement.y, placement.z)) {
+        if (editorWorld.hasOccupiedVoxel(placement.x, placement.y, placement.z)) {
           onStatus("That space is already occupied.");
         } else {
           dirtyChunkKeys = [...editorWorld.setVoxel(placement.x, placement.y, placement.z, blockKind)];

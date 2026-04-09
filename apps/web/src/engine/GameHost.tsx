@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, type MutableRefObject } from "react";
 import type { MapDocumentV1 } from "@out-of-bounds/map";
 import type { HudState, SimulationInitialSpawnStyle } from "@out-of-bounds/sim";
 import type { QualityTier } from "../game/quality";
@@ -44,6 +44,43 @@ interface GameHostProps {
   onStatus?: (message: string) => void;
 }
 
+interface GameClientLease {
+  client: GameClient;
+  disposeTimeoutId: number | null;
+}
+
+const gameClientLeases = new WeakMap<HTMLCanvasElement, GameClientLease>();
+const gameClientDisposalGraceMs = 32;
+
+const cancelLeaseDisposal = (lease: GameClientLease) => {
+  if (lease.disposeTimeoutId === null) {
+    return;
+  }
+
+  window.clearTimeout(lease.disposeTimeoutId);
+  lease.disposeTimeoutId = null;
+};
+
+const scheduleLeaseDisposal = (
+  canvas: HTMLCanvasElement,
+  lease: GameClientLease,
+  clientRef: MutableRefObject<GameClient | null>
+) => {
+  cancelLeaseDisposal(lease);
+  lease.disposeTimeoutId = window.setTimeout(() => {
+    const currentLease = gameClientLeases.get(canvas);
+    if (!currentLease || currentLease.client !== lease.client) {
+      return;
+    }
+
+    currentLease.client.dispose();
+    gameClientLeases.delete(canvas);
+    if (clientRef.current === currentLease.client) {
+      clientRef.current = null;
+    }
+  }, gameClientDisposalGraceMs);
+};
+
 export const GameHost = forwardRef<GameHostHandle, GameHostProps>(function GameHost(
   {
     initialDocument,
@@ -67,6 +104,35 @@ export const GameHost = forwardRef<GameHostHandle, GameHostProps>(function GameH
 ) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const clientRef = useRef<GameClient | null>(null);
+  const callbackStateRef = useRef({
+    onDiagnostics,
+    onEditorStateChange,
+    onHudStateChange,
+    onRuntimeOverlayChange,
+    onPauseStateChange,
+    onReadyToDisplay,
+    onStatus
+  });
+  const stableCallbackBridgeRef = useRef({
+    onDiagnostics: (diagnostics: GameDiagnostics) => callbackStateRef.current.onDiagnostics?.(diagnostics),
+    onEditorStateChange: (editorState: EditorPanelState) => callbackStateRef.current.onEditorStateChange?.(editorState),
+    onHudStateChange: (hudState: HudState | null) => callbackStateRef.current.onHudStateChange?.(hudState),
+    onRuntimeOverlayChange: (state: RuntimeOverlayState | null) =>
+      callbackStateRef.current.onRuntimeOverlayChange?.(state),
+    onPauseStateChange: (state: RuntimePauseState) => callbackStateRef.current.onPauseStateChange?.(state),
+    onReadyToDisplay: () => callbackStateRef.current.onReadyToDisplay?.(),
+    onStatus: (message: string) => callbackStateRef.current.onStatus?.(message)
+  });
+
+  callbackStateRef.current = {
+    onDiagnostics,
+    onEditorStateChange,
+    onHudStateChange,
+    onRuntimeOverlayChange,
+    onPauseStateChange,
+    onReadyToDisplay,
+    onStatus
+  };
 
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
@@ -74,32 +140,40 @@ export const GameHost = forwardRef<GameHostHandle, GameHostProps>(function GameH
       return;
     }
 
-    const client = GameClient.mount({
-      canvas,
-      initialDocument,
-      initialMode: mode,
-      initialSpawnStyle,
-      matchColorSeed,
-      localPlayerName: playerProfile?.name,
-      localPlayerPaletteName: playerProfile?.paletteName,
-      presentation,
-      qualityTier,
-      runtimeSettings,
-      workerFactory,
-      onDiagnostics,
-      onEditorStateChange,
-      onHudStateChange,
-      onRuntimeOverlayChange,
-      onPauseStateChange,
-      onReadyToDisplay,
-      onStatus
-    });
-    clientRef.current = client;
-    return () => {
-      client.dispose();
-      clientRef.current = null;
+    const existingLease = gameClientLeases.get(canvas);
+    if (existingLease) {
+      cancelLeaseDisposal(existingLease);
+      clientRef.current = existingLease.client;
+
+      return () => {
+        scheduleLeaseDisposal(canvas, existingLease, clientRef);
+      };
+    }
+
+    const lease: GameClientLease = {
+      client: GameClient.mount({
+        canvas,
+        initialDocument,
+        initialMode: mode,
+        initialSpawnStyle,
+        matchColorSeed,
+        localPlayerName: playerProfile?.name,
+        localPlayerPaletteName: playerProfile?.paletteName,
+        presentation,
+        qualityTier,
+        runtimeSettings,
+        workerFactory,
+        ...stableCallbackBridgeRef.current
+      }),
+      disposeTimeoutId: null
     };
-  }, [matchColorSeed, onDiagnostics, onEditorStateChange, onHudStateChange, onPauseStateChange, onReadyToDisplay, onRuntimeOverlayChange, onStatus, workerFactory]);
+    gameClientLeases.set(canvas, lease);
+    clientRef.current = lease.client;
+
+    return () => {
+      scheduleLeaseDisposal(canvas, lease, clientRef);
+    };
+  }, []);
 
   useEffect(() => {
     clientRef.current?.setShellState({

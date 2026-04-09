@@ -66,6 +66,8 @@ export const DEFAULT_ARENA_DEPTH = MAX_PLAYABLE_ARENA_DEPTH;
 export const DEFAULT_FOUNDATION_DEPTH = 5;
 export const DEFAULT_SURFACE_Y = DEFAULT_FOUNDATION_DEPTH;
 export const DEFAULT_GROUND_TOP_Y = DEFAULT_SURFACE_Y - 1;
+export const SEA_LEVEL_Y = 0;
+export const DEFAULT_WATER_TABLE_Y = SEA_LEVEL_Y;
 export const DEFAULT_BOUNDARY_HEIGHT = 4;
 export const DEFAULT_SUMMIT_PAD_SIZE = 6;
 export const DEFAULT_SPAWN_PAD_SIZE = 5;
@@ -425,6 +427,9 @@ const buildDefaultArenaTemplate = (): MapDocumentV1 => {
     for (let z = 0; z < size.z; z += 1) {
       const topY = getDefaultArenaColumnTopY(size, x, z);
       if (topY < 0) {
+        for (let y = 0; y <= DEFAULT_WATER_TABLE_Y; y += 1) {
+          pushVoxel(x, y, z, "water");
+        }
         continue;
       }
 

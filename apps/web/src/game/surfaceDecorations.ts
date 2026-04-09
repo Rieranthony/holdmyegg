@@ -31,9 +31,9 @@ interface AcceptedDecorationEntry {
   spacing: number;
 }
 
-const DECORATION_DENSITY = 0.07;
-const MIN_GRASS_SPACING = 1.7;
-const MIN_FLOWER_SPACING = 2.2;
+const DECORATION_DENSITY = 0.11;
+const MIN_GRASS_SPACING = 1.55;
+const MIN_FLOWER_SPACING = 1.95;
 const DECORATION_SPATIAL_HASH_CELL_SIZE = MIN_GRASS_SPACING;
 
 const hashString = (value: string) => {
@@ -116,7 +116,7 @@ const createDecorationCandidate = (x: number, y: number, z: number): DecorationC
 
   const flowerRoll = normalizedHash(`flora-flower-roll:${x}:${z}`);
   const kind =
-    flowerRoll < 0.82
+    flowerRoll < 0.52
       ? "grass"
       : flowerKindByHash(normalizedHash(`flora-flower-kind:${x}:${z}`));
 
@@ -163,6 +163,10 @@ export const buildSurfaceDecorations = (world: MutableVoxelWorld): SurfaceDecora
       }
 
       if (world.getTopSolidY(x, z) !== topGroundY) {
+        continue;
+      }
+
+      if (world.getTopWaterY(x, z) > topGroundY) {
         continue;
       }
 
