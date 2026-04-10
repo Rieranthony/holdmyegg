@@ -1,4 +1,4 @@
-import type { BlockKind, MapDocumentV1, Vec3i } from "@out-of-bounds/map";
+import type { BlockKind, MapDocumentV1, MapPropKind, Vec3i } from "@out-of-bounds/map";
 
 export type GameMode = "explore" | "playNpc" | "multiplayer";
 export type PlayerKind = "human" | "npc";
@@ -305,10 +305,22 @@ export interface TerrainDelta {
   source: TerrainDeltaSource;
 }
 
+export type TerrainPropDeltaOperation = "set" | "remove";
+
+export interface TerrainPropDelta {
+  id: string;
+  kind: MapPropKind;
+  x: number;
+  y: number;
+  z: number;
+  operation: TerrainPropDeltaOperation;
+}
+
 export interface TerrainDeltaBatch {
   tick: number;
   terrainRevision: number;
   changes: TerrainDelta[];
+  propChanges: TerrainPropDelta[];
 }
 
 export type GameplayDamageSourceKind =

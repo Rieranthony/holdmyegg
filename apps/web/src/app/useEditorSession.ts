@@ -15,7 +15,7 @@ interface UseEditorSessionOptions {
 }
 
 export const blockKindOptions: BlockKind[] = ["ground", "boundary", "hazard", "water"];
-export const propKindOptions: MapPropKind[] = ["tree-oak"];
+export const propKindOptions: MapPropKind[] = ["tree-oak", "tree-pine", "tree-autumn"];
 
 export function useEditorSession({ onStatus }: UseEditorSessionOptions) {
   const [editorWorld, setEditorWorld] = useState(() => new MutableVoxelWorld(createDefaultArenaMap()));
@@ -95,9 +95,18 @@ export function useEditorSession({ onStatus }: UseEditorSessionOptions) {
       if (touchedTerrain) {
         const settleResult = editorWorld.settleDetachedComponents();
         dirtyChunkKeys = [...new Set([...dirtyChunkKeys, ...settleResult.dirtyChunkKeys])];
+        const removedProps = editorWorld.pruneUnsupportedPropsAtColumns();
 
         if (settleResult.components.length > 0) {
           onStatus("Detached terrain settled into place.");
+        }
+
+        if (removedProps.length > 0) {
+          onStatus(
+            removedProps.length === 1
+              ? "A floating tree was removed."
+              : "Floating trees were removed."
+          );
         }
       }
 

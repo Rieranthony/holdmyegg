@@ -331,6 +331,7 @@ const decorationChildObject = new THREE.Object3D();
 const shadowRayDirection = new THREE.Vector3(0, -1, 0);
 const grassCardGeometry = new THREE.PlaneGeometry(0.56, 0.82);
 const flowerCardGeometry = new THREE.PlaneGeometry(0.72, 0.92);
+const bushCardGeometry = new THREE.PlaneGeometry(1.08, 1.02);
 const daySkyColor = new THREE.Color(backgroundColor);
 const spaceSkyColor = new THREE.Color("#04060d");
 const dayFogColor = new THREE.Color(backgroundColor);
@@ -574,12 +575,21 @@ const flowerCardLocalTransforms = [
   { position: [0, 0.44, 0], rotation: [0, Math.PI / 2, 0] }
 ] as const;
 
+const bushCardLocalTransforms = [
+  { position: [0, 0.46, 0] },
+  { position: [0, 0.46, 0], rotation: [0, Math.PI / 3, 0] },
+  { position: [0, 0.46, 0], rotation: [0, (Math.PI * 2) / 3, 0] }
+] as const;
+
 const buildDecorationMatrices = (decorations: SurfaceDecoration[]) => {
   const grassMatrices: THREE.Matrix4[] = [];
   const flowerYellowMatrices: THREE.Matrix4[] = [];
   const flowerPinkMatrices: THREE.Matrix4[] = [];
   const flowerWhiteMatrices: THREE.Matrix4[] = [];
   const flowerBlueMatrices: THREE.Matrix4[] = [];
+  const bushGreenMatrices: THREE.Matrix4[] = [];
+  const bushDarkMatrices: THREE.Matrix4[] = [];
+  const bushAutumnMatrices: THREE.Matrix4[] = [];
 
   for (const decoration of decorations) {
     const parentTransform = {
@@ -590,6 +600,21 @@ const buildDecorationMatrices = (decorations: SurfaceDecoration[]) => {
 
     if (decoration.kind === "grass") {
       grassMatrices.push(...composeDecorationMatrices(parentTransform, grassCardLocalTransforms));
+      continue;
+    }
+
+    if (decoration.kind === "bush-green") {
+      bushGreenMatrices.push(...composeDecorationMatrices(parentTransform, bushCardLocalTransforms));
+      continue;
+    }
+
+    if (decoration.kind === "bush-dark") {
+      bushDarkMatrices.push(...composeDecorationMatrices(parentTransform, bushCardLocalTransforms));
+      continue;
+    }
+
+    if (decoration.kind === "bush-autumn") {
+      bushAutumnMatrices.push(...composeDecorationMatrices(parentTransform, bushCardLocalTransforms));
       continue;
     }
 
@@ -610,7 +635,10 @@ const buildDecorationMatrices = (decorations: SurfaceDecoration[]) => {
     flowerYellowMatrices,
     flowerPinkMatrices,
     flowerWhiteMatrices,
-    flowerBlueMatrices
+    flowerBlueMatrices,
+    bushGreenMatrices,
+    bushDarkMatrices,
+    bushAutumnMatrices
   };
 };
 
@@ -1284,12 +1312,17 @@ export class GameClient {
     this.sunShadows.trackMaterial(getTerrainChunkMaterials());
     this.sunShadows.trackMaterial([
       propMaterials.bark,
-      propMaterials.leaves,
+      propMaterials.leavesOak,
+      propMaterials.leavesPine,
+      propMaterials.leavesAutumn,
       propMaterials.grass,
       propMaterials.flowerYellow,
       propMaterials.flowerPink,
       propMaterials.flowerWhite,
-      propMaterials.flowerBlue
+      propMaterials.flowerBlue,
+      propMaterials.bushGreen,
+      propMaterials.bushDark,
+      propMaterials.bushAutumn
     ]);
   }
 
@@ -2306,7 +2339,9 @@ export class GameClient {
   private rebuildProps(document: MapDocumentV1) {
     this.propsGroup.clear();
     const barkMatrices: THREE.Matrix4[] = [];
-    const leafMatrices: THREE.Matrix4[] = [];
+    const leafOakMatrices: THREE.Matrix4[] = [];
+    const leafPineMatrices: THREE.Matrix4[] = [];
+    const leafAutumnMatrices: THREE.Matrix4[] = [];
 
     for (const prop of document.props) {
       for (const voxel of getMapPropVoxels(prop)) {
@@ -2317,8 +2352,12 @@ export class GameClient {
         );
         if (voxel.kind === "wood") {
           barkMatrices.push(treeTempMatrix.clone());
+        } else if (prop.kind === "tree-pine") {
+          leafPineMatrices.push(treeTempMatrix.clone());
+        } else if (prop.kind === "tree-autumn") {
+          leafAutumnMatrices.push(treeTempMatrix.clone());
         } else {
-          leafMatrices.push(treeTempMatrix.clone());
+          leafOakMatrices.push(treeTempMatrix.clone());
         }
       }
     }
@@ -2332,15 +2371,23 @@ export class GameClient {
       });
       this.propsGroup.add(barkMesh);
     }
-    if (leafMatrices.length > 0) {
-      const leafMesh = new THREE.InstancedMesh(sharedVoxelGeometry, propMaterials.leaves, leafMatrices.length);
-      configureStaticInstancedMesh(leafMesh, leafMatrices);
+    const addLeafMesh = (material: THREE.Material, matrices: THREE.Matrix4[]) => {
+      if (matrices.length === 0) {
+        return;
+      }
+
+      const leafMesh = new THREE.InstancedMesh(sharedVoxelGeometry, material, matrices.length);
+      configureStaticInstancedMesh(leafMesh, matrices);
       configureSunShadowObject(leafMesh, {
         castShadow: true,
         receiveShadow: true
       });
       this.propsGroup.add(leafMesh);
-    }
+    };
+
+    addLeafMesh(propMaterials.leavesOak, leafOakMatrices);
+    addLeafMesh(propMaterials.leavesPine, leafPineMatrices);
+    addLeafMesh(propMaterials.leavesAutumn, leafAutumnMatrices);
 
     this.sunShadows.markDirty();
   }
@@ -2357,7 +2404,10 @@ export class GameClient {
       flowerYellowMatrices,
       flowerPinkMatrices,
       flowerWhiteMatrices,
-      flowerBlueMatrices
+      flowerBlueMatrices,
+      bushGreenMatrices,
+      bushDarkMatrices,
+      bushAutumnMatrices
     } = buildDecorationMatrices(decorations);
 
     const addDecorationMesh = (
@@ -2383,6 +2433,9 @@ export class GameClient {
     addDecorationMesh(flowerCardGeometry, propMaterials.flowerPink, flowerPinkMatrices);
     addDecorationMesh(flowerCardGeometry, propMaterials.flowerWhite, flowerWhiteMatrices);
     addDecorationMesh(flowerCardGeometry, propMaterials.flowerBlue, flowerBlueMatrices);
+    addDecorationMesh(bushCardGeometry, propMaterials.bushGreen, bushGreenMatrices);
+    addDecorationMesh(bushCardGeometry, propMaterials.bushDark, bushDarkMatrices);
+    addDecorationMesh(bushCardGeometry, propMaterials.bushAutumn, bushAutumnMatrices);
 
     this.sunShadows.markDirty();
   }
@@ -3244,12 +3297,32 @@ export class GameClient {
       return;
     }
 
+    let propsChanged = batch.propChanges.length > 0;
+
     for (const change of batch.changes) {
       if (change.operation === "remove" || change.kind === null) {
         this.runtimeWorld.removeVoxel(change.voxel.x, change.voxel.y, change.voxel.z);
       } else {
         this.runtimeWorld.setVoxel(change.voxel.x, change.voxel.y, change.voxel.z, change.kind);
       }
+    }
+
+    for (const change of batch.propChanges) {
+      if (change.operation === "remove") {
+        this.runtimeWorld.removeProp(change.id);
+        continue;
+      }
+
+      this.runtimeWorld.setProp(change.kind, change.x, change.y, change.z, change.id);
+      propsChanged = true;
+    }
+
+    if (propsChanged) {
+      this.rebuildProps(this.runtimeWorld.toDocument());
+    }
+
+    if (batch.changes.length > 0 || propsChanged) {
+      this.rebuildSurfaceDecorations(this.runtimeWorld.toDocument());
     }
   }
 

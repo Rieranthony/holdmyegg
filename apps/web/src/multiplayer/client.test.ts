@@ -132,7 +132,8 @@ const deltaFrame = (): ServerStateDeltaFrame => ({
   sharedFrame: createSharedFrame({
     tick: 2,
     terrainRevision: 2,
-    changes: []
+    changes: [],
+    propChanges: []
   }),
   localOverlay: {
     localPlayerId: null,

@@ -103,7 +103,8 @@ const createDeltaFrame = (): ServerStateDeltaFrame => {
           operation: "remove",
           source: "destroy"
         }
-      ]
+      ],
+      propChanges: []
     }),
     localOverlay: {
       localPlayerId: null,

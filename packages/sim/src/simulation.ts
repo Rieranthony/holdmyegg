@@ -8,7 +8,7 @@ import {
   isInBounds,
   parseVoxelKey
 } from "@out-of-bounds/map";
-import type { BlockKind, DetachedVoxelComponent, MapDocumentV1, Vec3i, VoxelCell } from "@out-of-bounds/map";
+import type { BlockKind, DetachedVoxelComponent, MapDocumentV1, MapProp, Vec3i, VoxelCell } from "@out-of-bounds/map";
 import type {
   AuthoritativeEggScatterDebrisState,
   AuthoritativeFallingClusterState,
@@ -52,6 +52,7 @@ import type {
   TerrainDelta,
   TerrainDeltaBatch,
   TerrainDeltaOperation,
+  TerrainPropDelta,
   TerrainDeltaSource,
   Vector2,
   Vector3,
@@ -439,6 +440,7 @@ export class OutOfBoundsSimulation {
   private spawnCandidates: Vector3[] = [];
   private initialSpawnCandidates: Vector3[] = [];
   private pendingTerrainChanges: TerrainDelta[] = [];
+  private pendingTerrainPropChanges: TerrainPropDelta[] = [];
   private pendingGameplayEvents: GameplayEvent[] = [];
   private readonly performanceDiagnostics: SimulationPerformanceDiagnostics = {
     skyDropUpdateMs: 0,
@@ -490,6 +492,7 @@ export class OutOfBoundsSimulation {
     this.rngState = hashString(`${mode}:${mapDocument.meta.name}:${mapDocument.meta.createdAt}:${mapDocument.meta.updatedAt}`) || 1;
     this.skyDropCooldown = this.nextSkyDropInterval();
     this.pendingTerrainChanges = [];
+    this.pendingTerrainPropChanges = [];
     this.pendingGameplayEvents = [];
     this.performanceDiagnostics.skyDropUpdateMs = 0;
     this.performanceDiagnostics.skyDropLandingMs = 0;
@@ -878,7 +881,7 @@ export class OutOfBoundsSimulation {
   }
 
   consumeTerrainDeltaBatch(): TerrainDeltaBatch | null {
-    if (this.pendingTerrainChanges.length === 0) {
+    if (this.pendingTerrainChanges.length === 0 && this.pendingTerrainPropChanges.length === 0) {
       return null;
     }
 
@@ -890,9 +893,11 @@ export class OutOfBoundsSimulation {
         kind: change.kind,
         operation: change.operation,
         source: change.source
-      }))
+      })),
+      propChanges: this.pendingTerrainPropChanges.map((change) => ({ ...change }))
     } satisfies TerrainDeltaBatch;
     this.pendingTerrainChanges = [];
+    this.pendingTerrainPropChanges = [];
     return batch;
   }
 
@@ -1808,6 +1813,28 @@ export class OutOfBoundsSimulation {
     }
   }
 
+  private queueTerrainPropChanges(props: ReadonlyArray<MapProp>, operation: TerrainPropDelta["operation"]) {
+    for (const prop of props) {
+      this.pendingTerrainPropChanges.push({
+        id: prop.id,
+        kind: prop.kind,
+        x: prop.x,
+        y: prop.y,
+        z: prop.z,
+        operation
+      });
+    }
+  }
+
+  private pruneUnsupportedPropsAtColumns(columns: ReadonlyArray<Pick<VoxelCell, "x" | "z">>) {
+    const removedProps = this.world.pruneUnsupportedPropsAtColumns(columns);
+    if (removedProps.length === 0) {
+      return;
+    }
+
+    this.queueTerrainPropChanges(removedProps, "remove");
+  }
+
   private queueTerrainChangedEvent(
     source: TerrainDeltaSource,
     changeCount: number
@@ -1834,6 +1861,7 @@ export class OutOfBoundsSimulation {
     }
 
     this.addDirtyChunkKeys(this.world.removeVoxels(voxels));
+    this.pruneUnsupportedPropsAtColumns(voxels);
     if (source !== "water_flood") {
       this.refreshWaterFloodAfterTerrainRemoval(voxels);
     }
@@ -1850,6 +1878,7 @@ export class OutOfBoundsSimulation {
     }
 
     this.addDirtyChunkKeys(this.world.setVoxels(voxels));
+    this.pruneUnsupportedPropsAtColumns(voxels);
     if (
       this.waterFlood.active &&
       source !== "water_flood" &&

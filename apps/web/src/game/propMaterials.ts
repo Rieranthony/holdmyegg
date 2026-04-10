@@ -7,12 +7,18 @@ export const propTexturePalette = {
   B: "#6d421c",
   l: "#5eaa43",
   L: "#7bc858",
+  m: "#3f7f34",
+  M: "#5b9a47",
   n: "#b4874b",
   N: "#8d673a",
   g: "#5bb24a",
   G: "#79cb63",
   s: "#4d8d3c",
   S: "#6ba94f",
+  o: "#d7842e",
+  O: "#bf6121",
+  r: "#9f431c",
+  R: "#efb04e",
   e: "#f1ead8",
   y: "#f4cf4c",
   p: "#ef8fb8",
@@ -118,6 +124,42 @@ export const propTextureRows = {
     "LllLLllLLllLLllL",
     "llLllLlllLllLlll",
     "LllLllLlLllLllLl"
+  ],
+  leavesPine: [
+    "mMmmMmmMMmmMmmMm",
+    "MmMmmMmmmMmmMmmM",
+    "mmMMmmMmmmMMmmMm",
+    "MmmMmmMmMmmMmmMm",
+    "mmMmmMMmmmMmmMMm",
+    "MmmMMmmMMmmMMmmM",
+    "mmMmmMmmmMmmMmmm",
+    "MmmMmmMmMmmMmmMm",
+    "mMmmMmmMMmmMmmMm",
+    "MmMmmMmmmMmmMmmM",
+    "mmMMmmMmmmMMmmMm",
+    "MmmMmmMmMmmMmmMm",
+    "mmMmmMMmmmMmmMMm",
+    "MmmMMmmMMmmMMmmM",
+    "mmMmmMmmmMmmMmmm",
+    "MmmMmmMmMmmMmmMm"
+  ],
+  leavesAutumn: [
+    "oRooOooRROoOooRo",
+    "ROOooROooROooROR",
+    "ooRRooROooRRooOo",
+    "OooRooOoOooRooRo",
+    "roOooRROooOooRRo",
+    "ORoRRooROooRRooR",
+    "ooOooROooOooROoo",
+    "ROooRooOoROooRoo",
+    "oRooOooRROoOooRo",
+    "ROOooROooROooROR",
+    "ooRRooROooRRooOo",
+    "OooRooOoOooRooRo",
+    "roOooRROooOooRRo",
+    "ORoRRooROooRRooR",
+    "ooOooROooOooROoo",
+    "ROooRooOoROooRoo"
   ],
   nest: [
     "nNnnNnnNnNnnNnnN",
@@ -264,12 +306,68 @@ export const propTextureRows = {
     "......Ss........",
     ".......s........",
     "................"
+  ],
+  bushGreen: [
+    "................",
+    "......gg........",
+    "....ggGGgg......",
+    "...gGGGGGGg.....",
+    "..gGGGGGGGGg....",
+    "..GGGGGGGGGG....",
+    ".gGGGGGGGGGGg...",
+    ".GGGGGGGGGGGG...",
+    ".GGGGGGGGGGGG...",
+    ".gGGGGGGGGGGg...",
+    "..GGGGGGGGGG....",
+    "..gGGGGGGGGg....",
+    "...gGGGGGGg.....",
+    "....ggGGgg......",
+    "......gg........",
+    "................"
+  ],
+  bushDark: [
+    "................",
+    "......mm........",
+    "....mmMMmm......",
+    "...mMMMMMMm.....",
+    "..mMMMMMMMMm....",
+    "..MMMMMMMMMM....",
+    ".mMMMMMMMMMMm...",
+    ".MMMMMMMMMMMM...",
+    ".MMMMMMMMMMMM...",
+    ".mMMMMMMMMMMm...",
+    "..MMMMMMMMMM....",
+    "..mMMMMMMMMm....",
+    "...mMMMMMMm.....",
+    "....mmMMmm......",
+    "......mm........",
+    "................"
+  ],
+  bushAutumn: [
+    "................",
+    "......oo........",
+    "....ooRRoo......",
+    "...oROROROo.....",
+    "..oROROROROo....",
+    "..ORORORORRO....",
+    ".oROROROROROo...",
+    ".ORORORORORRO...",
+    ".ORORORORORRO...",
+    ".oROROROROROo...",
+    "..ORORORORRO....",
+    "..oROROROROo....",
+    "...oROROROo.....",
+    "....ooRRoo......",
+    "......oo........",
+    "................"
   ]
 } as const;
 
 const textures = {
   bark: createPixelTexture(propTextureRows.bark),
   leaves: createPixelTexture(propTextureRows.leaves),
+  leavesPine: createPixelTexture(propTextureRows.leavesPine),
+  leavesAutumn: createPixelTexture(propTextureRows.leavesAutumn),
   nest: createPixelTexture(propTextureRows.nest),
   grass: createPixelTexture(propTextureRows.grass, { flipRowsVertically: true }),
   stem: createPixelTexture(propTextureRows.stem, { flipRowsVertically: true }),
@@ -277,12 +375,20 @@ const textures = {
   flowerYellow: createPixelTexture(propTextureRows.flowerYellow, { flipRowsVertically: true }),
   flowerPink: createPixelTexture(propTextureRows.flowerPink, { flipRowsVertically: true }),
   flowerWhite: createPixelTexture(propTextureRows.flowerWhite, { flipRowsVertically: true }),
-  flowerBlue: createPixelTexture(propTextureRows.flowerBlue, { flipRowsVertically: true })
+  flowerBlue: createPixelTexture(propTextureRows.flowerBlue, { flipRowsVertically: true }),
+  bushGreen: createPixelTexture(propTextureRows.bushGreen, { flipRowsVertically: true }),
+  bushDark: createPixelTexture(propTextureRows.bushDark, { flipRowsVertically: true }),
+  bushAutumn: createPixelTexture(propTextureRows.bushAutumn, { flipRowsVertically: true })
 };
+
+const leavesOakMaterial = createStandardMaterial(textures.leaves);
 
 export const propMaterials = {
   bark: createStandardMaterial(textures.bark),
-  leaves: createStandardMaterial(textures.leaves),
+  leaves: leavesOakMaterial,
+  leavesOak: leavesOakMaterial,
+  leavesPine: createStandardMaterial(textures.leavesPine),
+  leavesAutumn: createStandardMaterial(textures.leavesAutumn),
   nest: createStandardMaterial(textures.nest),
   grass: createStandardMaterial(textures.grass, { transparent: true, alphaTest: 0.5, side: THREE.DoubleSide }),
   stem: createStandardMaterial(textures.stem, { transparent: true, alphaTest: 0.5, side: THREE.DoubleSide }),
@@ -290,5 +396,8 @@ export const propMaterials = {
   flowerYellow: createStandardMaterial(textures.flowerYellow, { transparent: true, alphaTest: 0.5, side: THREE.DoubleSide }),
   flowerPink: createStandardMaterial(textures.flowerPink, { transparent: true, alphaTest: 0.5, side: THREE.DoubleSide }),
   flowerWhite: createStandardMaterial(textures.flowerWhite, { transparent: true, alphaTest: 0.5, side: THREE.DoubleSide }),
-  flowerBlue: createStandardMaterial(textures.flowerBlue, { transparent: true, alphaTest: 0.5, side: THREE.DoubleSide })
+  flowerBlue: createStandardMaterial(textures.flowerBlue, { transparent: true, alphaTest: 0.5, side: THREE.DoubleSide }),
+  bushGreen: createStandardMaterial(textures.bushGreen, { transparent: true, alphaTest: 0.5, side: THREE.DoubleSide }),
+  bushDark: createStandardMaterial(textures.bushDark, { transparent: true, alphaTest: 0.5, side: THREE.DoubleSide }),
+  bushAutumn: createStandardMaterial(textures.bushAutumn, { transparent: true, alphaTest: 0.5, side: THREE.DoubleSide })
 };

@@ -135,8 +135,8 @@ export class MutableVoxelWorld {
     }
 
     this.rebuildPropVoxelIndex();
-    this.rebuildSurfaceChunkIndex();
     this.rebuildColumnHeightCache();
+    this.rebuildSurfaceChunkIndex();
   }
 
   clone() {
@@ -357,6 +357,50 @@ export class MutableVoxelWorld {
     }
 
     return placement;
+  }
+
+  pruneUnsupportedPropsAtColumns(columns?: Iterable<Pick<Vec3i, "x" | "z">>) {
+    const touchedColumns = columns
+      ? new Set<number>()
+      : null;
+
+    if (columns && touchedColumns) {
+      for (const column of columns) {
+        if (!this.isColumnInBounds(column.x, column.z)) {
+          continue;
+        }
+
+        touchedColumns.add(this.getColumnIndex(column.x, column.z));
+      }
+
+      if (touchedColumns.size === 0) {
+        return [] as MapProp[];
+      }
+    }
+
+    const removedProps: MapProp[] = [];
+
+    for (const prop of this.listProps()) {
+      if (touchedColumns && !touchedColumns.has(this.getColumnIndex(prop.x, prop.z))) {
+        continue;
+      }
+
+      if (isBlockingBlockKind(this.getVoxelKind(prop.x, prop.y - 1, prop.z))) {
+        continue;
+      }
+
+      this.propMap.delete(prop.id);
+      removedProps.push(prop);
+    }
+
+    if (removedProps.length === 0) {
+      return removedProps;
+    }
+
+    this.rebuildPropVoxelIndex();
+    this.rebuildTopSolidHeightCache();
+    this.touchMeta();
+    return removedProps;
   }
 
   setVoxel(x: number, y: number, z: number, kind: BlockKind, chunkSize = DEFAULT_CHUNK_SIZE): DirtyChunkSet {
@@ -851,13 +895,13 @@ export class MutableVoxelWorld {
   }
 
   private commitTerrainMutationBatch(surfaceSyncKeys: Set<string>, touchedColumns: Set<number>) {
+    for (const columnIndex of touchedColumns) {
+      this.rebuildColumnHeightEntry(columnIndex % this.size.x, Math.floor(columnIndex / this.size.x));
+    }
+
     for (const key of surfaceSyncKeys) {
       const position = this.parsePositionKey(key);
       this.syncSurfaceChunkEntry(position.x, position.y, position.z);
-    }
-
-    for (const columnIndex of touchedColumns) {
-      this.rebuildColumnHeightEntry(columnIndex % this.size.x, Math.floor(columnIndex / this.size.x));
     }
 
     this.terrainRevision += 1;
@@ -896,6 +940,8 @@ export class MutableVoxelWorld {
   }
 
   private createVisibleVoxelInstance(voxel: VoxelCell, faceMask = this.getExposedFaceMask(voxel.x, voxel.y, voxel.z)): VisibleVoxelInstance {
+    const topGroundY = voxel.kind === "ground" ? this.getTopGroundY(voxel.x, voxel.z) : -1;
+
     return {
       key: createVoxelKey(voxel.x, voxel.y, voxel.z),
       position: {
@@ -904,7 +950,8 @@ export class MutableVoxelWorld {
         z: voxel.z
       },
       kind: voxel.kind,
-      faceMask
+      faceMask,
+      surfaceDepth: topGroundY >= voxel.y ? topGroundY - voxel.y : 0
     };
   }
 

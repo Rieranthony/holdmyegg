@@ -5,7 +5,10 @@ export type SurfaceDecorationKind =
   | "flower-yellow"
   | "flower-pink"
   | "flower-white"
-  | "flower-blue";
+  | "flower-blue"
+  | "bush-green"
+  | "bush-dark"
+  | "bush-autumn";
 
 export interface SurfaceDecoration {
   id: string;
@@ -39,8 +42,10 @@ interface AcceptedDecorationEntry {
 const DECORATION_DENSITY = 0.102;
 const MIN_GRASS_SPACING = 1.6;
 const MIN_FLOWER_SPACING = 2.02;
+const MIN_BUSH_SPACING = 2.42;
 const DECORATION_SPATIAL_HASH_CELL_SIZE = MIN_GRASS_SPACING;
 const FLOWER_PATCH_SCALE = 5.5;
+const BUSH_PATCH_SCALE = 8.25;
 
 const hashString = (value: string) => {
   let hash = 2166136261;
@@ -73,6 +78,12 @@ const flowerKindByHash = (value: number): SurfaceDecorationKind =>
       : value < 0.75
         ? "flower-white"
         : "flower-blue";
+
+const bushKindByHash = (value: number): SurfaceDecorationKind =>
+  value < 0.34 ? "bush-green" : value < 0.68 ? "bush-dark" : "bush-autumn";
+
+const isBushDecorationKind = (kind: SurfaceDecorationKind) =>
+  kind === "bush-green" || kind === "bush-dark" || kind === "bush-autumn";
 
 const samplePatchNoise = (seed: string, x: number, z: number, scale: number) => {
   const scaledX = x / scale;
@@ -112,7 +123,9 @@ const canPlaceDecoration = (
 ) => {
   const cellX = getDecorationCellCoord(x);
   const cellZ = getDecorationCellCoord(z);
-  const cellRadius = Math.ceil(MIN_FLOWER_SPACING / DECORATION_SPATIAL_HASH_CELL_SIZE);
+  const cellRadius = Math.ceil(
+    Math.max(MIN_FLOWER_SPACING, MIN_BUSH_SPACING) / DECORATION_SPATIAL_HASH_CELL_SIZE
+  );
 
   for (let dx = -cellRadius; dx <= cellRadius; dx += 1) {
     for (let dz = -cellRadius; dz <= cellRadius; dz += 1) {
@@ -150,32 +163,43 @@ const addAcceptedDecoration = (
 };
 
 const createDecorationCandidate = (x: number, y: number, z: number): DecorationCandidate | null => {
-  const patchNoise = samplePatchNoise("flora-patch", x + 0.5, z + 0.5, FLOWER_PATCH_SCALE);
+  const flowerPatchNoise = samplePatchNoise("flora-patch", x + 0.5, z + 0.5, FLOWER_PATCH_SCALE);
+  const bushPatchNoise = samplePatchNoise("flora-bush-patch", x + 0.5, z + 0.5, BUSH_PATCH_SCALE);
   const placementRoll = normalizedHash(`flora-placement:${x}:${z}`);
-  const placementDensity = DECORATION_DENSITY * lerp(0.78, 1.18, patchNoise);
+  const placementDensity =
+    DECORATION_DENSITY *
+    lerp(0.8, 1.22, flowerPatchNoise * 0.62 + bushPatchNoise * 0.38);
   if (placementRoll > placementDensity) {
     return null;
   }
 
   const flowerRoll = normalizedHash(`flora-flower-roll:${x}:${z}`);
-  const flowerChance = lerp(0.28, 0.66, patchNoise);
+  const bushRoll = normalizedHash(`flora-bush-roll:${x}:${z}`);
+  const flowerChance = lerp(0.22, 0.58, flowerPatchNoise);
+  const bushChance = lerp(0.04, 0.26, bushPatchNoise) * lerp(0.95, 0.62, flowerPatchNoise);
   const kind =
-    flowerRoll < flowerChance
+    bushRoll < bushChance
+      ? bushKindByHash(normalizedHash(`flora-bush-kind:${x}:${z}`))
+      : flowerRoll < flowerChance
       ? flowerKindByHash(normalizedHash(`flora-flower-kind:${x}:${z}`))
       : "grass";
   const basePriority = normalizedHash(`flora-priority:${x}:${z}`);
+  const isBush = isBushDecorationKind(kind);
+  const scaleBase = kind === "grass" ? 0.76 : isBush ? 0.92 : 0.8;
+  const scaleRange = kind === "grass" ? 0.3 : isBush ? 0.28 : 0.26;
+  const offsetRange = kind === "grass" ? 0.82 : isBush ? 0.54 : 0.72;
 
   return {
     x,
     y,
     z,
-    priority: kind === "grass" ? basePriority : basePriority * 0.78,
-    offsetX: normalizedHash(`flora-offset-x:${x}:${z}`) * 0.82 - 0.41,
-    offsetZ: normalizedHash(`flora-offset-z:${x}:${z}`) * 0.82 - 0.41,
+    priority: kind === "grass" ? basePriority : isBush ? basePriority * 0.68 : basePriority * 0.78,
+    offsetX: normalizedHash(`flora-offset-x:${x}:${z}`) * offsetRange - offsetRange / 2,
+    offsetZ: normalizedHash(`flora-offset-z:${x}:${z}`) * offsetRange - offsetRange / 2,
     rotation: normalizedHash(`flora-rotation:${x}:${z}`) * Math.PI * 2,
-    scale: Number((0.76 + normalizedHash(`flora-scale:${x}:${z}`) * 0.3).toFixed(2)),
+    scale: Number((scaleBase + normalizedHash(`flora-scale:${x}:${z}`) * scaleRange).toFixed(2)),
     kind,
-    spacing: kind === "grass" ? MIN_GRASS_SPACING : MIN_FLOWER_SPACING
+    spacing: kind === "grass" ? MIN_GRASS_SPACING : isBush ? MIN_BUSH_SPACING : MIN_FLOWER_SPACING
   };
 };
 

@@ -250,7 +250,8 @@ export const normalizeTerrainDeltaBatch = (batch: TerrainDeltaBatch | null) =>
           kind: change.kind,
           operation: change.operation,
           source: change.source
-        }))
+        })),
+        propChanges: batch.propChanges.map((change) => ({ ...change }))
       }
     : null;
 

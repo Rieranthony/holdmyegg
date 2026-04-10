@@ -76,6 +76,16 @@ const createAuthoritativeFrame = (): RuntimeAuthoritativeFrame => ({
         operation: "remove",
         source: "projectile_explosion"
       }
+    ],
+    propChanges: [
+      {
+        id: "prop-1",
+        kind: "tree-pine",
+        x: 9,
+        y: 1,
+        z: 9,
+        operation: "remove"
+      }
     ]
   },
   gameplayEventBatch: {
@@ -128,12 +138,14 @@ describe("AuthoritativeReplica", () => {
     replica.applyFrame(frame);
     frame.state.players[0]!.position.x = 99;
     frame.terrainDeltaBatch!.changes[0]!.voxel.x = 42;
+    frame.terrainDeltaBatch!.propChanges[0]!.id = "prop-99";
     if (frame.gameplayEventBatch?.events[0]?.type === "projectile_spawned") {
       frame.gameplayEventBatch.events[0].position.x = 77;
     }
 
     expect(replica.getState()?.players[0]?.position.x).toBe(4);
     expect(replica.peekTerrainDeltaBatch()?.changes[0]?.voxel.x).toBe(7);
+    expect(replica.peekTerrainDeltaBatch()?.propChanges[0]?.id).toBe("prop-1");
     const gameplayBatch = replica.peekGameplayEventBatch();
     expect(gameplayBatch?.events[0]?.type).toBe("projectile_spawned");
     if (gameplayBatch?.events[0]?.type === "projectile_spawned") {

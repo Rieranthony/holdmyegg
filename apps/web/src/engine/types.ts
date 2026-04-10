@@ -56,7 +56,7 @@ export interface RuntimeOverlayState {
 }
 
 export const blockKindOptions: BlockKind[] = ["ground", "boundary", "hazard", "water"];
-export const propKindOptions: MapPropKind[] = ["tree-oak"];
+export const propKindOptions: MapPropKind[] = ["tree-oak", "tree-pine", "tree-autumn"];
 
 export interface EditorPanelState {
   mapName: string;

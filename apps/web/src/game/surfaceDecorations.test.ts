@@ -7,7 +7,10 @@ import {
 import { describe, expect, it } from "vitest";
 import { buildSurfaceDecorations } from "./surfaceDecorations";
 
-const getDecorationSpacing = (kind: string) => (kind === "grass" ? 1.6 : 2.02);
+const getDecorationSpacing = (kind: string) =>
+  kind === "grass" ? 1.6 : kind.startsWith("bush-") ? 2.42 : 2.02;
+const isFlowerDecoration = (kind: string) => kind.startsWith("flower-");
+const isBushDecoration = (kind: string) => kind.startsWith("bush-");
 
 const createFlatArenaDocument = (): MapDocumentV1 => {
   const voxels: VoxelCell[] = [];
@@ -61,7 +64,7 @@ describe("buildSurfaceDecorations", () => {
     document.voxels.push({ x: 5, y: 2, z: 5, kind: "water" });
     const world = new MutableVoxelWorld(document);
     const decorations = buildSurfaceDecorations(world);
-    const flowerDecorations = decorations.filter((decoration) => decoration.kind !== "grass");
+    const flowerDecorations = decorations.filter((decoration) => isFlowerDecoration(decoration.kind));
     const flowerCount = flowerDecorations.length;
     const flowerKinds = new Set(flowerDecorations.map((decoration) => decoration.kind));
 
@@ -75,10 +78,13 @@ describe("buildSurfaceDecorations", () => {
   it("adds visible flower patches to the default arena", () => {
     const world = new MutableVoxelWorld(createDefaultArenaMap());
     const decorations = buildSurfaceDecorations(world);
-    const flowerDecorations = decorations.filter((decoration) => decoration.kind !== "grass");
+    const flowerDecorations = decorations.filter((decoration) => isFlowerDecoration(decoration.kind));
+    const bushDecorations = decorations.filter((decoration) => isBushDecoration(decoration.kind));
 
     expect(decorations.length).toBeGreaterThan(120);
-    expect(flowerDecorations.length).toBeGreaterThan(50);
+    expect(flowerDecorations.length).toBeGreaterThan(24);
+    expect(bushDecorations.length).toBeGreaterThan(12);
+    expect(flowerDecorations.length + bushDecorations.length).toBeGreaterThan(45);
     expect(new Set(flowerDecorations.map((decoration) => decoration.kind)).size).toBeGreaterThanOrEqual(4);
   });
 });

@@ -6,7 +6,7 @@ export const blockKindSchema = z.enum(["ground", "boundary", "hazard", "water"])
 
 export type BlockKind = z.infer<typeof blockKindSchema>;
 
-export const mapPropKindSchema = z.enum(["tree-oak"]);
+export const mapPropKindSchema = z.enum(["tree-oak", "tree-pine", "tree-autumn"]);
 
 export type MapPropKind = z.infer<typeof mapPropKindSchema>;
 export type OccupiedKind = BlockKind | MapPropKind;
@@ -94,6 +94,7 @@ export interface VisibleVoxelInstance {
   position: Vec3i;
   kind: BlockKind;
   faceMask: ExposedFaceMask;
+  surfaceDepth: number;
 }
 
 export interface VisibleVoxelChunk {

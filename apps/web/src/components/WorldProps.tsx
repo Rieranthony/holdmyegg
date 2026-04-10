@@ -38,6 +38,7 @@ const nestTwigGeometry = new THREE.BoxGeometry(0.5, 0.12, 0.16);
 const nestEggGeometry = new THREE.BoxGeometry(0.18, 0.22, 0.18);
 const grassCardGeometry = new THREE.PlaneGeometry(0.56, 0.82);
 const flowerCardGeometry = new THREE.PlaneGeometry(0.72, 0.92);
+const bushCardGeometry = new THREE.PlaneGeometry(1.08, 1.02);
 const parentObject = new THREE.Object3D();
 const childObject = new THREE.Object3D();
 
@@ -65,6 +66,12 @@ const grassLocalTransforms = [
 const flowerCardLocalTransforms = [
   { position: [0, 0.44, 0] },
   { position: [0, 0.44, 0], rotation: [0, Math.PI / 2, 0] }
+] as const satisfies readonly StaticInstanceTransform[];
+
+const bushCardLocalTransforms = [
+  { position: [0, 0.46, 0] },
+  { position: [0, 0.46, 0], rotation: [0, Math.PI / 3, 0] },
+  { position: [0, 0.46, 0], rotation: [0, (Math.PI * 2) / 3, 0] }
 ] as const satisfies readonly StaticInstanceTransform[];
 
 const composeMatrices = (
@@ -124,7 +131,9 @@ const handlePropInteract = (
 
 const buildTreeMatrices = (props: MapProp[]) => {
   const barkMatrices: THREE.Matrix4[] = [];
-  const leafMatrices: THREE.Matrix4[] = [];
+  const leafOakMatrices: THREE.Matrix4[] = [];
+  const leafPineMatrices: THREE.Matrix4[] = [];
+  const leafAutumnMatrices: THREE.Matrix4[] = [];
 
   for (const prop of props) {
     for (const voxel of getMapPropVoxels(prop)) {
@@ -135,15 +144,21 @@ const buildTreeMatrices = (props: MapProp[]) => {
       );
       if (voxel.kind === "wood") {
         barkMatrices.push(matrix);
+      } else if (prop.kind === "tree-pine") {
+        leafPineMatrices.push(matrix);
+      } else if (prop.kind === "tree-autumn") {
+        leafAutumnMatrices.push(matrix);
       } else {
-        leafMatrices.push(matrix);
+        leafOakMatrices.push(matrix);
       }
     }
   }
 
   return {
     barkMatrices,
-    leafMatrices
+    leafOakMatrices,
+    leafPineMatrices,
+    leafAutumnMatrices
   };
 };
 
@@ -171,6 +186,9 @@ const buildDecorationMatrices = (decorations: SurfaceDecoration[]) => {
   const flowerPinkMatrices: THREE.Matrix4[] = [];
   const flowerWhiteMatrices: THREE.Matrix4[] = [];
   const flowerBlueMatrices: THREE.Matrix4[] = [];
+  const bushGreenMatrices: THREE.Matrix4[] = [];
+  const bushDarkMatrices: THREE.Matrix4[] = [];
+  const bushAutumnMatrices: THREE.Matrix4[] = [];
 
   for (const decoration of decorations) {
     const parentTransform: StaticInstanceTransform = {
@@ -181,6 +199,21 @@ const buildDecorationMatrices = (decorations: SurfaceDecoration[]) => {
 
     if (decoration.kind === "grass") {
       grassMatrices.push(...composeMatrices(parentTransform, grassLocalTransforms));
+      continue;
+    }
+
+    if (decoration.kind === "bush-green") {
+      bushGreenMatrices.push(...composeMatrices(parentTransform, bushCardLocalTransforms));
+      continue;
+    }
+
+    if (decoration.kind === "bush-dark") {
+      bushDarkMatrices.push(...composeMatrices(parentTransform, bushCardLocalTransforms));
+      continue;
+    }
+
+    if (decoration.kind === "bush-autumn") {
+      bushAutumnMatrices.push(...composeMatrices(parentTransform, bushCardLocalTransforms));
       continue;
     }
 
@@ -201,7 +234,10 @@ const buildDecorationMatrices = (decorations: SurfaceDecoration[]) => {
     flowerYellowMatrices,
     flowerPinkMatrices,
     flowerWhiteMatrices,
-    flowerBlueMatrices
+    flowerBlueMatrices,
+    bushGreenMatrices,
+    bushDarkMatrices,
+    bushAutumnMatrices
   };
 };
 
@@ -262,7 +298,7 @@ function RuntimeStaticWorldPropsLayer({
 }: WorldPropsLayerProps) {
   const runtimeStaticRenderState = useMemo(
     () => createWorldPropsRenderState(world, decorationDensity),
-    [decorationDensity, world]
+    [decorationDensity, revision, world]
   );
 
   return (
@@ -325,8 +361,24 @@ function WorldPropsMeshes({
       <StaticInstancedMesh
         castShadow
         geometry={sharedVoxelGeometry}
-        material={propMaterials.leaves}
-        matrices={renderState.instancedPropMatrices.leafMatrices}
+        material={propMaterials.leavesOak}
+        matrices={renderState.instancedPropMatrices.leafOakMatrices}
+        onPointerDown={handleInstancedPropInteract}
+        receiveShadow
+      />
+      <StaticInstancedMesh
+        castShadow
+        geometry={sharedVoxelGeometry}
+        material={propMaterials.leavesPine}
+        matrices={renderState.instancedPropMatrices.leafPineMatrices}
+        onPointerDown={handleInstancedPropInteract}
+        receiveShadow
+      />
+      <StaticInstancedMesh
+        castShadow
+        geometry={sharedVoxelGeometry}
+        material={propMaterials.leavesAutumn}
+        matrices={renderState.instancedPropMatrices.leafAutumnMatrices}
         onPointerDown={handleInstancedPropInteract}
         receiveShadow
       />
@@ -364,6 +416,21 @@ function WorldPropsMeshes({
         geometry={flowerCardGeometry}
         material={propMaterials.flowerBlue}
         matrices={renderState.decorationMatrices.flowerBlueMatrices}
+      />
+      <StaticInstancedMesh
+        geometry={bushCardGeometry}
+        material={propMaterials.bushGreen}
+        matrices={renderState.decorationMatrices.bushGreenMatrices}
+      />
+      <StaticInstancedMesh
+        geometry={bushCardGeometry}
+        material={propMaterials.bushDark}
+        matrices={renderState.decorationMatrices.bushDarkMatrices}
+      />
+      <StaticInstancedMesh
+        geometry={bushCardGeometry}
+        material={propMaterials.bushAutumn}
+        matrices={renderState.decorationMatrices.bushAutumnMatrices}
       />
     </group>
   );

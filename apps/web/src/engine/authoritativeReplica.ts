@@ -3,7 +3,8 @@ import type {
   GameplayEvent,
   GameplayEventBatch,
   TerrainDelta,
-  TerrainDeltaBatch
+  TerrainDeltaBatch,
+  TerrainPropDelta
 } from "@out-of-bounds/sim";
 import type { RuntimeAuthoritativeFrame } from "./types";
 
@@ -12,6 +13,10 @@ const cloneTerrainDelta = (change: TerrainDelta): TerrainDelta => ({
   kind: change.kind,
   operation: change.operation,
   source: change.source
+});
+
+const cloneTerrainPropDelta = (change: TerrainPropDelta): TerrainPropDelta => ({
+  ...change
 });
 
 const cloneGameplayEvent = (event: GameplayEvent): GameplayEvent => {
@@ -97,7 +102,8 @@ const cloneTerrainDeltaBatch = (
     ? {
         tick: batch.tick,
         terrainRevision: batch.terrainRevision,
-        changes: batch.changes.map(cloneTerrainDelta)
+        changes: batch.changes.map(cloneTerrainDelta),
+        propChanges: batch.propChanges.map(cloneTerrainPropDelta)
       }
     : null;
 

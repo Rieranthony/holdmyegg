@@ -67,7 +67,9 @@ describe("arena budget normalization", () => {
 
     expect(document.size).toEqual({ x: 80, y: 32, z: 80 });
     expect(document.props).toHaveLength(42);
-    expect(document.props.every((prop) => prop.kind === "tree-oak")).toBe(true);
+    expect(new Set(document.props.map((prop) => prop.kind))).toEqual(
+      new Set(["tree-oak", "tree-pine", "tree-autumn"])
+    );
     expect(document.spawns).toEqual([
       { id: "spawn-1", x: 16.5, y: DEFAULT_FOUNDATION_DEPTH + 0.05, z: 16.5 },
       { id: "spawn-2", x: 63.5, y: DEFAULT_FOUNDATION_DEPTH + 0.05, z: 16.5 },

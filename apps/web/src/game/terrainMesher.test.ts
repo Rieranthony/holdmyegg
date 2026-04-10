@@ -28,6 +28,15 @@ const meshSingleChunk = (voxels: Parameters<typeof createTinyWorld>[0]) => {
 };
 
 describe("meshTerrainChunk", () => {
+  const summarizeFaceAreas = (
+    quads: Array<{ materialKey: string; width: number; height: number }>
+  ) =>
+    Object.fromEntries(
+      quads.map((quad) => [quad.materialKey, quad.width * quad.height]).sort(([left], [right]) =>
+        left.localeCompare(right)
+      )
+    );
+
   it("greedy-merges a 2x2 floor into one top quad, one bottom quad, and four side strips", () => {
     const mesh = meshSingleChunk([
       { x: 1, y: 1, z: 1, kind: "ground" },
@@ -41,9 +50,9 @@ describe("meshTerrainChunk", () => {
 
     expect(mesh.quadCount).toBe(6);
     expect(mesh.triangleCount).toBe(12);
-    expect(mesh.drawCallCount).toBe(1);
-    expect(topQuads).toEqual([{ face: "posY", materialKey: "earthSubsoil", width: 2, height: 2 }]);
-    expect(bottomQuads).toEqual([{ face: "negY", materialKey: "earthSubsoil", width: 2, height: 2 }]);
+    expect(mesh.drawCallCount).toBe(3);
+    expect(topQuads).toEqual([{ face: "posY", materialKey: "earthSurfaceTop", width: 2, height: 2 }]);
+    expect(bottomQuads).toEqual([{ face: "negY", materialKey: "earthSurfaceBottom", width: 2, height: 2 }]);
   });
 
   it("merges broad wall faces into single rectangles", () => {
@@ -57,8 +66,16 @@ describe("meshTerrainChunk", () => {
     const positiveXFaces = mesh.quads.filter((quad) => quad.face === "posX");
     const negativeXFaces = mesh.quads.filter((quad) => quad.face === "negX");
 
-    expect(positiveXFaces).toEqual([{ face: "posX", materialKey: "earthSubsoil", width: 2, height: 2 }]);
-    expect(negativeXFaces).toEqual([{ face: "negX", materialKey: "earthSubsoil", width: 2, height: 2 }]);
+    expect(positiveXFaces).toHaveLength(2);
+    expect(negativeXFaces).toHaveLength(2);
+    expect(summarizeFaceAreas(positiveXFaces)).toEqual({
+      earthSubsoil: 2,
+      earthSurfaceSide: 2
+    });
+    expect(summarizeFaceAreas(negativeXFaces)).toEqual({
+      earthSubsoil: 2,
+      earthSurfaceSide: 2
+    });
   });
 
   it("does not merge an L-shaped corner into a fake rectangle", () => {
@@ -103,11 +120,11 @@ describe("meshTerrainChunk", () => {
 
     expect(mesh.materialKeys).toContain("earthSurfaceTop");
     expect(mesh.materialKeys).toContain("earthSurfaceSide");
-    expect(mesh.materialKeys).toContain("earthSurfaceBottom");
+    expect(mesh.materialKeys).toContain("earthSubsoil");
     expect(mesh.materialGroups.map((group) => group.materialKey)).toEqual([
       "earthSurfaceTop",
       "earthSurfaceSide",
-      "earthSurfaceBottom"
+      "earthSubsoil"
     ]);
     expect(mesh.drawCallCount).toBe(mesh.materialGroups.length);
     expect(mesh.drawCallCount).toBe(3);
@@ -156,6 +173,6 @@ describe("meshTerrainChunk", () => {
     expect(totalVoxels).toBeLessThanOrEqual(45_000);
     expect(meshedTriangles).toBeLessThanOrEqual(cubeTriangles * 0.2);
     expect(drawCalls).toBeGreaterThan(chunks.length);
-    expect(drawCalls).toBeLessThanOrEqual(100);
+    expect(drawCalls).toBeLessThanOrEqual(110);
   });
 });

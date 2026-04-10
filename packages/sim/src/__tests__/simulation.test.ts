@@ -75,6 +75,10 @@ const getSimulationInternals = (simulation: OutOfBoundsSimulation) =>
     explodeEgg: (egg: any) => void;
     fillWaterFloodReachableCells: () => void;
     resolveSuperBoomImpact: (player: any) => void;
+    setTerrainVoxels: (
+      voxels: Array<{ x: number; y: number; z: number; kind: "water" }>,
+      source: "water_flood",
+    ) => void;
     triggerWaterFloodAt: (voxel: { x: number; y: number; z: number }) => boolean;
     waterFlood: {
       active: boolean;
@@ -423,23 +427,32 @@ describe("OutOfBoundsSimulation", () => {
     expect(simulation.getWorld().getVoxelKind(20, DEFAULT_WATERLINE_Y, 20)).toBeUndefined();
   });
 
-  it("does not fill tree prop voxels inside the water band", () => {
+  it("removes tree props when flood-sourced water replaces their support voxel", () => {
     const simulation = createTestSimulation("explore", (world) => {
-      const treeOrigin = { kind: "tree-oak" as const, x: 20, y: WORLD_FLOOR_Y, z: 20 };
+      const treeOrigin = { kind: "tree-oak" as const, x: 20, y: WORLD_FLOOR_Y + 1, z: 20 };
       for (const voxel of getMapPropVoxels(treeOrigin)) {
         world.removeVoxel(voxel.x, voxel.y, voxel.z);
       }
-      world.removeVoxel(19, DEFAULT_WATERLINE_Y - 1, 20);
       world.setProp("tree-oak", treeOrigin.x, treeOrigin.y, treeOrigin.z);
     });
     const internals = getSimulationInternals(simulation);
 
-    internals.triggerWaterFloodAt({ x: 19, y: DEFAULT_WATERLINE_Y - 1, z: 20 });
-    internals.fillWaterFloodReachableCells();
+    internals.setTerrainVoxels(
+      [{ x: 20, y: WORLD_FLOOR_Y, z: 20, kind: "water" }],
+      "water_flood"
+    );
+    const terrainBatch = simulation.consumeTerrainDeltaBatch();
 
-    expect(simulation.getWorld().getVoxelKind(19, DEFAULT_WATERLINE_Y - 1, 20)).toBe("water");
-    expect(simulation.getWorld().getVoxelKind(20, DEFAULT_WATERLINE_Y - 1, 20)).toBeUndefined();
-    expect(simulation.getWorld().getPropAtVoxel(20, DEFAULT_WATERLINE_Y - 1, 20)?.kind).toBe("tree-oak");
+    expect(simulation.getWorld().getVoxelKind(20, WORLD_FLOOR_Y, 20)).toBe("water");
+    expect(simulation.getWorld().getPropAtVoxel(20, WORLD_FLOOR_Y + 1, 20)).toBeUndefined();
+    expect(terrainBatch?.propChanges).toContainEqual({
+      id: "prop-1",
+      kind: "tree-oak",
+      x: 20,
+      y: 1,
+      z: 20,
+      operation: "remove"
+    });
   });
 
   it("treats the deepest water band as lethal", () => {
@@ -1603,6 +1616,35 @@ describe("OutOfBoundsSimulation", () => {
 
     expect(simulation.getWorld().getVoxelKind(8, DEFAULT_SURFACE_Y, 6)).toBeUndefined();
     expect(simulation.getPlayerState(localPlayerId)!.mass).toBe(simulation.config.maxMass);
+  });
+
+  it("removes supported tree props from runtime deltas when their base voxel is harvested", () => {
+    const simulation = createTestSimulation("explore", (world) => {
+      world.setProp("tree-pine", 8, DEFAULT_SURFACE_Y, 6);
+    });
+    const localPlayerId = simulation.getLocalPlayerId()!;
+    advanceUntilGrounded(simulation, localPlayerId);
+
+    const localPlayer = getInternalPlayer(simulation, localPlayerId);
+    localPlayer.position = { x: 7.5, y: PLAYER_GROUND_Y, z: 6.5 };
+    localPlayer.grounded = true;
+
+    simulation.step({
+      [localPlayerId]: destroy({
+        targetVoxel: { x: 8, y: DEFAULT_SURFACE_Y - 1, z: 6 }
+      })
+    });
+
+    const terrainBatch = simulation.consumeTerrainDeltaBatch();
+    expect(simulation.getWorld().getPropAtVoxel(8, DEFAULT_SURFACE_Y, 6)).toBeUndefined();
+    expect(terrainBatch?.propChanges).toContainEqual({
+      id: "prop-1",
+      kind: "tree-pine",
+      x: 8,
+      y: DEFAULT_SURFACE_Y,
+      z: 6,
+      operation: "remove"
+    });
   });
 
   it("rejects placement inside player bodies and active falling debris", () => {

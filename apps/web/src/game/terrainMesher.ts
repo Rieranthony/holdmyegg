@@ -224,7 +224,12 @@ export const meshTerrainChunk = (chunk: VisibleVoxelChunk): TerrainChunkMeshData
       const u = definition.getU(localPosition);
       const v = definition.getV(localPosition);
       const grid = sliceGrids.get(slice) ?? createEmptySliceGrid();
-      const materialKey = getTerrainMaterialKey(voxel.kind, voxel.position.y, definition.name);
+      const materialKey = getTerrainMaterialKey(
+        voxel.kind,
+        voxel.position.y,
+        definition.name,
+        voxel.surfaceDepth
+      );
       materialKeys.add(materialKey);
       grid[v]![u] = {
         materialKey

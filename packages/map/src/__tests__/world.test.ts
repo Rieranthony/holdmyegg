@@ -98,6 +98,19 @@ describe("MutableVoxelWorld", () => {
     expect(world.buildVisibleChunkByKey("missing-chunk")).toBeNull();
   });
 
+  it("tracks local surface depth for visible terrain voxels", () => {
+    const world = createTinyWorld([
+      { x: 4, y: 1, z: 4, kind: "ground" },
+      { x: 4, y: 2, z: 4, kind: "ground" }
+    ]);
+    const chunkVoxels = world.buildVisibleChunks()[0]?.voxels ?? [];
+    const lowerVoxel = chunkVoxels.find((voxel) => voxel.position.y === 1);
+    const upperVoxel = chunkVoxels.find((voxel) => voxel.position.y === 2);
+
+    expect(lowerVoxel?.surfaceDepth).toBe(1);
+    expect(upperVoxel?.surfaceDepth).toBe(0);
+  });
+
   it("mutates terrain only for real edits and ignores invalid edits", () => {
     const world = createTinyWorld([{ x: 0, y: 0, z: 0, kind: "ground" }]);
     const initialRevision = world.getTerrainRevision();
@@ -156,6 +169,18 @@ describe("MutableVoxelWorld", () => {
     expect(world.getEditablePropPlacement("tree-oak", 4, 4)).toBeNull();
     expect(world.removeProp(propId!)).toBe(true);
     expect(world.getTopSolidY(4, 4)).toBe(0);
+  });
+
+  it("prunes unsupported tree props after terrain loss", () => {
+    const world = createTinyWorld([{ x: 4, y: 0, z: 4, kind: "ground" }]);
+    const propId = world.setProp("tree-pine", 4, 1, 4);
+
+    expect(propId).toBe("prop-1");
+    world.removeVoxel(4, 0, 4);
+
+    const removedProps = world.pruneUnsupportedPropsAtColumns([{ x: 4, z: 4 }]);
+    expect(removedProps.map((prop) => prop.id)).toEqual(["prop-1"]);
+    expect(world.listProps()).toHaveLength(0);
   });
 
   it("tracks water occupancy separately from blocking terrain", () => {

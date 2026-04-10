@@ -73,6 +73,15 @@ export const applyTerrainDeltaBatchToWorld = (
     );
   }
 
+  for (const change of batch.propChanges) {
+    if (change.operation === "remove") {
+      world.removeProp(change.id);
+      continue;
+    }
+
+    world.setProp(change.kind, change.x, change.y, change.z, change.id);
+  }
+
   return {
     document: world.toDocument(),
     patches: [...dirtyChunkKeys].map((key) => buildTerrainChunkPatch(world, key))

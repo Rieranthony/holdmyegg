@@ -11,9 +11,17 @@ export type TerrainMaterialKey =
   | "waterTop"
   | "waterSide";
 
-export const getBlockRenderProfile = (kind: BlockKind, y: number) => {
+export const getBlockRenderProfile = (
+  kind: BlockKind,
+  y: number,
+  surfaceDepth?: number
+) => {
   if (kind === "hazard") {
     return "darkness" satisfies BlockRenderProfile;
+  }
+
+  if (kind === "ground" && surfaceDepth !== undefined) {
+    return surfaceDepth === 0 ? "earthSurface" : "earthSubsoil";
   }
 
   return y < DEFAULT_GROUND_TOP_Y ? "earthSubsoil" : "earthSurface";
@@ -77,58 +85,58 @@ const createPixelTexture = (rows: readonly string[]) => {
 
 export const voxelTextureRows = {
   earthTop: [
-    "ghhgGghhggGghhgG",
-    "GghggGhggGhggGhg",
-    "hggGhggGhggGhggG",
-    "ggGhhgGgghhGgghg",
-    "GghggGhjgGhgGghg",
-    "hgGghgGgGhggGhGg",
-    "gGhggGhGGhggGhhG",
+    "ghhgGghhgjGghhgG",
+    "GghggGhggGhggGhj",
+    "hggGjggGhggGhggG",
+    "ggGhhgGjghhGgghg",
+    "GghjgGhjgGhgGghg",
+    "hgGghjGgGhggGhGg",
+    "gGhggGhGGjggGhhG",
     "GghgGghghGgGhggg",
-    "ghhgGgghggGhGghg",
-    "GghjGghggGhggGhg",
-    "hggGhggGhggGhhgG",
-    "ggGhhgGggGhhgGhg",
-    "GghggGhgghGggGhg",
-    "hgGghgGgGhggGhGg",
-    "gGhggGhGGhggGghG",
-    "GghgGghghGgGhggg"
+    "ghhjGgghggGhGghg",
+    "GghjGghggGhjgGhg",
+    "hggGhggGhggjhhgG",
+    "ggGhhgGggGhhgGhj",
+    "GghjgGhgghGggGhg",
+    "hgGghgGgGhjgGhGg",
+    "gGhggGhGGhggGghj",
+    "GghgGghghGgGjggg"
   ],
   earthSide: [
-    "gghhGGhhgghhGGhh",
-    "GhghdDgddDgdhDgd",
-    "dDgddDgddDddDdDd",
+    "ghhgGghhjgghGghg",
+    "GghjGGhhgGhjGGhh",
+    "hgGghgGgGhggGhGg",
+    "gGhggGhGGhggGhhG",
+    "dDgddDdDedDgddDd",
     "DdDddDddedDddDdd",
-    "ddDDeDdddDdDddDd",
+    "ddDDeDdddDdDddDe",
     "DddDddDdeDdDddDd",
-    "ddDddDdeDdDddDde",
+    "ddDddDdeDdDdeDde",
     "eDdDddDdDddDdeDd",
     "dDddDdDedDdDddDd",
-    "DdDddDddedDddDdd",
+    "DdDdeDddedDddDdd",
     "ddDDeDdddDdDddDd",
-    "DddDddDdeDdDddDd",
-    "ddDddDdeDdDddDde",
-    "eDdDddDdDddDdeDd",
-    "dDddDdDedDdDddDd",
-    "DdDddDddedDddDdd"
+    "DddDddDdeDdDdeDd",
+    "ddDddDdeedDddDde",
+    "eDdDddDdDddDdeDd"
   ],
   earthBottom: [
-    "dDddDdDdDdDddDdd",
-    "DdDddDddedDddDdd",
-    "ddDDeDdddDdDddDd",
-    "DddDddDdeDdDddDd",
+    "dDddDdeDdDdDddDd",
+    "DdDddDddedDdeDdd",
+    "ddDDeDdddDdDddDe",
+    "DddDddDdeDdDdeDd",
     "ddDddDdeDdDddDde",
-    "eDdDddDdDddDdeDd",
+    "eDdDdeDdDddDdeDd",
     "dDddDdDedDdDddDd",
-    "DdDddDddedDddDdd",
-    "ddDDeDdddDdDddDd",
-    "DddDddDdeDdDddDd",
+    "DdDdeDddedDddDdd",
+    "ddDDeDdddedDddDd",
+    "DddDddDdeDdDdeDd",
     "ddDddDdeDdDddDde",
-    "eDdDddDdDddDdeDd",
-    "dDddDdDedDdDddDd",
-    "DdDddDddedDddDdd",
+    "eDdDddDdDdeDdeDd",
+    "dDddDdDedDdDddDe",
+    "DdDddDddedDdeDdd",
     "ddDDeDdddDdDddDd",
-    "DddDddDdeDdDddDd"
+    "DdeDddDdeDdDddDd"
   ],
   darkness: [
     "bbbbBbbbbbbbBbbb",
@@ -200,6 +208,43 @@ export const updateVoxelMaterialAnimation = (elapsedSeconds: number) => {
   voxelTextures.waterTop.offset.y = (elapsedSeconds * 0.02) % 1;
 };
 
+const applyTerrainColumnTint = (material: THREE.MeshStandardMaterial, strength = 0.12) => {
+  material.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        "#include <common>",
+        "#include <common>\nvarying vec3 vTerrainWorldPosition;"
+      )
+      .replace(
+        "#include <begin_vertex>",
+        "#include <begin_vertex>\nvTerrainWorldPosition = (modelMatrix * vec4(transformed, 1.0)).xyz;"
+      );
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        "#include <common>",
+        [
+          "#include <common>",
+          "varying vec3 vTerrainWorldPosition;",
+          "float terrainHash(vec2 p) {",
+          "  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);",
+          "}"
+        ].join("\n")
+      )
+      .replace(
+        "#include <color_fragment>",
+        [
+          "#include <color_fragment>",
+          "vec2 terrainColumn = floor(vTerrainWorldPosition.xz + vec2(0.001));",
+          "float terrainTintNoise = terrainHash(terrainColumn) - 0.5;",
+          `diffuseColor.rgb *= 1.0 + terrainTintNoise * ${strength.toFixed(3)};`
+        ].join("\n")
+      );
+  };
+  material.customProgramCacheKey = () => `terrain-column-tint:${strength.toFixed(3)}`;
+  return material;
+};
+
 const createStandardMaterial = (
   texture: THREE.Texture,
   overrides: Partial<THREE.MeshStandardMaterialParameters> = {}
@@ -212,11 +257,24 @@ const createStandardMaterial = (
     ...overrides
   });
 
-const earthSideMaterial = createStandardMaterial(voxelTextures.earthSide);
-const earthTopMaterial = createStandardMaterial(voxelTextures.earthTop);
-const earthBottomMaterial = createStandardMaterial(voxelTextures.earthBottom);
-const earthSubsoilMaterial = createStandardMaterial(voxelTextures.earthBottom);
-const darknessMaterial = createStandardMaterial(voxelTextures.darkness);
+const createTerrainMaterial = (
+  texture: THREE.Texture,
+  overrides: Partial<THREE.MeshStandardMaterialParameters> = {},
+  columnTintStrength = 0.12
+) =>
+  applyTerrainColumnTint(
+    createStandardMaterial(texture, {
+      vertexColors: true,
+      ...overrides
+    }),
+    columnTintStrength
+  );
+
+const earthSideMaterial = createTerrainMaterial(voxelTextures.earthSide, {}, 0.11);
+const earthTopMaterial = createTerrainMaterial(voxelTextures.earthTop, {}, 0.14);
+const earthBottomMaterial = createTerrainMaterial(voxelTextures.earthBottom, {}, 0.09);
+const earthSubsoilMaterial = createTerrainMaterial(voxelTextures.earthBottom, {}, 0.07);
+const darknessMaterial = createStandardMaterial(voxelTextures.darkness, { vertexColors: true });
 const waterTopMaterial = createStandardMaterial(voxelTextures.waterTop, {
   transparent: true,
   opacity: 0.76,
@@ -292,12 +350,17 @@ export const terrainMaterialsByKey: Record<TerrainMaterialKey, THREE.MeshStandar
 
 export const getTerrainMaterialIndex = (key: TerrainMaterialKey) => terrainMaterialIndexByKey[key];
 
-export const getTerrainMaterialKey = (kind: BlockKind, y: number, face: ExposedFaceName): TerrainMaterialKey => {
+export const getTerrainMaterialKey = (
+  kind: BlockKind,
+  y: number,
+  face: ExposedFaceName,
+  surfaceDepth?: number
+): TerrainMaterialKey => {
   if (kind === "water") {
     return face === "posY" ? "waterTop" : "waterSide";
   }
 
-  const profile = getBlockRenderProfile(kind, y);
+  const profile = getBlockRenderProfile(kind, y, surfaceDepth);
   if (profile === "earthSurface") {
     if (face === "posY") {
       return "earthSurfaceTop";

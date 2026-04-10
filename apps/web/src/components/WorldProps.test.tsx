@@ -25,7 +25,7 @@ describe("WorldPropsLayer", () => {
     buildSurfaceDecorationsMock.mockClear();
   });
 
-  it("keeps runtime ambience static across terrain revisions", () => {
+  it("rebuilds runtime ambience across terrain revisions", () => {
     const world = createWorld();
     const { rerender } = render(
       <WorldPropsLayer
@@ -48,7 +48,7 @@ describe("WorldPropsLayer", () => {
       />
     );
 
-    expect(buildSurfaceDecorationsMock.mock.calls.length).toBe(initialCallCount);
+    expect(buildSurfaceDecorationsMock.mock.calls.length).toBeGreaterThan(initialCallCount);
   });
 
   it("rebuilds props and decorations live in editor mode", () => {

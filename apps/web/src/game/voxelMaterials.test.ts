@@ -23,6 +23,8 @@ describe("voxelMaterials", () => {
     expect(getBlockRenderProfile("ground", 3)).toBe("earthSubsoil");
     expect(getBlockRenderProfile("boundary", 4)).toBe("earthSurface");
     expect(getBlockRenderProfile("ground", 10)).toBe("earthSurface");
+    expect(getBlockRenderProfile("ground", 1, 0)).toBe("earthSurface");
+    expect(getBlockRenderProfile("ground", 10, 2)).toBe("earthSubsoil");
     expect(getBlockRenderProfile("hazard", 10)).toBe("darkness");
   });
 
@@ -54,6 +56,9 @@ describe("voxelMaterials", () => {
     expect(terrainMaterialsByKey.earthSurfaceBottom.map).toBe(voxelTextures.earthBottom);
     expect(terrainMaterialsByKey.earthSubsoil.map).toBe(voxelTextures.earthBottom);
     expect(terrainMaterialsByKey.darkness.map).toBe(voxelTextures.darkness);
+    expect(terrainMaterialsByKey.earthSurfaceTop.vertexColors).toBe(true);
+    expect(terrainMaterialsByKey.earthSurfaceSide.vertexColors).toBe(true);
+    expect(terrainMaterialsByKey.earthSubsoil.vertexColors).toBe(true);
     expect(terrainMaterialsByKey.waterTop.map).toBe(voxelTextures.waterTop);
     expect(terrainMaterialsByKey.waterSide.map).toBe(voxelTextures.waterSide);
     expect(terrainMaterialsByKey.waterTop.transparent).toBe(true);

@@ -327,9 +327,16 @@ const applyEditorAction = (voxel: { x: number; y: number; z: number }, normal: {
   if (touchedTerrain) {
     const settleResult = editorWorld.settleDetachedComponents();
     dirtyChunkKeys = [...new Set([...dirtyChunkKeys, ...settleResult.dirtyChunkKeys])];
+    const removedProps = editorWorld.pruneUnsupportedPropsAtColumns();
+    if (removedProps.length > 0) {
+      requiresFullWorldSync = true;
+    }
     if (settleResult.components.length > 0) {
       postStatus("Detached terrain settled into place.");
-    } else {
+    }
+    if (removedProps.length > 0) {
+      postStatus(removedProps.length === 1 ? "A floating tree was removed." : "Floating trees were removed.");
+    } else if (settleResult.components.length === 0) {
       postStatus(`${editorState.tool === "add" ? "Added" : "Removed"} cubes in the arena.`);
     }
   }

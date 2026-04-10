@@ -1344,7 +1344,8 @@ describe("GameClient", () => {
               operation: "remove" as const,
               source: "projectile_explosion" as const
             }
-          ]
+          ],
+          propChanges: []
         },
         gameplayEventBatch: {
           tick: 1,

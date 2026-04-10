@@ -640,9 +640,9 @@ describe("App", () => {
 
     await advanceLaunchIntro();
 
-    expect(screen.getByText("Matter")).toBeInTheDocument();
-    expect(screen.getByText("Feathers")).toBeInTheDocument();
-    expect(screen.getByText("24 / 500")).toBeInTheDocument();
+    expect(screen.getByLabelText("Matter 24 of 500")).toBeInTheDocument();
+    expect(screen.getByLabelText("Feathers 3 of 3")).toBeInTheDocument();
+    expect(screen.getByTestId("hud-matter-amount")).toHaveTextContent("24/500");
     expect(screen.queryByText("MATTER FLOW")).not.toBeInTheDocument();
     expect(screen.queryByText("Jump / Fly")).not.toBeInTheDocument();
     expect(screen.queryByText("Drop Eggs")).not.toBeInTheDocument();
@@ -736,7 +736,7 @@ describe("App", () => {
       fireEvent.click(screen.getByRole("button", { name: "Capture Mouse" }));
 
       expect(screen.queryByRole("button", { name: "Capture Mouse" })).not.toBeInTheDocument();
-      expect(screen.getByText("Matter")).toBeInTheDocument();
+      expect(screen.getByLabelText("Matter 24 of 500")).toBeInTheDocument();
       expect(screen.queryByText(/mouse capture took too long/i)).not.toBeInTheDocument();
     },
     APP_FLOW_TIMEOUT
@@ -776,7 +776,7 @@ describe("App", () => {
 
       await resolvePendingPointerLock();
 
-      expect(screen.getByText("Matter")).toBeInTheDocument();
+      expect(screen.getByLabelText("Matter 24 of 500")).toBeInTheDocument();
     },
     APP_FLOW_TIMEOUT
   );

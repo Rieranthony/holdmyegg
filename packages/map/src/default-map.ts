@@ -24,6 +24,7 @@ const DEFAULT_POND_HALF_SIZE = 4;
 const DEFAULT_POND_SHORE_BUFFER = 1;
 const DEFAULT_SIDE_MOUNTAIN_HALF_WIDTH = 5.5;
 const DEFAULT_SIDE_MOUNTAIN_RISE = 5;
+const DEFAULT_TREE_KINDS = ["tree-oak", "tree-pine", "tree-autumn"] as const;
 
 const snapToVoxelCenter = (value: number) => Math.round(value - 0.5) + 0.5;
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
@@ -535,7 +536,7 @@ const buildDefaultTreeSeedCandidates = (size: MapDocumentV1["size"]) => {
   const summitBounds = getDefaultArenaSummitBounds(size);
   const spawnPadBounds = getDefaultArenaSpawnPadBounds(size);
   const pondBounds = getDefaultArenaPondBounds(size);
-  const treeHeight = getMapPropHeight("tree-oak");
+  const treeHeight = Math.max(...DEFAULT_TREE_KINDS.map((kind) => getMapPropHeight(kind)));
   const candidates: Array<{ x: number; y: number; z: number; weight: number }> = [];
 
   for (let x = 0; x < size.x; x += 1) {
@@ -576,6 +577,38 @@ const buildDefaultTreeSeedCandidates = (size: MapDocumentV1["size"]) => {
   return candidates;
 };
 
+const pickDefaultArenaTreeKind = (
+  size: MapDocumentV1["size"],
+  candidate: { x: number; y: number; z: number }
+) => {
+  const inwardDistance = Math.max(0, -getFootprintSignedDistance(size, candidate.x, candidate.z));
+  const edgeBias = 1 - Math.min(1, inwardDistance / TREE_EDGE_WEIGHT_DISTANCE);
+  const elevationBias = clamp(
+    (candidate.y - DEFAULT_SURFACE_Y) / Math.max(1, DEFAULT_MOUNTAIN_PEAK_RISE),
+    0,
+    1
+  );
+  const autumnPatch = sampleSignedNoise("default-arena-autumn", candidate.x + 0.5, candidate.z + 0.5, 13, 6);
+  const pineRoll = normalizedHash(`default-arena-tree-pine:${candidate.x}:${candidate.z}`);
+  const autumnRoll = normalizedHash(`default-arena-tree-autumn:${candidate.x}:${candidate.z}`);
+
+  if (
+    autumnPatch > 0.18 &&
+    edgeBias < 0.72 &&
+    elevationBias < 0.76 &&
+    autumnRoll < clamp(0.36 + autumnPatch * 0.2, 0.26, 0.62)
+  ) {
+    return "tree-autumn" as const;
+  }
+
+  const pineChance = clamp(0.16 + edgeBias * 0.42 + elevationBias * 0.2, 0.16, 0.7);
+  if (pineRoll < pineChance) {
+    return "tree-pine" as const;
+  }
+
+  return "tree-oak" as const;
+};
+
 const createDefaultArenaTreeProps = (size: MapDocumentV1["size"], voxels: readonly VoxelCell[]) => {
   const terrainOccupancy = new Set(voxels.map((voxel) => createVoxelKey(voxel.x, voxel.y, voxel.z)));
   const propOccupancy = new Set<string>();
@@ -609,7 +642,7 @@ const createDefaultArenaTreeProps = (size: MapDocumentV1["size"], voxels: readon
 
     const nextProp: MapProp = {
       id: `prop-${props.length + 1}`,
-      kind: "tree-oak",
+      kind: pickDefaultArenaTreeKind(size, candidate),
       x: candidate.x,
       y: candidate.y,
       z: candidate.z
