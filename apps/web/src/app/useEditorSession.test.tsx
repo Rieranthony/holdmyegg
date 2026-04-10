@@ -24,6 +24,7 @@ const createEditorArenaDocument = (): MapDocumentV1 => {
     boundary: { fallY: -1 },
     spawns: [],
     props: [],
+    waterfalls: [],
     voxels
   };
 };

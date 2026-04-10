@@ -11,6 +11,10 @@ export const mapPropKindSchema = z.enum(["tree-oak", "tree-pine", "tree-autumn"]
 export type MapPropKind = z.infer<typeof mapPropKindSchema>;
 export type OccupiedKind = BlockKind | MapPropKind;
 
+export const waterfallDirectionSchema = z.enum(["north", "south", "east", "west"]);
+
+export type WaterfallDirection = z.infer<typeof waterfallDirectionSchema>;
+
 export interface Vec3i {
   x: number;
   y: number;
@@ -52,6 +56,19 @@ export const mapPropSchema = z.object({
 
 export type MapProp = z.infer<typeof mapPropSchema>;
 
+export const waterfallFeatureSchema = z.object({
+  id: z.string().min(1),
+  x: z.int().nonnegative(),
+  y: z.int().nonnegative(),
+  z: z.int().nonnegative(),
+  direction: waterfallDirectionSchema,
+  width: z.int().positive().default(4),
+  drop: z.int().positive().default(4),
+  activationRadius: z.int().positive().default(20)
+});
+
+export type WaterfallFeature = z.infer<typeof waterfallFeatureSchema>;
+
 export const voxelCellSchema = z.object({
   x: z.int().nonnegative(),
   y: z.int().nonnegative(),
@@ -72,6 +89,7 @@ export const mapDocumentSchema = z.object({
   }),
   spawns: z.array(spawnPointSchema),
   props: z.array(mapPropSchema).default([]),
+  waterfalls: z.array(waterfallFeatureSchema).default([]),
   voxels: z.array(voxelCellSchema)
 });
 

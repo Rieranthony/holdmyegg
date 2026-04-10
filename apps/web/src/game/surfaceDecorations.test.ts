@@ -33,6 +33,7 @@ const createFlatArenaDocument = (): MapDocumentV1 => {
     boundary: { fallY: -1 },
     spawns: [{ id: "spawn-1", x: 2.5, y: 1.05, z: 2.5 }],
     props: [{ id: "prop-1", kind: "tree-oak", x: 12, y: 1, z: 12 }],
+    waterfalls: [],
     voxels
   };
 };

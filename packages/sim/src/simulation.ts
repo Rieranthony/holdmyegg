@@ -8,7 +8,15 @@ import {
   isInBounds,
   parseVoxelKey
 } from "@out-of-bounds/map";
-import type { BlockKind, DetachedVoxelComponent, MapDocumentV1, MapProp, Vec3i, VoxelCell } from "@out-of-bounds/map";
+import type {
+  BlockKind,
+  DetachedVoxelComponent,
+  MapDocumentV1,
+  MapProp,
+  MapPropKind,
+  Vec3i,
+  VoxelCell
+} from "@out-of-bounds/map";
 import type {
   AuthoritativeEggScatterDebrisState,
   AuthoritativeFallingClusterState,
@@ -780,7 +788,7 @@ export class OutOfBoundsSimulation {
       return null;
     }
 
-    const kind = this.world.getVoxelKind(targetVoxel.x, targetVoxel.y, targetVoxel.z);
+    const kind = this.world.getOccupiedKind(targetVoxel.x, targetVoxel.y, targetVoxel.z);
     if (!kind || kind === "water") {
       return null;
     }
@@ -791,7 +799,7 @@ export class OutOfBoundsSimulation {
       z: targetVoxel.z + targetNormal.z
     };
     const inRange = this.isTargetInInteractRange(player, targetVoxel);
-    const destroyValid = inRange && this.isHarvestable(kind);
+    const destroyValid = inRange && this.isDestroyableKind(kind);
 
     let placeValid = false;
     let invalidReason: RuntimeInteractionInvalidReason | null = null;
@@ -2240,6 +2248,20 @@ export class OutOfBoundsSimulation {
       return;
     }
 
+    const prop = this.world.getPropAtVoxel(targetVoxel.x, targetVoxel.y, targetVoxel.z);
+    if (prop) {
+      if (!this.isTargetInInteractRange(player, targetVoxel)) {
+        return;
+      }
+
+      if (!this.world.removeProp(prop.id)) {
+        return;
+      }
+
+      this.queueTerrainPropChanges([prop], "remove");
+      return;
+    }
+
     const kind = this.world.getVoxelKind(targetVoxel.x, targetVoxel.y, targetVoxel.z);
     if (!kind || !this.isHarvestable(kind) || !this.isTargetInInteractRange(player, targetVoxel)) {
       return;
@@ -2365,6 +2387,10 @@ export class OutOfBoundsSimulation {
 
   private isHarvestable(kind: BlockKind) {
     return kind === "ground" || kind === "boundary";
+  }
+
+  private isDestroyableKind(kind: BlockKind | MapPropKind) {
+    return this.isHarvestable(kind as BlockKind) || kind.startsWith("tree-");
   }
 
   private getPlayerChestPosition(player: SimPlayer): Vector3 {

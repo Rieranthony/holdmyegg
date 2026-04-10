@@ -1,5 +1,5 @@
 import { getMapPropHeight, getMapPropVoxels, isMapPropInBounds } from "./props";
-import type { MapDocumentV1, MapProp, VoxelCell } from "./types";
+import type { MapDocumentV1, MapProp, VoxelCell, WaterfallFeature } from "./types";
 import { cloneMapDocument, createVoxelKey } from "./utils";
 
 const now = () => new Date().toISOString();
@@ -19,12 +19,24 @@ const DEFAULT_TREE_SUMMIT_BUFFER = 4;
 const DEFAULT_TREE_POND_BUFFER = 2;
 const DEFAULT_TREE_SIDE_MOUNTAIN_BUFFER = 2;
 const TREE_EDGE_WEIGHT_DISTANCE = 20;
-const DEFAULT_POND_CENTER_RATIO = 0.1125;
-const DEFAULT_POND_HALF_SIZE = 4;
+const DEFAULT_POND_CENTER_RATIO = 0.125;
+const DEFAULT_POND_HALF_SIZE = 5;
 const DEFAULT_POND_SHORE_BUFFER = 1;
 const DEFAULT_SIDE_MOUNTAIN_HALF_WIDTH = 5.5;
 const DEFAULT_SIDE_MOUNTAIN_RISE = 5;
 const DEFAULT_TREE_KINDS = ["tree-oak", "tree-pine", "tree-autumn"] as const;
+const DEFAULT_WATERFALL_SPLASH_POCKET = {
+  minX: 13,
+  maxX: 15,
+  minZ: 8,
+  maxZ: 11
+} as const;
+const DEFAULT_WATERFALL_RESERVOIR_BOUNDS = {
+  minX: 16,
+  maxX: 18,
+  minZ: 8,
+  maxZ: 11
+} as const;
 
 const snapToVoxelCenter = (value: number) => Math.round(value - 0.5) + 0.5;
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
@@ -213,6 +225,20 @@ export const getDefaultArenaPondBounds = (size: MapDocumentV1["size"]) => {
   };
 };
 
+export const getDefaultArenaWaterfallReservoirBounds = (size: MapDocumentV1["size"]) => ({
+  minX: clamp(DEFAULT_WATERFALL_RESERVOIR_BOUNDS.minX, 0, Math.max(0, size.x - 1)),
+  maxX: clamp(DEFAULT_WATERFALL_RESERVOIR_BOUNDS.maxX, 0, Math.max(0, size.x - 1)),
+  minZ: clamp(DEFAULT_WATERFALL_RESERVOIR_BOUNDS.minZ, 0, Math.max(0, size.z - 1)),
+  maxZ: clamp(DEFAULT_WATERFALL_RESERVOIR_BOUNDS.maxZ, 0, Math.max(0, size.z - 1))
+});
+
+export const getDefaultArenaWaterfallSplashPocketBounds = (size: MapDocumentV1["size"]) => ({
+  minX: clamp(DEFAULT_WATERFALL_SPLASH_POCKET.minX, 0, Math.max(0, size.x - 1)),
+  maxX: clamp(DEFAULT_WATERFALL_SPLASH_POCKET.maxX, 0, Math.max(0, size.x - 1)),
+  minZ: clamp(DEFAULT_WATERFALL_SPLASH_POCKET.minZ, 0, Math.max(0, size.z - 1)),
+  maxZ: clamp(DEFAULT_WATERFALL_SPLASH_POCKET.maxZ, 0, Math.max(0, size.z - 1))
+});
+
 const getDistanceToSegment = (
   pointX: number,
   pointZ: number,
@@ -393,22 +419,32 @@ const getRimRiseAt = (size: MapDocumentV1["size"], x: number, z: number) => {
   return Math.max(0, Math.round(DEFAULT_RIM_PEAK_RISE * eased) + rimNoise);
 };
 
+const getReservoirShelfTopY = (size: MapDocumentV1["size"], x: number, z: number) => {
+  const reservoirBounds = getDefaultArenaWaterfallReservoirBounds(size);
+  if (!isInsideRect(reservoirBounds, x, z)) {
+    return null;
+  }
+
+  return DEFAULT_WATERLINE_Y + 2;
+};
+
 const getPondFloorY = (size: MapDocumentV1["size"], x: number, z: number) => {
   const bounds = getDefaultArenaPondBounds(size);
   if (!isInsideRect(bounds, x, z)) {
     return null;
   }
 
+  const splashPocketBounds = getDefaultArenaWaterfallSplashPocketBounds(size);
+  if (isInsideRect(splashPocketBounds, x, z)) {
+    return Math.max(WORLD_FLOOR_Y, DEFAULT_WATERLINE_Y - 2);
+  }
+
   const centerX = (bounds.minX + bounds.maxX) / 2;
   const centerZ = (bounds.minZ + bounds.maxZ) / 2;
   const ringDistance = Math.max(Math.abs(x - centerX), Math.abs(z - centerZ));
 
-  if (ringDistance <= 2) {
-    return WORLD_FLOOR_Y;
-  }
-
-  if (ringDistance <= 3) {
-    return Math.max(WORLD_FLOOR_Y, DEFAULT_WATERLINE_Y - 2);
+  if (ringDistance <= 4) {
+    return Math.max(WORLD_FLOOR_Y, DEFAULT_WATERLINE_Y - 1);
   }
 
   return Math.max(WORLD_FLOOR_Y, DEFAULT_WATERLINE_Y - 1);
@@ -428,6 +464,10 @@ export const getDefaultArenaColumnTopY = (size: MapDocumentV1["size"], x: number
     getMountainRiseAt(size, x, z) +
     getSideMountainRiseAt(size, x, z) +
     getRimRiseAt(size, x, z);
+  const reservoirShelfTopY = getReservoirShelfTopY(size, x, z);
+  if (reservoirShelfTopY !== null) {
+    return Math.min(surfaceTopY, reservoirShelfTopY);
+  }
   const pondFloorY = getPondFloorY(size, x, z);
   return pondFloorY === null ? surfaceTopY : Math.min(surfaceTopY, pondFloorY);
 };
@@ -465,6 +505,52 @@ export const createDefaultArenaSpawns = (size: MapDocumentV1["size"]) =>
     y: getDefaultArenaColumnTopY(size, spawn.x, spawn.z) + 1.05,
     z: spawn.z + 0.5
   }));
+
+const createDefaultArenaWaterfalls = (size: MapDocumentV1["size"]): WaterfallFeature[] => {
+  const reservoirBounds = getDefaultArenaWaterfallReservoirBounds(size);
+  const feature: WaterfallFeature = {
+    id: "waterfall-1",
+    x: reservoirBounds.minX,
+    y: DEFAULT_WATERLINE_Y + 3,
+    z: reservoirBounds.minZ,
+    direction: "west",
+    width: Math.max(1, reservoirBounds.maxZ - reservoirBounds.minZ + 1),
+    drop: 4,
+    activationRadius: 20
+  };
+
+  return [feature];
+};
+
+const isWaterfallFeatureInBounds = (
+  size: MapDocumentV1["size"],
+  feature: WaterfallFeature
+) => {
+  if (
+    feature.x < 0 ||
+    feature.x >= size.x ||
+    feature.y < 0 ||
+    feature.y >= size.y ||
+    feature.z < 0 ||
+    feature.z >= size.z
+  ) {
+    return false;
+  }
+
+  if (feature.drop <= 0 || feature.width <= 0 || feature.activationRadius <= 0) {
+    return false;
+  }
+
+  if (feature.y - feature.drop + 1 < WORLD_FLOOR_Y) {
+    return false;
+  }
+
+  if (feature.direction === "east" || feature.direction === "west") {
+    return feature.z + feature.width - 1 < size.z;
+  }
+
+  return feature.x + feature.width - 1 < size.x;
+};
 
 const normalizeArenaProps = (document: MapDocumentV1) => {
   const terrainOccupancy = new Set(document.voxels.map((voxel) => createVoxelKey(voxel.x, voxel.y, voxel.z)));
@@ -522,6 +608,9 @@ export const normalizeArenaBudgetMapDocument = (document: MapDocumentV1): MapDoc
       voxel.z < normalized.size.z
   );
   normalized.spawns = normalized.spawns.filter((spawn) => isSpawnInBounds(normalized.size, spawn));
+  normalized.waterfalls = normalized.waterfalls.filter((feature) =>
+    isWaterfallFeatureInBounds(normalized.size, feature)
+  );
 
   if (normalized.spawns.length === 0) {
     normalized.spawns = createArenaCornerSpawns(normalized.size);
@@ -536,6 +625,8 @@ const buildDefaultTreeSeedCandidates = (size: MapDocumentV1["size"]) => {
   const summitBounds = getDefaultArenaSummitBounds(size);
   const spawnPadBounds = getDefaultArenaSpawnPadBounds(size);
   const pondBounds = getDefaultArenaPondBounds(size);
+  const reservoirBounds = getDefaultArenaWaterfallReservoirBounds(size);
+  const splashPocketBounds = getDefaultArenaWaterfallSplashPocketBounds(size);
   const treeHeight = Math.max(...DEFAULT_TREE_KINDS.map((kind) => getMapPropHeight(kind)));
   const candidates: Array<{ x: number; y: number; z: number; weight: number }> = [];
 
@@ -555,6 +646,14 @@ const buildDefaultTreeSeedCandidates = (size: MapDocumentV1["size"]) => {
       }
 
       if (isInsideExpandedRect(pondBounds, x, z, DEFAULT_TREE_POND_BUFFER + DEFAULT_POND_SHORE_BUFFER)) {
+        continue;
+      }
+
+      if (isInsideExpandedRect(reservoirBounds, x, z, DEFAULT_TREE_POND_BUFFER + DEFAULT_POND_SHORE_BUFFER)) {
+        continue;
+      }
+
+      if (isInsideExpandedRect(splashPocketBounds, x, z, DEFAULT_TREE_POND_BUFFER)) {
         continue;
       }
 
@@ -723,7 +822,15 @@ const buildDefaultArenaTemplate = (): MapDocumentV1 => {
     }
   }
 
+  const reservoirBounds = getDefaultArenaWaterfallReservoirBounds(size);
+  for (let x = reservoirBounds.minX; x <= reservoirBounds.maxX; x += 1) {
+    for (let z = reservoirBounds.minZ; z <= reservoirBounds.maxZ; z += 1) {
+      pushVoxel(x, DEFAULT_WATERLINE_Y + 3, z, "water");
+    }
+  }
+
   const props = createDefaultArenaTreeProps(size, voxels);
+  const waterfalls = createDefaultArenaWaterfalls(size);
 
   return {
     version: 1,
@@ -740,6 +847,7 @@ const buildDefaultArenaTemplate = (): MapDocumentV1 => {
     },
     spawns: createDefaultArenaSpawns(size),
     props,
+    waterfalls,
     voxels
   };
 };

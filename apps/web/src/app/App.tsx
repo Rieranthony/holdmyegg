@@ -28,7 +28,9 @@ import {
 import { GameHost, type GameHostHandle } from "../engine/GameHost";
 import {
   blockKindOptions,
+  featureKindOptions,
   propKindOptions,
+  waterfallDirectionOptions,
   type ActiveShellMode,
   type EditorPanelState,
   type GameDiagnostics,
@@ -73,6 +75,8 @@ const createDefaultEditorPanelState = (
   tool: "add",
   blockKind: "ground",
   propKind: "tree-oak",
+  featureKind: "waterfall",
+  featureDirection: "west",
 });
 
 const createDefaultPauseState = (): RuntimePauseState => ({
@@ -1192,6 +1196,13 @@ export function App({
             >
               Prop
             </button>
+            <button
+              className={editorState.tool === "feature" ? "is-active" : ""}
+              onClick={() => hostRef.current?.setEditorState({ tool: "feature" })}
+              type="button"
+            >
+              Feature
+            </button>
           </div>
           <label className="field">
             <span>Cube Type</span>
@@ -1225,6 +1236,44 @@ export function App({
               value={editorState.propKind}
             >
               {propKindOptions.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span>Feature Type</span>
+            <select
+              disabled={editorState.tool !== "feature"}
+              onChange={(event) =>
+                hostRef.current?.setEditorState({
+                  featureKind: event.target
+                    .value as (typeof featureKindOptions)[number],
+                })
+              }
+              value={editorState.featureKind}
+            >
+              {featureKindOptions.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span>Feature Direction</span>
+            <select
+              disabled={editorState.tool !== "feature"}
+              onChange={(event) =>
+                hostRef.current?.setEditorState({
+                  featureDirection: event.target
+                    .value as (typeof waterfallDirectionOptions)[number],
+                })
+              }
+              value={editorState.featureDirection}
+            >
+              {waterfallDirectionOptions.map((option) => (
                 <option key={option} value={option}>
                   {option}
                 </option>

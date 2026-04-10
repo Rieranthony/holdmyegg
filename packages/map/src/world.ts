@@ -13,7 +13,8 @@ import type {
   Vec3i,
   VisibleVoxelChunk,
   VisibleVoxelInstance,
-  VoxelCell
+  VoxelCell,
+  WaterfallFeature
 } from "./types";
 import {
   DEFAULT_CHUNK_SIZE,
@@ -60,6 +61,8 @@ const sortVisibleVoxelInstances = (left: VisibleVoxelInstance, right: VisibleVox
   return left.position.x - right.position.x;
 };
 
+const sortWaterfalls = (left: WaterfallFeature, right: WaterfallFeature) => left.id.localeCompare(right.id);
+
 const mergeDirtyChunkSets = (target: DirtyChunkSet, source: DirtyChunkSet) => {
   for (const key of source) {
     target.add(key);
@@ -103,6 +106,7 @@ export class MutableVoxelWorld {
   private readonly voxelMap = new Map<string, VoxelCell>();
   private readonly spawnMap = new Map<string, MapSpawnPoint>();
   private readonly propMap = new Map<string, MapProp>();
+  private readonly waterfallMap = new Map<string, WaterfallFeature>();
   private readonly propVoxelMap = new Map<string, PropVoxelEntry>();
   private readonly surfaceChunkMap = new Map<string, Map<string, VisibleVoxelInstance>>();
   private readonly topTerrainYByColumn: Int16Array;
@@ -132,6 +136,10 @@ export class MutableVoxelWorld {
 
     for (const prop of parsed.props) {
       this.propMap.set(prop.id, { ...prop });
+    }
+
+    for (const waterfall of parsed.waterfalls) {
+      this.waterfallMap.set(waterfall.id, { ...waterfall });
     }
 
     this.rebuildPropVoxelIndex();
@@ -240,6 +248,10 @@ export class MutableVoxelWorld {
     return [...this.propMap.values()].sort((left, right) => left.id.localeCompare(right.id));
   }
 
+  listWaterfalls() {
+    return [...this.waterfallMap.values()].sort(sortWaterfalls);
+  }
+
   nextSpawnId() {
     let maxIndex = 0;
 
@@ -268,6 +280,50 @@ export class MutableVoxelWorld {
     }
 
     return `prop-${maxIndex + 1}`;
+  }
+
+  nextWaterfallId() {
+    let maxIndex = 0;
+
+    for (const id of this.waterfallMap.keys()) {
+      const match = /^waterfall-(\d+)$/.exec(id);
+      if (!match) {
+        continue;
+      }
+
+      maxIndex = Math.max(maxIndex, Number(match[1]));
+    }
+
+    return `waterfall-${maxIndex + 1}`;
+  }
+
+  getWaterfall(id: string) {
+    return this.waterfallMap.get(id);
+  }
+
+  findWaterfallAtOrigin(x: number, y: number, z: number) {
+    return this.listWaterfalls().find((waterfall) => waterfall.x === x && waterfall.y === y && waterfall.z === z);
+  }
+
+  setWaterfall(
+    waterfall: Omit<WaterfallFeature, "id">,
+    id = this.nextWaterfallId()
+  ) {
+    this.waterfallMap.set(id, {
+      id,
+      ...waterfall
+    });
+    this.touchMeta();
+    return id;
+  }
+
+  removeWaterfall(id: string) {
+    const deleted = this.waterfallMap.delete(id);
+    if (deleted) {
+      this.touchMeta();
+    }
+
+    return deleted;
   }
 
   setSpawn(x: number, y: number, z: number, id = this.nextSpawnId()) {
@@ -782,6 +838,7 @@ export class MutableVoxelWorld {
       boundary: { ...this.boundary },
       spawns: this.listSpawns(),
       props: this.listProps(),
+      waterfalls: this.listWaterfalls(),
       voxels: sortVoxels(this.voxelMap.values())
     });
   }

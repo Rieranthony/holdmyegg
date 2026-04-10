@@ -50,6 +50,8 @@ const VALID_GHOST_COLOR = "#b3f2c5";
 const INVALID_GHOST_COLOR = "#ef6f64";
 const NEUTRAL_GHOST_OPACITY = 0.32;
 const INVALID_GHOST_OPACITY = 0.24;
+const isDestroyableFocusKind = (kind: BlockKind | MapPropKind) =>
+  kind === "ground" || kind === "boundary" || kind.startsWith("tree-");
 
 export const emptyFocusState = (): VoxelFocusState => ({
   focusedVoxel: null,
@@ -88,7 +90,7 @@ export const resolveVoxelFocusState = ({
   const inRange =
     Math.hypot(targetCenter.x - playerChest.x, targetCenter.y - playerChest.y, targetCenter.z - playerChest.z) <=
     interactRange;
-  const destroyValid = inRange && (hitKind === "ground" || hitKind === "boundary");
+  const destroyValid = inRange && isDestroyableFocusKind(hitKind);
 
   let placeValid = false;
   let invalidReason: FocusInvalidReason | null = null;

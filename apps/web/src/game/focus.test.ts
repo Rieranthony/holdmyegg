@@ -56,6 +56,23 @@ describe("resolveVoxelFocusState", () => {
     expect(focusState.placeValid).toBe(true);
   });
 
+  it("treats tree props as direct destroy targets", () => {
+    const focusState = resolveVoxelFocusState({
+      hitVoxel: { x: 8, y: 2, z: 6 },
+      hitNormal: { x: 1, y: 0, z: 0 },
+      hitKind: "tree-pine",
+      worldSize: { x: 48, y: 12, z: 48 },
+      playerChest: { x: 6.5, y: 2.2, z: 6.5 },
+      interactRange: 4.5,
+      placementOccupied: false,
+      blockedByPlayer: false,
+      blockedByDebris: false
+    });
+
+    expect(focusState.destroyValid).toBe(true);
+    expect(focusState.placeValid).toBe(true);
+  });
+
   it("reports placement blockers for occupied cells and player bodies", () => {
     const occupied = resolveVoxelFocusState({
       hitVoxel: { x: 8, y: 0, z: 6 },

@@ -15,6 +15,7 @@ const createTinyMap = (name: string): MapDocumentV1 => ({
   boundary: { fallY: -1 },
   spawns: [{ id: "spawn-1", x: 2.5, y: 1.05, z: 2.5 }],
   props: [],
+  waterfalls: [],
   voxels: [{ x: 2, y: 0, z: 2, kind: "ground" }]
 });
 

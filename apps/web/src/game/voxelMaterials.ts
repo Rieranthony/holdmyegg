@@ -45,7 +45,10 @@ export const voxelTexturePalette = {
   w: "#78d7f2",
   W: "#58b7e0",
   q: "#4b99c7",
-  Q: "#316e9f"
+  Q: "#316e9f",
+  f: "#c7efff",
+  F: "#f4fdff",
+  "0": "#000000"
 } as const;
 
 const hexToRgb = (hex: string) => {
@@ -57,11 +60,19 @@ const hexToRgb = (hex: string) => {
   };
 };
 
-const createPixelTexture = (rows: readonly string[]) => {
+export const createPixelTexture = (
+  rows: readonly string[],
+  { transparentTokens = [] as readonly string[] } = {}
+) => {
   const data = new Uint8Array(PIXEL_TEXTURE_SIZE * PIXEL_TEXTURE_SIZE * 4);
+  const transparentTokenSet = new Set(transparentTokens);
 
   rows.forEach((row, y) => {
     [...row].forEach((token, x) => {
+      if (transparentTokenSet.has(token)) {
+        return;
+      }
+
       const color = hexToRgb(voxelTexturePalette[token as keyof typeof voxelTexturePalette]);
       const offset = (y * PIXEL_TEXTURE_SIZE + x) * 4;
       data[offset] = color.r;

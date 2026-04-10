@@ -11,6 +11,8 @@ import {
   getDefaultArenaPondBounds,
   getDefaultArenaSpawnPadBounds,
   getDefaultArenaSummitBounds,
+  getDefaultArenaWaterfallReservoirBounds,
+  getDefaultArenaWaterfallSplashPocketBounds,
   isInsideDefaultArenaFootprint,
   WORLD_FLOOR_Y,
   normalizeArenaBudgetMapDocument
@@ -39,6 +41,7 @@ const createOversizedDocument = ({
   },
   spawns,
   props: [],
+  waterfalls: [],
   voxels: [
     { x: 10, y: 0, z: 10, kind: "ground" },
     { x: 95, y: 0, z: 10, kind: "ground" },
@@ -51,6 +54,8 @@ describe("arena budget normalization", () => {
     const document = createDefaultArenaMap();
     const summitBounds = getDefaultArenaSummitBounds(document.size);
     const pondBounds = getDefaultArenaPondBounds(document.size);
+    const reservoirBounds = getDefaultArenaWaterfallReservoirBounds(document.size);
+    const splashPocketBounds = getDefaultArenaWaterfallSplashPocketBounds(document.size);
     const spawnPadBounds = getDefaultArenaSpawnPadBounds(document.size);
     const summitHeights = new Set<number>();
     const topEdgeHeights = [8, 12, 16, 20, 24, 28, 32, 36].map((x) => getDefaultArenaColumnTopY(document.size, x, 4));
@@ -86,12 +91,35 @@ describe("arena budget normalization", () => {
     expect(new Set(firstInsideZByColumn).size).toBeGreaterThan(1);
     expect(getDefaultArenaColumnTopY(document.size, 40, 22)).toBeGreaterThan(getDefaultArenaColumnTopY(document.size, 34, 22));
     expect(getDefaultArenaColumnTopY(document.size, 40, 22)).toBeGreaterThan(getDefaultArenaColumnTopY(document.size, 46, 22));
-    expect(pondBounds).toEqual({ minX: 5, maxX: 13, minZ: 5, maxZ: 13 });
-    expect(getDefaultArenaColumnTopY(document.size, 9, 9)).toBe(WORLD_FLOOR_Y);
-    expect(getDefaultArenaColumnTopY(document.size, 9, 11)).toBe(WORLD_FLOOR_Y);
-    expect(getDefaultArenaColumnTopY(document.size, 9, 12)).toBe(DEFAULT_WATERLINE_Y - 2);
+    expect(pondBounds).toEqual({ minX: 5, maxX: 15, minZ: 5, maxZ: 15 });
+    expect(reservoirBounds).toEqual({ minX: 16, maxX: 18, minZ: 8, maxZ: 11 });
+    expect(splashPocketBounds).toEqual({ minX: 13, maxX: 15, minZ: 8, maxZ: 11 });
+    expect(document.waterfalls).toEqual([
+      {
+        id: "waterfall-1",
+        x: 16,
+        y: DEFAULT_WATERLINE_Y + 3,
+        z: 8,
+        direction: "west",
+        width: 4,
+        drop: 4,
+        activationRadius: 20
+      }
+    ]);
+    expect(getDefaultArenaColumnTopY(document.size, 10, 10)).toBe(DEFAULT_WATERLINE_Y - 1);
+    expect(getDefaultArenaColumnTopY(document.size, 10, 12)).toBe(DEFAULT_WATERLINE_Y - 1);
+    expect(getDefaultArenaColumnTopY(document.size, 14, 9)).toBe(DEFAULT_WATERLINE_Y - 2);
     expect(getDefaultArenaColumnTopY(document.size, 9, 13)).toBe(DEFAULT_WATERLINE_Y - 1);
     expect(document.voxels.some((voxel) => voxel.x === 9 && voxel.y === DEFAULT_WATERLINE_Y && voxel.z === 9 && voxel.kind === "water")).toBe(true);
+    expect(
+      document.voxels.some(
+        (voxel) =>
+          voxel.x === reservoirBounds.minX &&
+          voxel.y === DEFAULT_WATERLINE_Y + 3 &&
+          voxel.z === reservoirBounds.minZ &&
+          voxel.kind === "water"
+      )
+    ).toBe(true);
     expect(
       document.props.every(
         (prop) =>

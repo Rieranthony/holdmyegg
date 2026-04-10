@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDefaultArenaMap, serializeMapDocument } from "@out-of-bounds/map";
 import type { HudState } from "@out-of-bounds/sim";
 import { RUNTIME_CONTROL_SETTINGS_STORAGE_KEY } from "../data/runtimeControlSettingsStorage";
+import type { EditorPanelState } from "../engine/types";
 
 vi.mock("../game/quality", () => ({
   useRendererQualityProfile: () => ({
@@ -133,12 +134,7 @@ vi.mock("../engine/GameHost", () => ({
         mode: string;
         presentation?: string;
         playerProfile?: { name: string };
-        onEditorStateChange?: (state: {
-          blockKind: "ground";
-          mapName: string;
-          propKind: "tree-oak";
-          tool: "add";
-        }) => void;
+        onEditorStateChange?: (state: EditorPanelState) => void;
         onDiagnostics?: (diagnostics: {
           mode: "editor" | "explore" | "playNpc";
           tick: number;
@@ -187,7 +183,14 @@ vi.mock("../engine/GameHost", () => ({
       ref
     ) => {
       const [document, setDocument] = useState(initialDocument);
-      const [mapName, setMapName] = useState(initialDocument.meta.name);
+      const [editorState, setEditorState] = useState<EditorPanelState>({
+        mapName: initialDocument.meta.name,
+        tool: "add",
+        blockKind: "ground",
+        propKind: "tree-oak",
+        featureKind: "waterfall",
+        featureDirection: "west"
+      });
       const pointerLockedRef = useRef(false);
       const hasStartedRef = useRef(false);
       const pausedRef = useRef(false);
@@ -209,17 +212,15 @@ vi.mock("../engine/GameHost", () => ({
 
       useEffect(() => {
         setDocument(initialDocument);
-        setMapName(initialDocument.meta.name);
+        setEditorState((current) => ({
+          ...current,
+          mapName: initialDocument.meta.name
+        }));
       }, [initialDocument]);
 
       useEffect(() => {
-        onEditorStateChange?.({
-          mapName,
-          tool: "add",
-          blockKind: "ground",
-          propKind: "tree-oak"
-        });
-      }, [mapName, onEditorStateChange]);
+        onEditorStateChange?.(editorState);
+      }, [editorState, onEditorStateChange]);
 
       useEffect(() => {
         if (mode === "editor" && presentation === "menu") {
@@ -318,7 +319,10 @@ vi.mock("../engine/GameHost", () => ({
           },
           loadMap(nextDocument: ReturnType<typeof createDefaultArenaMap>) {
             setDocument(nextDocument);
-            setMapName(nextDocument.meta.name);
+            setEditorState((current) => ({
+              ...current,
+              mapName: nextDocument.meta.name
+            }));
           },
           requestPointerLock() {
             pendingResumeAfterPointerLockRef.current = false;
@@ -387,15 +391,26 @@ vi.mock("../engine/GameHost", () => ({
             }
             emitPauseState();
           },
-          setEditorState(next: { mapName?: string }) {
+          setEditorState(
+            next: Partial<{
+              blockKind: "ground" | "boundary" | "hazard" | "water";
+              featureDirection: "north" | "south" | "east" | "west";
+              featureKind: "waterfall";
+              mapName: string;
+              propKind: "tree-oak" | "tree-pine" | "tree-autumn";
+              tool: "add" | "erase" | "spawn" | "prop" | "feature";
+            }>
+          ) {
+            setEditorState((current) => ({
+              ...current,
+              ...next
+            }));
             if (typeof next.mapName === "string") {
-              const nextMapName = next.mapName;
-              setMapName(next.mapName);
               setDocument((current) => ({
                 ...current,
                 meta: {
                   ...current.meta,
-                  name: nextMapName
+                  name: next.mapName!
                 }
               }));
             }
@@ -520,6 +535,7 @@ const createTinyArenaDocument = (name: string) => ({
   boundary: { fallY: -1 },
   spawns: [{ id: "spawn-1", x: 2.5, y: 1.05, z: 2.5 }],
   props: [],
+  waterfalls: [],
   voxels: [{ x: 2, y: 0, z: 2, kind: "ground" as const }]
 });
 
@@ -682,6 +698,27 @@ describe("App", () => {
     await waitFor(() => {
       expect(screen.getByRole("option", { name: "Select a save" })).toBeInTheDocument();
     });
+    },
+    APP_FLOW_TIMEOUT
+  );
+
+  it(
+    "exposes waterfall feature controls in the editor",
+    async () => {
+      render(<App initialMode="editor" />);
+
+      expect(await screen.findByTestId("game-host")).toHaveTextContent("editor");
+
+      fireEvent.click(screen.getByRole("button", { name: "Feature" }));
+      expect(screen.getByRole("button", { name: "Feature" })).toHaveClass("is-active");
+      expect(screen.getByLabelText("Feature Type")).toBeEnabled();
+      expect(screen.getByLabelText("Feature Direction")).toBeEnabled();
+
+      fireEvent.change(screen.getByLabelText("Feature Direction"), {
+        target: { value: "south" }
+      });
+
+      expect(screen.getByLabelText("Feature Direction")).toHaveValue("south");
     },
     APP_FLOW_TIMEOUT
   );

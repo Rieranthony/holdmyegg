@@ -11,6 +11,7 @@ import {
   WORLD_FLOOR_Y,
   getDefaultArenaPondBounds,
   getDefaultArenaSummitBounds,
+  getDefaultArenaWaterfallReservoirBounds,
   isInsideDefaultArenaFootprint
 } from "../default-map";
 import { EXPOSED_FACE_BITS } from "../utils";
@@ -52,6 +53,7 @@ const createTinyDocument = ({
     boundary: { fallY: -1 },
     spawns,
     props: [],
+    waterfalls: [],
     voxels
   });
 
@@ -169,6 +171,38 @@ describe("MutableVoxelWorld", () => {
     expect(world.getEditablePropPlacement("tree-oak", 4, 4)).toBeNull();
     expect(world.removeProp(propId!)).toBe(true);
     expect(world.getTopSolidY(4, 4)).toBe(0);
+  });
+
+  it("round-trips authored waterfalls alongside terrain edits", () => {
+    const world = createTinyWorld([{ x: 4, y: 0, z: 4, kind: "ground" }]);
+    const waterfallId = world.setWaterfall({
+      x: 4,
+      y: 3,
+      z: 4,
+      direction: "south",
+      width: 4,
+      drop: 4,
+      activationRadius: 20
+    });
+
+    world.setVoxel(5, 0, 4, "ground");
+
+    expect(waterfallId).toBe("waterfall-1");
+    expect(world.listWaterfalls()).toEqual([
+      {
+        id: "waterfall-1",
+        x: 4,
+        y: 3,
+        z: 4,
+        direction: "south",
+        width: 4,
+        drop: 4,
+        activationRadius: 20
+      }
+    ]);
+    expect(world.toDocument().waterfalls).toEqual(world.listWaterfalls());
+    expect(world.removeWaterfall(waterfallId)).toBe(true);
+    expect(world.listWaterfalls()).toEqual([]);
   });
 
   it("prunes unsupported tree props after terrain loss", () => {
@@ -323,6 +357,7 @@ describe("MutableVoxelWorld", () => {
     const world = new MutableVoxelWorld(createDefaultArenaMap());
     const summitBounds = getDefaultArenaSummitBounds(world.size);
     const pondBounds = getDefaultArenaPondBounds(world.size);
+    const reservoirBounds = getDefaultArenaWaterfallReservoirBounds(world.size);
     const topEdgeHeights = [8, 12, 16, 20, 24, 28, 32, 36].map((x) => world.getTopSolidY(x, 4));
     const topEdgeFrontier = [8, 12, 16, 20, 24, 28, 32, 36].map((x) => getFirstInsideZ(world, x));
 
@@ -343,13 +378,27 @@ describe("MutableVoxelWorld", () => {
     expect(world.getTopSolidY(40, 22)).toBeGreaterThan(world.getTopSolidY(34, 22));
     expect(world.getTopSolidY(40, 22)).toBeGreaterThan(world.getTopSolidY(46, 22));
     expect(world.getVoxelKind(16, DEFAULT_FOUNDATION_DEPTH, 16)).toBeUndefined();
-    expect(pondBounds).toEqual({ minX: 5, maxX: 13, minZ: 5, maxZ: 13 });
-    expect(world.getVoxelKind(9, WORLD_FLOOR_Y, 9)).toBe("ground");
-    expect(world.getTopGroundY(9, 9)).toBe(WORLD_FLOOR_Y);
-    expect(world.getTopGroundY(9, 11)).toBe(WORLD_FLOOR_Y);
+    expect(pondBounds).toEqual({ minX: 5, maxX: 15, minZ: 5, maxZ: 15 });
+    expect(world.getVoxelKind(10, DEFAULT_WATERLINE_Y - 1, 10)).toBe("ground");
+    expect(world.getTopGroundY(10, 10)).toBe(DEFAULT_WATERLINE_Y - 1);
+    expect(world.getTopGroundY(10, 12)).toBe(DEFAULT_WATERLINE_Y - 1);
     expect(world.getTopWaterY(9, 9)).toBe(DEFAULT_WATERLINE_Y);
-    expect(world.getTopGroundY(9, 12)).toBe(DEFAULT_WATERLINE_Y - 2);
+    expect(world.getTopGroundY(14, 9)).toBe(DEFAULT_WATERLINE_Y - 2);
     expect(world.getTopGroundY(9, 13)).toBe(DEFAULT_WATERLINE_Y - 1);
+    expect(world.getTopGroundY(reservoirBounds.minX, reservoirBounds.minZ)).toBe(DEFAULT_WATERLINE_Y + 2);
+    expect(world.getTopWaterY(reservoirBounds.minX, reservoirBounds.minZ)).toBe(DEFAULT_WATERLINE_Y + 3);
+    expect(world.listWaterfalls()).toEqual([
+      {
+        id: "waterfall-1",
+        x: 16,
+        y: DEFAULT_WATERLINE_Y + 3,
+        z: 8,
+        direction: "west",
+        width: 4,
+        drop: 4,
+        activationRadius: 20
+      }
+    ]);
     expect(world.listSpawns().every((spawn) => spawn.x >= 0 && spawn.z >= 0)).toBe(true);
   });
 

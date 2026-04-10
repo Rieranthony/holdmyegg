@@ -114,6 +114,36 @@ const createDeltaFrame = (): ServerStateDeltaFrame => {
   };
 };
 
+const createPropRemovalDeltaFrame = (): ServerStateDeltaFrame => {
+  const document = createDefaultArenaMap();
+  const prop = document.props[0]!;
+
+  return {
+    kind: "delta",
+    room: createRoomState("Starting in 8s."),
+    sharedFrame: createSharedFrame({
+      tick: 3,
+      terrainRevision: 3,
+      changes: [],
+      propChanges: [
+        {
+          id: prop.id,
+          kind: prop.kind,
+          x: prop.x,
+          y: prop.y,
+          z: prop.z,
+          operation: "remove"
+        }
+      ]
+    }),
+    localOverlay: {
+      localPlayerId: null,
+      hudState: null,
+      focusState: null
+    }
+  };
+};
+
 class FakeMultiplayerClient {
   bootstrap: ServerBootstrapFrame | null = null;
   document = createDefaultArenaMap();
@@ -265,5 +295,40 @@ describe("MultiplayerWorkerBridge", () => {
         message: "Reconnect failed."
       }
     ]);
+  });
+
+  it("forwards prop-only delta frames without inventing a terrain patch message", () => {
+    const client = new FakeMultiplayerClient();
+    client.bootstrap = createBootstrapFrame();
+    const worker = new MultiplayerWorkerBridge(client as never);
+    const messages: { type: string; [key: string]: unknown }[] = [];
+    worker.onmessage = (event) => {
+      messages.push(event.data as { type: string; [key: string]: unknown });
+    };
+
+    worker.postMessage({
+      type: "init",
+      document: createDefaultArenaMap(),
+      mode: "multiplayer"
+    });
+    messages.length = 0;
+
+    client.emit({
+      type: "delta",
+      frame: createPropRemovalDeltaFrame()
+    });
+
+    expect(messages.map((message) => message.type)).toEqual([
+      "frame",
+      "hud_state",
+      "status"
+    ]);
+    expect(messages[0]?.frame).toMatchObject({
+      authoritative: {
+        terrainDeltaBatch: {
+          propChanges: [expect.objectContaining({ operation: "remove" })]
+        }
+      }
+    });
   });
 });

@@ -19,6 +19,7 @@ const createTinyDocument = (): MapDocumentV1 => ({
   boundary: { fallY: -1 },
   spawns: [{ id: "spawn-1", x: 4.5, y: 1.05, z: 4.5 }],
   props: [],
+  waterfalls: [],
   voxels: [
     { x: 4, y: 0, z: 4, kind: "ground" },
     { x: 5, y: 0, z: 4, kind: "boundary" },
@@ -36,9 +37,11 @@ describe("map schemas and serialization", () => {
       }
     };
     delete (rawDocument.meta as { theme?: string }).theme;
+    delete (rawDocument as { waterfalls?: MapDocumentV1["waterfalls"] }).waterfalls;
 
     const parsed = mapDocumentSchema.parse(rawDocument);
     expect(parsed.meta.theme).toBe("party-grass");
+    expect(parsed.waterfalls).toEqual([]);
 
     const invalidDocument = {
       ...document,
@@ -57,11 +60,32 @@ describe("map schemas and serialization", () => {
     const world = new MutableVoxelWorld(document);
     world.setVoxel(12, 3, 12, "ground");
     world.setProp("tree-oak", 10, 1, 10);
+    world.setWaterfall({
+      x: 7,
+      y: 5,
+      z: 6,
+      direction: "west",
+      width: 4,
+      drop: 4,
+      activationRadius: 20
+    });
 
     const roundTripped = parseMapDocument(serializeMapDocument(world.toDocument()));
 
     expect(roundTripped.meta.updatedAt).not.toBe("2000-01-01T00:00:00.000Z");
     expect(roundTripped.props).toEqual([{ id: "prop-1", kind: "tree-oak", x: 10, y: 1, z: 10 }]);
+    expect(roundTripped.waterfalls).toEqual([
+      {
+        id: "waterfall-1",
+        x: 7,
+        y: 5,
+        z: 6,
+        direction: "west",
+        width: 4,
+        drop: 4,
+        activationRadius: 20
+      }
+    ]);
     expect(roundTripped.voxels.some((voxel) => voxel.x === 12 && voxel.y === 3 && voxel.z === 12)).toBe(true);
     expect(roundTripped.voxels.some((voxel) => voxel.x === 6 && voxel.y === 0 && voxel.z === 4 && voxel.kind === "water")).toBe(true);
   });

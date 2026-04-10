@@ -18,6 +18,7 @@ const createTinyWorld = (
     boundary: { fallY: -1 },
     spawns: [],
     props,
+    waterfalls: [],
     voxels
   });
 

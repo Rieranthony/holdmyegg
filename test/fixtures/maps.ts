@@ -61,6 +61,7 @@ const buildTestArenaTemplate = (): MapDocumentV1 => {
       { id: "spawn-4", x: 37.5, y: DEFAULT_SURFACE_Y + 0.05, z: 37.5 }
     ],
     props: [],
+    waterfalls: [],
     voxels
   };
 };

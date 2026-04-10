@@ -5,6 +5,7 @@ import {
   OutOfBoundsSimulation
 } from "@out-of-bounds/sim";
 import {
+  createDefaultArenaMap,
   DEFAULT_SURFACE_Y,
   DEFAULT_WATERLINE_Y,
   SEA_LEVEL_Y,
@@ -480,6 +481,48 @@ describe("OutOfBoundsSimulation", () => {
       simulation.config.startingLives - 1
     );
     expect(simulation.getPlayerViewState(localPlayerId)!.respawning).toBe(true);
+  });
+
+  it("keeps the default waterfall basin shallow enough to survive while still behaving like water", () => {
+    const createDefaultArenaSimulation = () => {
+      const simulation = new OutOfBoundsSimulation();
+      simulation.reset("explore", createDefaultArenaMap(), {
+        localPlayerName: "You"
+      });
+      return simulation;
+    };
+
+    const drySimulation = createDefaultArenaSimulation();
+    const wetSimulation = createDefaultArenaSimulation();
+    const dryPlayerId = drySimulation.getLocalPlayerId()!;
+    const wetPlayerId = wetSimulation.getLocalPlayerId()!;
+    const dryPlayer = getInternalPlayer(drySimulation, dryPlayerId);
+    const wetPlayer = getInternalPlayer(wetSimulation, wetPlayerId);
+
+    dryPlayer.position = { x: 20.5, y: 4.05, z: 20.5 };
+    dryPlayer.velocity = { x: 0, y: 0, z: 0 };
+    dryPlayer.facing = { x: 1, z: 0 };
+    dryPlayer.grounded = true;
+
+    wetPlayer.position = { x: 10.5, y: DEFAULT_WATERLINE_Y - 1 + 0.35, z: 10.5 };
+    wetPlayer.velocity = { x: 0, y: 0, z: 0 };
+    wetPlayer.facing = { x: 1, z: 0 };
+    wetPlayer.grounded = true;
+
+    advanceSimulation(drySimulation, 30, {
+      [dryPlayerId]: move(1, 0, { lookX: 1, lookZ: 0 })
+    });
+    advanceSimulation(wetSimulation, 30, {
+      [wetPlayerId]: move(1, 0, { lookX: 1, lookZ: 0 })
+    });
+
+    expect(wetSimulation.getPlayerState(wetPlayerId)!.livesRemaining).toBe(
+      wetSimulation.config.startingLives
+    );
+    expect(wetSimulation.getPlayerViewState(wetPlayerId)!.respawning).toBe(false);
+    expect(wetSimulation.getPlayerState(wetPlayerId)!.position.x).toBeLessThan(
+      drySimulation.getPlayerState(dryPlayerId)!.position.x
+    );
   });
 
   it("slows players while they move through water", () => {
@@ -1585,7 +1628,7 @@ describe("OutOfBoundsSimulation", () => {
     expect(simulation.getPlayerState(localPlayerId)!.mass).toBe(simulation.config.startingMass);
   });
 
-  it("treats tree props as solid build blockers without letting players harvest them", () => {
+  it("destroys targeted tree props without granting Matter", () => {
     const simulation = createTestSimulation("explore", (world) => {
       world.setProp("tree-oak", 8, DEFAULT_SURFACE_Y, 6);
     });
@@ -1603,8 +1646,17 @@ describe("OutOfBoundsSimulation", () => {
       })
     });
 
+    const terrainBatch = simulation.consumeTerrainDeltaBatch();
     expect(simulation.getPlayerState(localPlayerId)!.mass).toBe(simulation.config.startingMass);
-    expect(simulation.getWorld().getPropAtVoxel(8, DEFAULT_SURFACE_Y, 6)?.kind).toBe("tree-oak");
+    expect(simulation.getWorld().getPropAtVoxel(8, DEFAULT_SURFACE_Y, 6)).toBeUndefined();
+    expect(terrainBatch?.propChanges).toContainEqual({
+      id: "prop-1",
+      kind: "tree-oak",
+      x: 8,
+      y: DEFAULT_SURFACE_Y,
+      z: 6,
+      operation: "remove"
+    });
 
     localPlayer.mass = simulation.config.maxMass;
     simulation.step({
@@ -1614,8 +1666,10 @@ describe("OutOfBoundsSimulation", () => {
       )
     });
 
-    expect(simulation.getWorld().getVoxelKind(8, DEFAULT_SURFACE_Y, 6)).toBeUndefined();
-    expect(simulation.getPlayerState(localPlayerId)!.mass).toBe(simulation.config.maxMass);
+    expect(simulation.getWorld().getVoxelKind(8, DEFAULT_SURFACE_Y, 6)).toBe("ground");
+    expect(simulation.getPlayerState(localPlayerId)!.mass).toBe(
+      simulation.config.maxMass - simulation.config.placeCost
+    );
   });
 
   it("removes supported tree props from runtime deltas when their base voxel is harvested", () => {

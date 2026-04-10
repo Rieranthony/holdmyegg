@@ -51,6 +51,8 @@ export interface WorkerSetEditorStateMessage {
   tool?: EditorTool;
   blockKind?: EditorPanelState["blockKind"];
   propKind?: EditorPanelState["propKind"];
+  featureKind?: EditorPanelState["featureKind"];
+  featureDirection?: EditorPanelState["featureDirection"];
   mapName?: string;
 }
 

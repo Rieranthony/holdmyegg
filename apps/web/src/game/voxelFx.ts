@@ -1,3 +1,10 @@
+import {
+  getMapPropVoxels,
+  type MapProp,
+  type MapPropKind,
+  type MapPropVoxel,
+  type MapPropVoxelKind
+} from "@out-of-bounds/map";
 import type {
   RuntimeEggScatterDebrisState,
   RuntimeVoxelBurstState,
@@ -26,6 +33,76 @@ const getNoise = (seed: number, salt: number) => {
 const getProgress = (elapsed: number, duration: number) =>
   duration <= 0 ? 1 : clamp(elapsed / duration, 0, 1);
 
+const sortDeterministically = <T>(items: readonly T[], getSeed: (item: T) => string) =>
+  [...items].sort((left, right) => hashString(getSeed(left)) - hashString(getSeed(right)));
+
+const sampleDeterministicSpread = <T>(items: readonly T[], targetCount: number, seed: string) => {
+  if (targetCount >= items.length) {
+    return [...items];
+  }
+
+  const phase = getNoise(hashString(seed) * 0.0001, 1) - 0.5;
+  const samples: T[] = [];
+  for (let index = 0; index < targetCount; index += 1) {
+    const normalized = (index + 0.5 + phase * 0.8) / targetCount;
+    const sampleIndex = clamp(Math.floor(normalized * items.length), 0, items.length - 1);
+    samples.push(items[sampleIndex]!);
+  }
+
+  return samples;
+};
+
+const allocateFragmentCounts = (woodCount: number, leafCount: number, targetCount: number) => {
+  if (targetCount <= 0) {
+    return {
+      wood: 0,
+      leaves: 0
+    };
+  }
+
+  if (woodCount === 0) {
+    return {
+      wood: 0,
+      leaves: Math.min(leafCount, targetCount)
+    };
+  }
+
+  if (leafCount === 0) {
+    return {
+      wood: Math.min(woodCount, targetCount),
+      leaves: 0
+    };
+  }
+
+  let wood = Math.round((targetCount * woodCount) / (woodCount + leafCount));
+  wood = clamp(wood, 1, Math.min(woodCount, targetCount - 1));
+  let leaves = Math.min(leafCount, targetCount - wood);
+
+  while (wood + leaves < targetCount) {
+    if (leaves < leafCount && leafCount - leaves >= woodCount - wood) {
+      leaves += 1;
+      continue;
+    }
+
+    if (wood < woodCount) {
+      wood += 1;
+      continue;
+    }
+
+    if (leaves < leafCount) {
+      leaves += 1;
+      continue;
+    }
+
+    break;
+  }
+
+  return {
+    wood,
+    leaves
+  };
+};
+
 export interface EggScatterDebrisVisualState {
   position: Vector3;
   rotationX: number;
@@ -53,6 +130,36 @@ export interface VoxelBurstShockwaveState {
 }
 
 export type VoxelBurstParticleBucket = "terrain" | "accent";
+export type PropShatterMaterialKey = "bark" | "leavesOak" | "leavesPine" | "leavesAutumn";
+
+export interface PropShatterFragment {
+  materialKey: PropShatterMaterialKey;
+  origin: Vector3;
+  voxelKind: MapPropVoxelKind;
+}
+
+export interface PropShatterBurstState {
+  id: string;
+  propId: string;
+  kind: MapPropKind;
+  center: Vector3;
+  elapsed: number;
+  duration: number;
+  fragments: PropShatterFragment[];
+}
+
+export interface PropShatterFragmentState {
+  position: Vector3;
+  rotationX: number;
+  rotationY: number;
+  rotationZ: number;
+  scale: number;
+  opacity: number;
+  materialKey: PropShatterMaterialKey;
+}
+
+export const DEFAULT_PROP_SHATTER_DURATION = 0.48;
+export const MAX_PROP_SHATTER_FRAGMENTS = 96;
 
 export const voxelBurstParticleCountByStyle = {
   eggExplosion: 288,
@@ -62,6 +169,135 @@ export const voxelBurstParticleCountByStyle = {
 
 export const getVoxelBurstParticleCount = (burst: RuntimeVoxelBurstState) =>
   voxelBurstParticleCountByStyle[burst.style];
+
+export const getPropShatterMaterialKey = (
+  propKind: MapPropKind,
+  voxelKind: MapPropVoxelKind
+): PropShatterMaterialKey => {
+  if (voxelKind === "wood") {
+    return "bark";
+  }
+
+  if (propKind === "tree-pine") {
+    return "leavesPine";
+  }
+
+  if (propKind === "tree-autumn") {
+    return "leavesAutumn";
+  }
+
+  return "leavesOak";
+};
+
+export const createPropShatterBurstState = ({
+  id,
+  prop,
+  duration = DEFAULT_PROP_SHATTER_DURATION,
+  maxFragments = MAX_PROP_SHATTER_FRAGMENTS
+}: {
+  id: string;
+  prop: Pick<MapProp, "id" | "kind" | "x" | "y" | "z">;
+  duration?: number;
+  maxFragments?: number;
+}): PropShatterBurstState => {
+  const allVoxels = getMapPropVoxels(prop);
+  const totalVoxelCount = allVoxels.length;
+  const targetCount = Math.min(totalVoxelCount, Math.max(1, maxFragments));
+  const woodVoxels = sortDeterministically(
+    allVoxels.filter((voxel) => voxel.kind === "wood"),
+    (voxel) => `${prop.id}:wood:${voxel.x}:${voxel.y}:${voxel.z}`
+  );
+  const leafVoxels = sortDeterministically(
+    allVoxels.filter((voxel) => voxel.kind === "leaves"),
+    (voxel) => `${prop.id}:leaves:${voxel.x}:${voxel.y}:${voxel.z}`
+  );
+  const allocation = allocateFragmentCounts(woodVoxels.length, leafVoxels.length, targetCount);
+  const sampledVoxels = sortDeterministically(
+    [
+      ...sampleDeterministicSpread(woodVoxels, allocation.wood, `${prop.id}:wood-sample`),
+      ...sampleDeterministicSpread(leafVoxels, allocation.leaves, `${prop.id}:leaf-sample`)
+    ],
+    (voxel) => `${prop.id}:sample:${voxel.x}:${voxel.y}:${voxel.z}`
+  );
+
+  const center = allVoxels.reduce<Vector3>(
+    (accumulator, voxel) => ({
+      x: accumulator.x + voxel.x + 0.5,
+      y: accumulator.y + voxel.y + 0.5,
+      z: accumulator.z + voxel.z + 0.5
+    }),
+    { x: 0, y: 0, z: 0 }
+  );
+  center.x /= Math.max(1, totalVoxelCount);
+  center.y /= Math.max(1, totalVoxelCount);
+  center.z /= Math.max(1, totalVoxelCount);
+
+  return {
+    id,
+    propId: prop.id,
+    kind: prop.kind,
+    center,
+    elapsed: 0,
+    duration,
+    fragments: sampledVoxels.map((voxel: MapPropVoxel) => ({
+      materialKey: getPropShatterMaterialKey(prop.kind, voxel.kind),
+      origin: {
+        x: voxel.x + 0.5,
+        y: voxel.y + 0.5,
+        z: voxel.z + 0.5
+      },
+      voxelKind: voxel.kind
+    }))
+  };
+};
+
+export const getPropShatterFragmentState = (
+  burst: PropShatterBurstState,
+  fragmentIndex: number
+): PropShatterFragmentState => {
+  const fragment = burst.fragments[fragmentIndex]!;
+  const progress = getProgress(burst.elapsed, burst.duration);
+  const seed = hashString(`${burst.id}:${fragmentIndex}:${fragment.materialKey}`) * 0.0001;
+  const isLeaf = fragment.voxelKind === "leaves";
+  const centerDeltaX = fragment.origin.x - burst.center.x;
+  const centerDeltaZ = fragment.origin.z - burst.center.z;
+  const baseYaw =
+    Math.abs(centerDeltaX) <= Number.EPSILON && Math.abs(centerDeltaZ) <= Number.EPSILON
+      ? getNoise(seed, 1) * Math.PI * 2
+      : Math.atan2(centerDeltaZ, centerDeltaX);
+  const yaw = baseYaw + (getNoise(seed, 2) - 0.5) * (isLeaf ? 1.3 : 0.74);
+  const driftYaw = yaw + (getNoise(seed, 3) - 0.5) * (isLeaf ? 1.18 : 0.4);
+  const distanceStart = isLeaf ? 0.02 + getNoise(seed, 4) * 0.06 : 0.01 + getNoise(seed, 4) * 0.03;
+  const distanceEnd = isLeaf ? 1.18 + getNoise(seed, 5) * 1.12 : 0.58 + getNoise(seed, 5) * 0.82;
+  const lift =
+    Math.sin(progress * Math.PI) * (isLeaf ? 1.08 : 0.62) * (0.78 + getNoise(seed, 6) * 0.52) -
+    progress * progress * (isLeaf ? 0.54 : 1.26) * (0.74 + getNoise(seed, 7) * 0.58) +
+    Math.sin(progress * Math.PI * (isLeaf ? 2.3 : 1.7) + getNoise(seed, 8) * Math.PI * 2) *
+      (isLeaf ? 0.14 : 0.05);
+  const lateralFlutter =
+    Math.sin(progress * Math.PI * (isLeaf ? 1.9 : 1.3) + getNoise(seed, 9) * Math.PI * 2) *
+    (isLeaf ? 0.18 : 0.04);
+  const distance = lerp(distanceStart, distanceEnd, progress);
+  const scaleStart = isLeaf ? 0.24 + getNoise(seed, 10) * 0.12 : 0.32 + getNoise(seed, 10) * 0.14;
+  const scaleEnd = isLeaf ? 0.06 : 0.08;
+  const spinX = progress * Math.PI * (isLeaf ? 2.8 + getNoise(seed, 11) * 2 : 1.8 + getNoise(seed, 11) * 1.6);
+  const spinY = progress * Math.PI * (isLeaf ? 3.4 + getNoise(seed, 12) * 2.8 : 2.1 + getNoise(seed, 12) * 1.8);
+  const spinZ = progress * Math.PI * (isLeaf ? 2.6 + getNoise(seed, 13) * 2.2 : 1.7 + getNoise(seed, 13) * 1.5);
+
+  return {
+    position: {
+      x: fragment.origin.x + Math.cos(yaw) * distance + Math.cos(driftYaw + Math.PI / 2) * lateralFlutter,
+      y: fragment.origin.y + lift,
+      z: fragment.origin.z + Math.sin(yaw) * distance + Math.sin(driftYaw + Math.PI / 2) * lateralFlutter
+    },
+    rotationX: spinX,
+    rotationY: spinY,
+    rotationZ: spinZ,
+    scale: lerp(scaleStart, scaleEnd, progress),
+    opacity: clamp((isLeaf ? 1.04 : 1.12) - Math.pow(progress, isLeaf ? 1.26 : 1.12), 0, 1),
+    materialKey: fragment.materialKey
+  };
+};
 
 export const getVoxelBurstMaterialProfile = (burst: RuntimeVoxelBurstState): BlockRenderProfile | null => {
   if (burst.style === "harvest") {

@@ -7,7 +7,8 @@ import {
   type MapPropKind,
   type MapDocumentV1
 } from "@out-of-bounds/map";
-import type { EditorTool } from "../engine/types";
+import type { EditorFeatureKind, EditorTool } from "../engine/types";
+import type { WaterfallDirection } from "@out-of-bounds/map";
 
 interface VoxelInteractPayload {
   voxel: {
@@ -26,8 +27,14 @@ interface UseEditorSessionOptions {
   onStatus: (message: string) => void;
 }
 
+const FEATURE_WIDTH = 4;
+const FEATURE_DROP = 4;
+const FEATURE_ACTIVATION_RADIUS = 20;
+
 export const blockKindOptions: BlockKind[] = ["ground", "boundary", "hazard", "water"];
 export const propKindOptions: MapPropKind[] = ["tree-oak", "tree-pine", "tree-autumn"];
+export const featureKindOptions: EditorFeatureKind[] = ["waterfall"];
+export const waterfallDirectionOptions: WaterfallDirection[] = ["north", "south", "east", "west"];
 
 export function useEditorSession({ onStatus }: UseEditorSessionOptions) {
   const [editorWorld, setEditorWorld] = useState(() => new MutableVoxelWorld(createDefaultArenaMap()));
@@ -36,6 +43,8 @@ export function useEditorSession({ onStatus }: UseEditorSessionOptions) {
   const [tool, setTool] = useState<EditorTool>("add");
   const [blockKind, setBlockKind] = useState<BlockKind>("ground");
   const [propKind, setPropKind] = useState<MapPropKind>("tree-oak");
+  const [featureKind, setFeatureKind] = useState<EditorFeatureKind>("waterfall");
+  const [featureDirection, setFeatureDirection] = useState<WaterfallDirection>("west");
   const [mapName, setMapName] = useState(editorWorld.meta.name);
 
   useEffect(() => {
@@ -70,13 +79,19 @@ export function useEditorSession({ onStatus }: UseEditorSessionOptions) {
       let touchedTerrain = false;
 
       if (tool === "erase") {
-        const prop = editorWorld.getPropAtVoxel(voxel.x, voxel.y, voxel.z);
-        if (prop) {
-          editorWorld.removeProp(prop.id);
-          onStatus("Removed a tree.");
+        const waterfall = editorWorld.findWaterfallAtOrigin(voxel.x, voxel.y, voxel.z);
+        if (waterfall) {
+          editorWorld.removeWaterfall(waterfall.id);
+          onStatus("Removed a waterfall.");
         } else {
-          dirtyChunkKeys = [...editorWorld.removeVoxel(voxel.x, voxel.y, voxel.z)];
-          touchedTerrain = dirtyChunkKeys.length > 0;
+          const prop = editorWorld.getPropAtVoxel(voxel.x, voxel.y, voxel.z);
+          if (prop) {
+            editorWorld.removeProp(prop.id);
+            onStatus("Removed a tree.");
+          } else {
+            dirtyChunkKeys = [...editorWorld.removeVoxel(voxel.x, voxel.y, voxel.z)];
+            touchedTerrain = dirtyChunkKeys.length > 0;
+          }
         }
       } else if (tool === "add") {
         const placement = {
@@ -97,6 +112,31 @@ export function useEditorSession({ onStatus }: UseEditorSessionOptions) {
         } else {
           editorWorld.setProp(propKind, placement.x, placement.y, placement.z);
           onStatus("Placed a tree.");
+        }
+      } else if (tool === "feature") {
+        if (featureKind !== "waterfall") {
+          onStatus("That feature type is not supported yet.");
+        } else {
+          const placement = {
+            x: voxel.x,
+            y: Math.max(0, voxel.y),
+            z: voxel.z
+          };
+          const existing = editorWorld.findWaterfallAtOrigin(placement.x, placement.y, placement.z);
+          if (existing) {
+            onStatus("A waterfall already starts from that anchor.");
+          } else {
+            editorWorld.setWaterfall({
+              x: placement.x,
+              y: placement.y,
+              z: placement.z,
+              direction: featureDirection,
+              width: FEATURE_WIDTH,
+              drop: FEATURE_DROP,
+              activationRadius: FEATURE_ACTIVATION_RADIUS
+            });
+            onStatus("Placed a waterfall.");
+          }
         }
       } else {
         const spawn = editorWorld.getEditableSpawnPosition(voxel.x, voxel.z);
@@ -129,7 +169,7 @@ export function useEditorSession({ onStatus }: UseEditorSessionOptions) {
       setEditorDirtyChunkKeys(dirtyChunkKeys);
       setEditorRevision((value) => value + 1);
     },
-    [blockKind, editorWorld, onStatus, propKind, tool]
+    [blockKind, editorWorld, featureDirection, featureKind, onStatus, propKind, tool]
   );
 
   return {
@@ -142,6 +182,10 @@ export function useEditorSession({ onStatus }: UseEditorSessionOptions) {
     setBlockKind,
     propKind,
     setPropKind,
+    featureKind,
+    setFeatureKind,
+    featureDirection,
+    setFeatureDirection,
     mapName,
     setEditorMapName,
     applyDocument,

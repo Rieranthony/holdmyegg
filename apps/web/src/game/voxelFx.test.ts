@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  createPropShatterBurstState,
   getEggScatterDebrisVisualState,
+  getPropShatterFragmentState,
+  getPropShatterMaterialKey,
   getVoxelBurstMaterialProfile,
   getVoxelBurstParticleCount,
   getVoxelBurstParticleState,
@@ -192,5 +195,76 @@ describe("voxelFx", () => {
     expect(Math.abs(visual.rotationY)).toBeGreaterThan(0);
     expect(visual.scaleX).not.toBe(1);
     expect(visual.scaleY).not.toBe(1);
+  });
+
+  it("samples tree shatter fragments deterministically while preserving bark and leaves", () => {
+    const burst = createPropShatterBurstState({
+      id: "tree-burst-1",
+      prop: {
+        id: "prop-1",
+        kind: "tree-oak",
+        x: 12,
+        y: 4,
+        z: 9
+      }
+    });
+    const repeated = createPropShatterBurstState({
+      id: "tree-burst-1",
+      prop: {
+        id: "prop-1",
+        kind: "tree-oak",
+        x: 12,
+        y: 4,
+        z: 9
+      }
+    });
+
+    expect(burst.fragments.length).toBeLessThanOrEqual(96);
+    expect(burst.fragments).toEqual(repeated.fragments);
+    expect(burst.fragments.some((fragment) => fragment.materialKey === "bark")).toBe(true);
+    expect(burst.fragments.some((fragment) => fragment.materialKey === "leavesOak")).toBe(true);
+
+    const fragment = getPropShatterFragmentState(
+      {
+        ...burst,
+        elapsed: 0.2
+      },
+      0
+    );
+    expect(fragment.opacity).toBeGreaterThan(0);
+    expect(fragment.scale).toBeGreaterThan(0);
+  });
+
+  it("routes prop shatter leaves to the matching tree material family", () => {
+    expect(getPropShatterMaterialKey("tree-oak", "wood")).toBe("bark");
+    expect(getPropShatterMaterialKey("tree-oak", "leaves")).toBe("leavesOak");
+    expect(getPropShatterMaterialKey("tree-pine", "leaves")).toBe("leavesPine");
+    expect(getPropShatterMaterialKey("tree-autumn", "leaves")).toBe("leavesAutumn");
+
+    const pineBurst = createPropShatterBurstState({
+      id: "tree-burst-2",
+      prop: {
+        id: "prop-2",
+        kind: "tree-pine",
+        x: 10,
+        y: 4,
+        z: 10
+      }
+    });
+    const autumnBurst = createPropShatterBurstState({
+      id: "tree-burst-3",
+      prop: {
+        id: "prop-3",
+        kind: "tree-autumn",
+        x: 10,
+        y: 4,
+        z: 10
+      }
+    });
+
+    expect(pineBurst.fragments.some((fragment) => fragment.materialKey === "leavesPine")).toBe(true);
+    expect(pineBurst.fragments.some((fragment) => fragment.materialKey === "leavesAutumn")).toBe(false);
+    expect(autumnBurst.fragments.some((fragment) => fragment.materialKey === "leavesAutumn")).toBe(true);
+    expect(autumnBurst.fragments.some((fragment) => fragment.materialKey === "leavesPine")).toBe(false);
   });
 });

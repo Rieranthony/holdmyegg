@@ -22,7 +22,8 @@ import {
   type RuntimeSkyDropState,
   type FallingClusterViewState,
   type SimulationInitialSpawnStyle,
-  type SimulationPerformanceDiagnostics
+  type SimulationPerformanceDiagnostics,
+  type TerrainDeltaBatch
 } from "@out-of-bounds/sim";
 import {
   getChickenPalette,
@@ -134,13 +135,24 @@ import {
   updateVoxelMaterialAnimation
 } from "../game/voxelMaterials";
 import {
+  DEFAULT_PROP_SHATTER_DURATION,
+  createPropShatterBurstState,
   getEggScatterDebrisVisualState,
+  getPropShatterFragmentState,
+  type PropShatterBurstState,
+  type PropShatterMaterialKey,
   type VoxelBurstParticleBucket,
   getVoxelBurstMaterialProfile,
   getVoxelBurstParticleCount,
   getVoxelBurstParticleState,
   getVoxelBurstShockwaveState
 } from "../game/voxelFx";
+import {
+  createWaterfallVisual,
+  disposeWaterfallVisual,
+  syncWaterfallVisual,
+  type WaterfallVisual
+} from "../game/waterfalls";
 import {
   createDefaultRuntimeControlSettings,
   normalizeRuntimeControlSettings,
@@ -223,7 +235,9 @@ const createDefaultEditorState = (world: MutableVoxelWorld): EditorPanelState =>
   mapName: world.meta.name,
   tool: "add",
   blockKind: "ground",
-  propKind: "tree-oak"
+  propKind: "tree-oak",
+  featureKind: "waterfall",
+  featureDirection: "west"
 });
 
 const createTerrainGeometry = (patch: TerrainChunkPatchPayload) => {
@@ -446,7 +460,15 @@ const MAX_HARVEST_BURST_INSTANCES_PER_PROFILE = 128;
 const MAX_EGG_EXPLOSION_BURST_INSTANCES = 1024;
 const MAX_EGG_EXPLOSION_ACCENT_INSTANCES = 512;
 const MAX_EGG_EXPLOSION_SHOCKWAVE_INSTANCES = 32;
+const MAX_PROP_SHATTER_INSTANCES_PER_MATERIAL = 512;
+const MAX_TRACKED_PROP_DELTA_KEYS = 1024;
 const voxelFxProfiles = ["earthSurface", "earthSubsoil", "darkness"] as const satisfies readonly BlockRenderProfile[];
+const propShatterMaterialEntries = [
+  ["bark", propMaterials.bark],
+  ["leavesOak", propMaterials.leavesOak],
+  ["leavesPine", propMaterials.leavesPine],
+  ["leavesAutumn", propMaterials.leavesAutumn]
+] as const satisfies readonly [PropShatterMaterialKey, THREE.Material][];
 const cloudGeometry = new THREE.BoxGeometry(1.6, 0.9, 1.6);
 const cloudTempObject = new THREE.Object3D();
 const voxelFxTempObject = new THREE.Object3D();
@@ -846,6 +868,7 @@ export class WorkerGameRuntime {
   private readonly skyBirdsGroup = new THREE.Group();
   private readonly spaceBackdropGroup = new THREE.Group();
   private readonly terrainGroup = new THREE.Group();
+  private readonly waterfallsGroup = new THREE.Group();
   private readonly propsGroup = new THREE.Group();
   private readonly playersGroup = new THREE.Group();
   private readonly eggsGroup = new THREE.Group();
@@ -854,6 +877,7 @@ export class WorkerGameRuntime {
   private readonly clustersGroup = new THREE.Group();
   private readonly terrainMeshes = new Map<string, THREE.Mesh>();
   private readonly terrainChunkStats = new Map<string, { drawCallCount: number; triangleCount: number }>();
+  private readonly waterfallVisuals = new Map<string, WaterfallVisual>();
   private readonly cloudVisuals: CloudVisual[] = [];
   private readonly skyBirdVisuals: SkyBirdVisual[] = [];
   private readonly playerVisuals = new Map<string, PlayerVisual>();
@@ -861,9 +885,13 @@ export class WorkerGameRuntime {
   private readonly eggScatterMeshes = new Map<BlockRenderProfile, THREE.InstancedMesh>();
   private readonly harvestBurstMeshes = new Map<BlockRenderProfile, DynamicOpacityMeshResource>();
   private readonly eggExplosionBurstMeshes = new Map<BlockRenderProfile, DynamicOpacityMeshResource>();
+  private readonly propShatterBurstMeshes = new Map<PropShatterMaterialKey, DynamicOpacityMeshResource>();
   private readonly skyDropVisuals = new Map<string, SkyDropVisual>();
   private readonly clusterVisuals = new Map<string, ClusterVisual>();
   private readonly spacePlanetVisuals: SpacePlanetVisual[] = [];
+  private readonly propShatterBursts = new Map<string, PropShatterBurstState>();
+  private readonly processedPropDeltaKeys = new Set<string>();
+  private readonly processedPropDeltaKeyOrder: string[] = [];
   private eggExplosionAccentBurstMesh: DynamicOpacityMeshResource | null = null;
   private eggExplosionShockwaveMesh: DynamicOpacityMeshResource | null = null;
   private readonly cloudMainMaterial = new THREE.MeshStandardMaterial({
@@ -941,6 +969,7 @@ export class WorkerGameRuntime {
     this.scene.add(this.cloudsGroup);
     this.scene.add(this.skyBirdsGroup);
     this.scene.add(this.terrainGroup);
+    this.scene.add(this.waterfallsGroup);
     this.scene.add(this.propsGroup);
     this.scene.add(this.playersGroup);
     this.scene.add(this.eggsGroup);
@@ -1485,6 +1514,16 @@ export class WorkerGameRuntime {
       this.voxelFxGroup.add(explosionMesh.mesh);
     }
 
+    for (const [materialKey, material] of propShatterMaterialEntries) {
+      const shatterMesh = createDynamicOpacityMeshResource(
+        MAX_PROP_SHATTER_INSTANCES_PER_MATERIAL,
+        material,
+        this.propGeometry.clone()
+      );
+      this.propShatterBurstMeshes.set(materialKey, shatterMesh);
+      this.voxelFxGroup.add(shatterMesh.mesh);
+    }
+
     this.eggExplosionAccentBurstMesh = createDynamicOpacityMeshResource(
       MAX_EGG_EXPLOSION_ACCENT_INSTANCES,
       new THREE.MeshBasicMaterial({
@@ -1513,6 +1552,192 @@ export class WorkerGameRuntime {
       new THREE.RingGeometry(0.72, 1.16, 32)
     );
     this.voxelFxGroup.add(this.eggExplosionShockwaveMesh.mesh);
+  }
+
+  private resetPropShatterState() {
+    this.propShatterBursts.clear();
+    this.processedPropDeltaKeys.clear();
+    this.processedPropDeltaKeyOrder.length = 0;
+  }
+
+  private rememberProcessedPropDeltaKey(key: string) {
+    if (this.processedPropDeltaKeys.has(key)) {
+      return false;
+    }
+
+    this.processedPropDeltaKeys.add(key);
+    this.processedPropDeltaKeyOrder.push(key);
+    while (this.processedPropDeltaKeyOrder.length > MAX_TRACKED_PROP_DELTA_KEYS) {
+      const oldest = this.processedPropDeltaKeyOrder.shift();
+      if (!oldest) {
+        break;
+      }
+
+      this.processedPropDeltaKeys.delete(oldest);
+    }
+
+    return true;
+  }
+
+  private buildProcessedPropDeltaKey(
+    source: "local" | "multiplayer",
+    batchTick: number,
+    operation: TerrainDeltaBatch["propChanges"][number]["operation"],
+    id: string
+  ) {
+    return `${source}:${batchTick}:${operation}:${id}`;
+  }
+
+  private spawnPropShatterBurst(
+    change: TerrainDeltaBatch["propChanges"][number],
+    batchTick: number
+  ) {
+    const burstId = `prop-shatter-${batchTick}-${change.id}`;
+    this.propShatterBursts.set(
+      burstId,
+      createPropShatterBurstState({
+        id: burstId,
+        duration: DEFAULT_PROP_SHATTER_DURATION,
+        prop: {
+          id: change.id,
+          kind: change.kind,
+          x: change.x,
+          y: change.y,
+          z: change.z
+        }
+      })
+    );
+  }
+
+  private processLocalPropChangeBatch(batch: TerrainDeltaBatch | null) {
+    if (!batch || batch.propChanges.length === 0) {
+      return false;
+    }
+
+    let hasFreshChange = false;
+    for (const change of batch.propChanges) {
+      const dedupeKey = this.buildProcessedPropDeltaKey("local", batch.tick, change.operation, change.id);
+      if (!this.rememberProcessedPropDeltaKey(dedupeKey)) {
+        continue;
+      }
+
+      hasFreshChange = true;
+      if (change.operation === "remove") {
+        this.spawnPropShatterBurst(change, batch.tick);
+      }
+    }
+
+    return hasFreshChange;
+  }
+
+  private applyMultiplayerTerrainDeltaBatchToRuntimeWorld(batch: TerrainDeltaBatch | null) {
+    if (!batch || !this.runtimeWorld) {
+      return false;
+    }
+
+    let worldChanged = false;
+    let propsChanged = false;
+
+    for (const change of batch.changes) {
+      if (change.operation === "remove" || change.kind === null) {
+        worldChanged = this.runtimeWorld.removeVoxel(
+          change.voxel.x,
+          change.voxel.y,
+          change.voxel.z
+        ).size > 0 || worldChanged;
+        continue;
+      }
+
+      worldChanged = this.runtimeWorld.setVoxel(
+        change.voxel.x,
+        change.voxel.y,
+        change.voxel.z,
+        change.kind
+      ).size > 0 || worldChanged;
+    }
+
+    for (const change of batch.propChanges) {
+      const dedupeKey = this.buildProcessedPropDeltaKey(
+        "multiplayer",
+        batch.tick,
+        change.operation,
+        change.id
+      );
+      const isFreshChange = this.rememberProcessedPropDeltaKey(dedupeKey);
+
+      if (change.operation === "remove") {
+        propsChanged = this.runtimeWorld.removeProp(change.id) || propsChanged;
+        if (isFreshChange) {
+          this.spawnPropShatterBurst(change, batch.tick);
+        }
+        continue;
+      }
+
+      propsChanged =
+        (isFreshChange &&
+          this.runtimeWorld.setProp(change.kind, change.x, change.y, change.z, change.id) !== null) ||
+        propsChanged;
+    }
+
+    if (worldChanged || propsChanged) {
+      this.currentDocument = this.runtimeWorld.toDocument();
+    }
+
+    return propsChanged;
+  }
+
+  private advancePropShatterBursts(delta: number) {
+    for (const [burstId, burst] of this.propShatterBursts) {
+      burst.elapsed += delta;
+      if (burst.elapsed < burst.duration) {
+        continue;
+      }
+
+      this.propShatterBursts.delete(burstId);
+    }
+  }
+
+  private syncPropShatterBursts() {
+    const counts: Record<PropShatterMaterialKey, number> = {
+      bark: 0,
+      leavesOak: 0,
+      leavesPine: 0,
+      leavesAutumn: 0
+    };
+
+    for (const burst of this.propShatterBursts.values()) {
+      for (let fragmentIndex = 0; fragmentIndex < burst.fragments.length; fragmentIndex += 1) {
+        const fragment = getPropShatterFragmentState(burst, fragmentIndex);
+        const resource = this.propShatterBurstMeshes.get(fragment.materialKey);
+        const instanceIndex = counts[fragment.materialKey];
+        if (!resource || instanceIndex >= MAX_PROP_SHATTER_INSTANCES_PER_MATERIAL) {
+          continue;
+        }
+
+        voxelFxTempObject.position.set(
+          fragment.position.x,
+          fragment.position.y,
+          fragment.position.z
+        );
+        voxelFxTempObject.rotation.set(
+          fragment.rotationX,
+          fragment.rotationY,
+          fragment.rotationZ
+        );
+        voxelFxTempObject.scale.setScalar(fragment.scale);
+        voxelFxTempObject.updateMatrix();
+        resource.mesh.setMatrixAt(instanceIndex, voxelFxTempObject.matrix);
+        resource.opacityAttribute.setX(instanceIndex, fragment.opacity);
+        counts[fragment.materialKey] += 1;
+      }
+    }
+
+    for (const [materialKey] of propShatterMaterialEntries) {
+      finalizeDynamicOpacityMesh(
+        this.propShatterBurstMeshes.get(materialKey) ?? null,
+        counts[materialKey]
+      );
+    }
   }
 
   private ensureLoop() {
@@ -1551,7 +1776,9 @@ export class WorkerGameRuntime {
       this.updateShellCamera(elapsed);
     }
     this.updateFocusTarget();
+    this.advancePropShatterBursts(delta);
     this.syncActiveVisuals(delta, elapsed);
+    this.syncWaterfalls(elapsed);
     this.updateEggLaunchPreview(this.getLocalRuntimePlayer(), elapsed);
     this.renderFrame(delta);
     this.animationFrameId = requestWorkerAnimationFrame(this.animate);
@@ -1589,6 +1816,9 @@ export class WorkerGameRuntime {
     this.latestRuntimeDiagnostics = currentDiagnostics;
     this.latestRuntimeFrame = createLocalRuntimeFrame(this.runtime);
     this.postHudState(this.latestRuntimeFrame.hudState);
+    const hadPropChanges = this.processLocalPropChangeBatch(
+      this.latestRuntimeFrame.authoritative?.terrainDeltaBatch ?? null
+    );
 
     const terrainRevision = this.runtime.getWorld().getTerrainRevision();
     if (terrainRevision !== this.lastRuntimeTerrainRevision) {
@@ -1597,6 +1827,9 @@ export class WorkerGameRuntime {
       this.latestDirtyChunkCount = dirtyChunkKeys.length;
       const patches = dirtyChunkKeys.map((key) => buildChunkPatch(this.runtime.getWorld(), key));
       this.applyTerrainPatches(patches);
+      this.rebuildProps(this.runtime.getWorld().toDocument());
+    } else if (hadPropChanges) {
+      this.latestDirtyChunkCount = 0;
       this.rebuildProps(this.runtime.getWorld().toDocument());
     } else {
       this.latestDirtyChunkCount = 0;
@@ -2179,6 +2412,7 @@ export class WorkerGameRuntime {
     this.syncEggs(frame?.eggs ?? [], elapsed);
     this.syncEggScatterDebris(frame?.eggScatterDebris ?? []);
     this.syncVoxelBursts(frame?.voxelBursts ?? []);
+    this.syncPropShatterBursts();
     this.syncSkyDrops(frame?.skyDrops ?? [], elapsed);
     this.syncClusters(frame?.fallingClusters ?? [], elapsed);
   }
@@ -2645,6 +2879,9 @@ export class WorkerGameRuntime {
           continue;
         }
 
+        if (!terrainResource) {
+          continue;
+        }
         terrainResource.mesh.setMatrixAt(terrainInstanceIndex, voxelFxTempObject.matrix);
         terrainResource.opacityAttribute.setX(terrainInstanceIndex, particle.opacity);
         explosionTerrainCounts[profile] += 1;
@@ -2912,6 +3149,15 @@ export class WorkerGameRuntime {
     if (message.propKind) {
       this.editorState = { ...this.editorState, propKind: message.propKind };
     }
+    if (message.featureKind) {
+      this.editorState = { ...this.editorState, featureKind: message.featureKind };
+    }
+    if (message.featureDirection) {
+      this.editorState = {
+        ...this.editorState,
+        featureDirection: message.featureDirection
+      };
+    }
     if (typeof message.mapName === "string") {
       const trimmed = message.mapName.trimStart();
       this.editorWorld.meta.name = trimmed || "Untitled Arena";
@@ -3056,6 +3302,13 @@ export class WorkerGameRuntime {
         return;
       case "frame":
         this.latestExternalFrame = message.frame;
+        if (
+          this.applyMultiplayerTerrainDeltaBatchToRuntimeWorld(
+            message.frame.authoritative?.terrainDeltaBatch ?? null
+          )
+        ) {
+          this.rebuildProps(this.currentDocument);
+        }
         this.postHudState(message.frame.hudState);
         return;
       case "hud_state":
@@ -3094,9 +3347,11 @@ export class WorkerGameRuntime {
   private applyFullWorld(document: MapDocumentV1, patches: TerrainChunkPatchPayload[]) {
     this.currentDocument = normalizeArenaBudgetMapDocument(document);
     this.runtimeWorld = new MutableVoxelWorld(this.currentDocument);
+    this.resetPropShatterState();
     this.clearTerrain();
     this.applyTerrainPatches(patches);
-    this.rebuildProps(document);
+    this.rebuildWaterfalls(this.currentDocument);
+    this.rebuildProps(this.currentDocument);
     this.rebuildSkyLayers(this.currentDocument);
   }
 
@@ -3111,6 +3366,31 @@ export class WorkerGameRuntime {
     }
     this.terrainMeshes.clear();
     this.terrainChunkStats.clear();
+  }
+
+  private clearWaterfalls() {
+    for (const visual of this.waterfallVisuals.values()) {
+      this.waterfallsGroup.remove(visual.group);
+      disposeWaterfallVisual(visual);
+    }
+
+    this.waterfallVisuals.clear();
+  }
+
+  private rebuildWaterfalls(document: MapDocumentV1) {
+    this.clearWaterfalls();
+
+    for (const feature of document.waterfalls) {
+      const visual = createWaterfallVisual(feature);
+      this.waterfallsGroup.add(visual.group);
+      this.waterfallVisuals.set(feature.id, visual);
+    }
+  }
+
+  private syncWaterfalls(elapsed: number) {
+    for (const visual of this.waterfallVisuals.values()) {
+      syncWaterfallVisual(visual, elapsed, this.camera.position, this.qualityTier);
+    }
   }
 
   private applyTerrainPatches(patches: TerrainChunkPatchPayload[]) {
@@ -3172,6 +3452,24 @@ export class WorkerGameRuntime {
   }
 
   private performEditorActionFromScreenPoint(clientX: number, clientY: number) {
+    if (this.editorState.tool === "erase") {
+      const waterfallHit = this.raycastWaterfallsFromScreenPoint(clientX, clientY)[0];
+      const terrainHit = this.raycastTerrainFromScreenPoint(clientX, clientY)[0];
+
+      if (waterfallHit && (!terrainHit || waterfallHit.distance <= terrainHit.distance)) {
+        const waterfallFeatureId = waterfallHit.object.userData.waterfallFeatureId;
+        if (typeof waterfallFeatureId === "string" && this.editorWorld.removeWaterfall(waterfallFeatureId)) {
+          this.applyFullWorld(this.editorWorld.toDocument(), this.buildFullTerrainPatches(this.editorWorld));
+          this.readyToDisplayPending = true;
+          this.post({
+            type: "status",
+            message: "Removed a waterfall."
+          });
+          return;
+        }
+      }
+    }
+
     const intersections = this.raycastTerrainFromScreenPoint(clientX, clientY);
     const firstHit = intersections[0];
     if (!firstHit) {
@@ -3195,6 +3493,17 @@ export class WorkerGameRuntime {
     return this.raycaster.intersectObjects([...this.terrainMeshes.values()], true);
   }
 
+  private raycastWaterfallsFromScreenPoint(clientX: number, clientY: number) {
+    const x = (clientX / this.viewportWidth) * 2 - 1;
+    const y = -(clientY / this.viewportHeight) * 2 + 1;
+    this.pointerVector.set(x, y);
+    this.raycaster.setFromCamera(this.pointerVector, this.camera);
+    return this.raycaster.intersectObjects(
+      [...this.waterfallVisuals.values()].map((visual) => visual.sheetMesh),
+      true
+    );
+  }
+
   private applyEditorAction(voxel: { x: number; y: number; z: number }, normal: { x: number; y: number; z: number }) {
     if (this.mode !== "editor") {
       return;
@@ -3205,17 +3514,27 @@ export class WorkerGameRuntime {
     let requiresFullWorldSync = false;
 
     if (this.editorState.tool === "erase") {
-      const prop = this.editorWorld.getPropAtVoxel(voxel.x, voxel.y, voxel.z);
-      if (prop) {
-        this.editorWorld.removeProp(prop.id);
+      const waterfall = this.editorWorld.findWaterfallAtOrigin(voxel.x, voxel.y, voxel.z);
+      if (waterfall) {
+        this.editorWorld.removeWaterfall(waterfall.id);
         requiresFullWorldSync = true;
         this.post({
           type: "status",
-          message: "Removed a tree."
+          message: "Removed a waterfall."
         });
       } else {
-        dirtyChunkKeys = [...this.editorWorld.removeVoxel(voxel.x, voxel.y, voxel.z)];
-        touchedTerrain = dirtyChunkKeys.length > 0;
+        const prop = this.editorWorld.getPropAtVoxel(voxel.x, voxel.y, voxel.z);
+        if (prop) {
+          this.editorWorld.removeProp(prop.id);
+          requiresFullWorldSync = true;
+          this.post({
+            type: "status",
+            message: "Removed a tree."
+          });
+        } else {
+          dirtyChunkKeys = [...this.editorWorld.removeVoxel(voxel.x, voxel.y, voxel.z)];
+          touchedTerrain = dirtyChunkKeys.length > 0;
+        }
       }
     } else if (this.editorState.tool === "add") {
       const placement = {
@@ -3245,6 +3564,34 @@ export class WorkerGameRuntime {
         this.post({
           type: "status",
           message: "Placed a tree."
+        });
+      }
+    } else if (this.editorState.tool === "feature") {
+      const placement = {
+        x: voxel.x,
+        y: Math.max(0, voxel.y),
+        z: voxel.z
+      };
+      const existing = this.editorWorld.findWaterfallAtOrigin(placement.x, placement.y, placement.z);
+      if (existing) {
+        this.post({
+          type: "status",
+          message: "A waterfall already starts from that anchor."
+        });
+      } else {
+        this.editorWorld.setWaterfall({
+          x: placement.x,
+          y: placement.y,
+          z: placement.z,
+          direction: this.editorState.featureDirection,
+          width: 4,
+          drop: 4,
+          activationRadius: 20
+        });
+        requiresFullWorldSync = true;
+        this.post({
+          type: "status",
+          message: "Placed a waterfall."
         });
       }
     } else {

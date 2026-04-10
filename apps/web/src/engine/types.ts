@@ -13,7 +13,12 @@ import type {
   SimulationPerformanceDiagnostics,
   TerrainDeltaBatch
 } from "@out-of-bounds/sim";
-import type { BlockKind, MapDocumentV1, MapPropKind } from "@out-of-bounds/map";
+import type {
+  BlockKind,
+  MapDocumentV1,
+  MapPropKind,
+  WaterfallDirection
+} from "@out-of-bounds/map";
 import type { ChickenPaletteName } from "../game/colors";
 import type { QualityTier } from "../game/quality";
 
@@ -27,7 +32,8 @@ export type ShellMode =
 export type ActiveShellMode = "editor" | GameMode;
 export type ActiveMode = ActiveShellMode;
 export type ShellPresentation = "default" | "menu";
-export type EditorTool = "add" | "erase" | "spawn" | "prop";
+export type EditorTool = "add" | "erase" | "spawn" | "prop" | "feature";
+export type EditorFeatureKind = "waterfall";
 export type PointerCaptureFailureReason =
   | "unsupported"
   | "error"
@@ -58,12 +64,16 @@ export interface RuntimeOverlayState {
 
 export const blockKindOptions: BlockKind[] = ["ground", "boundary", "hazard", "water"];
 export const propKindOptions: MapPropKind[] = ["tree-oak", "tree-pine", "tree-autumn"];
+export const featureKindOptions: EditorFeatureKind[] = ["waterfall"];
+export const waterfallDirectionOptions: WaterfallDirection[] = ["north", "south", "east", "west"];
 
 export interface EditorPanelState {
   mapName: string;
   tool: EditorTool;
   blockKind: BlockKind;
   propKind: MapPropKind;
+  featureKind: EditorFeatureKind;
+  featureDirection: WaterfallDirection;
 }
 
 export interface TerrainChunkMaterialGroupPayload {

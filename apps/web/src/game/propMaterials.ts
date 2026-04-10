@@ -38,7 +38,7 @@ const hexToRgb = (hex: string) => {
 };
 
 const createPixelTexture = (
-  rows: string[],
+  rows: readonly string[],
   { flipRowsVertically = false }: { flipRowsVertically?: boolean } = {}
 ) => {
   const data = new Uint8Array(PIXEL_TEXTURE_SIZE * PIXEL_TEXTURE_SIZE * 4);

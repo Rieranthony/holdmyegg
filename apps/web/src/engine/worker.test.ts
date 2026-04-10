@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { describe, expect, it, vi } from "vitest";
+import { createDefaultArenaMap, normalizeArenaBudgetMapDocument } from "@out-of-bounds/map";
 import { chickenPoseVisualDefaults } from "../game/playerVisuals";
 import { WorkerGameRuntime } from "./worker";
 
@@ -155,6 +156,70 @@ describe("WorkerGameRuntime", () => {
     expect(runtimeState.scene.fog).toBe(initialFog);
     expect(resizedGroundGeometry).not.toBe(initialGroundGeometry);
     expect(runtimeState.groundPlane.geometry).toBe(resizedGroundGeometry);
+  });
+
+  it("places and erases authored waterfalls through the editor feature tool", () => {
+    const runtime = new WorkerGameRuntime(createScope());
+    const runtimeState = runtime as unknown as {
+      mode: "editor" | "explore" | "playNpc" | "multiplayer";
+      editorState: {
+        tool: "add" | "erase" | "spawn" | "prop" | "feature";
+        featureDirection: "north" | "south" | "east" | "west";
+      };
+      editorWorld: {
+        toDocument: () => {
+          waterfalls: Array<{
+            id: string;
+            x: number;
+            y: number;
+            z: number;
+            direction: "north" | "south" | "east" | "west";
+            width: number;
+            drop: number;
+            activationRadius: number;
+          }>;
+        };
+      };
+      applyEditorAction: (
+        voxel: { x: number; y: number; z: number },
+        normal: { x: number; y: number; z: number }
+      ) => void;
+    };
+
+    runtimeState.mode = "editor";
+    runtimeState.editorState.tool = "feature";
+    runtimeState.editorState.featureDirection = "west";
+    runtimeState.applyEditorAction(
+      { x: 20, y: 5, z: 20 },
+      { x: 0, y: 1, z: 0 }
+    );
+
+    expect(runtimeState.editorWorld.toDocument().waterfalls).toEqual(
+      expect.arrayContaining([
+        {
+          id: "waterfall-2",
+          x: 20,
+          y: 5,
+          z: 20,
+          direction: "west",
+          width: 4,
+          drop: 4,
+          activationRadius: 20
+        }
+      ])
+    );
+
+    runtimeState.editorState.tool = "erase";
+    runtimeState.applyEditorAction(
+      { x: 20, y: 5, z: 20 },
+      { x: 0, y: 1, z: 0 }
+    );
+
+    expect(
+      runtimeState.editorWorld.toDocument().waterfalls.some(
+        (waterfall) => waterfall.id === "waterfall-2"
+      )
+    ).toBe(false);
   });
 
   it("builds FPS diagnostics from the rolling sample window", () => {
@@ -676,5 +741,102 @@ describe("WorkerGameRuntime", () => {
       [...runtimeState.eggExplosionBurstMeshes.values()].some((resource) => resource.mesh.count > 0)
     ).toBe(true);
     expect(runtimeState.eggExplosionAccentBurstMesh?.mesh.count ?? 0).toBeGreaterThan(0);
+  });
+
+  it("applies prop-only authoritative removals and fills prop shatter meshes", () => {
+    const runtime = new WorkerGameRuntime(createScope());
+    const worldDocument = normalizeArenaBudgetMapDocument(createDefaultArenaMap());
+    const prop = worldDocument.props[0]!;
+    worldDocument.props = [prop];
+
+    const runtimeState = runtime as unknown as {
+      mode: "editor" | "explore" | "playNpc" | "multiplayer";
+      currentDocument: typeof worldDocument;
+      handleExternalMessage: (message: {
+        type: "frame";
+        frame: {
+          authoritative?: {
+            terrainDeltaBatch: {
+              tick: number;
+              terrainRevision: number;
+              changes: [];
+              propChanges: Array<{
+                id: string;
+                kind: typeof prop.kind;
+                x: number;
+                y: number;
+                z: number;
+                operation: "remove";
+              }>;
+            } | null;
+          };
+          tick: number;
+          time: number;
+          mode: "multiplayer";
+          localPlayerId: null;
+          hudState: null;
+          focusState: null;
+          players: [];
+          eggs: [];
+          eggScatterDebris: [];
+          voxelBursts: [];
+          skyDrops: [];
+          fallingClusters: [];
+        };
+      }) => void;
+      applyFullWorld: (
+        document: typeof worldDocument,
+        patches: Array<unknown>
+      ) => void;
+      propsGroup: { children: Array<unknown> };
+      syncPropShatterBursts: () => void;
+      propShatterBurstMeshes: Map<string, { mesh: { count: number } }>;
+    };
+
+    runtimeState.mode = "multiplayer";
+    runtimeState.applyFullWorld(worldDocument, []);
+    expect(runtimeState.propsGroup.children.length).toBeGreaterThan(0);
+
+    runtimeState.handleExternalMessage({
+      type: "frame",
+      frame: {
+        tick: 2,
+        time: 0.1,
+        mode: "multiplayer",
+        localPlayerId: null,
+        hudState: null,
+        focusState: null,
+        authoritative: {
+          terrainDeltaBatch: {
+            tick: 2,
+            terrainRevision: 1,
+            changes: [],
+            propChanges: [
+              {
+                id: prop.id,
+                kind: prop.kind,
+                x: prop.x,
+                y: prop.y,
+                z: prop.z,
+                operation: "remove"
+              }
+            ]
+          }
+        },
+        players: [],
+        eggs: [],
+        eggScatterDebris: [],
+        voxelBursts: [],
+        skyDrops: [],
+        fallingClusters: []
+      }
+    });
+    runtimeState.syncPropShatterBursts();
+
+    expect(runtimeState.currentDocument.props.some((entry) => entry.id === prop.id)).toBe(false);
+    expect(runtimeState.propsGroup.children).toHaveLength(0);
+    expect(
+      [...runtimeState.propShatterBurstMeshes.values()].some((resource) => resource.mesh.count > 0)
+    ).toBe(true);
   });
 });

@@ -135,6 +135,7 @@ export const cloneMapDocument = (document: MapDocumentV1): MapDocumentV1 => ({
   boundary: { ...document.boundary },
   spawns: document.spawns.map((spawn) => ({ ...spawn })),
   props: document.props.map((prop) => ({ ...prop })),
+  waterfalls: document.waterfalls.map((waterfall) => ({ ...waterfall })),
   voxels: document.voxels.map((voxel) => ({ ...voxel }))
 });
 
