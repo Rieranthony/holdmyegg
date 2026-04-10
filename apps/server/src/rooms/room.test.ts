@@ -7,6 +7,7 @@ import {
   encodeRuntimeInputPacket,
   packRuntimeInputCommand
 } from "@out-of-bounds/netcode";
+import { LOCAL_DEV_SERVER_URL } from "../lib/env";
 import { createWarmPlaylistMaps } from "../lib/maps";
 import { MemoryPlayerRepository, type CompletedMatchRecord } from "../lib/playerRepository";
 import { Room } from "./room";
@@ -69,7 +70,7 @@ const createRoom = (playerRepository = new MemoryPlayerRepository()) =>
       capacity: 24,
       warm: true,
       playlist: [createWarmPlaylistMaps()[0]!],
-      publicServerUrl: "http://localhost:3000"
+      publicServerUrl: LOCAL_DEV_SERVER_URL
     },
     playerRepository
   );
@@ -86,7 +87,7 @@ const createRoomWithCapacity = (
       capacity,
       warm: true,
       playlist: [createWarmPlaylistMaps()[0]!],
-      publicServerUrl: "http://localhost:3000"
+      publicServerUrl: LOCAL_DEV_SERVER_URL
     },
     playerRepository
   );

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { birdPresets, getSkyBirdPose } from "./birds";
+import { birdPresets, buildSkyBirdFlock, getSkyBirdPose } from "./birds";
 
 describe("birds", () => {
   it("keeps decorative bird poses within a stable orbit above the arena", () => {
@@ -22,5 +22,24 @@ describe("birds", () => {
     const after = getSkyBirdPose(birdPresets[1]!, 6, worldSize);
 
     expect(before.yaw).not.toBe(after.yaw);
+  });
+
+  it("builds a deterministic seeded flock", () => {
+    const first = buildSkyBirdFlock({
+      seed: "80:32:80:medium:17",
+      count: 3
+    });
+    const second = buildSkyBirdFlock({
+      seed: "80:32:80:medium:17",
+      count: 3
+    });
+    const third = buildSkyBirdFlock({
+      seed: "80:32:80:medium:18",
+      count: 3
+    });
+
+    expect(first).toEqual(second);
+    expect(first).not.toEqual(third);
+    expect(first).toHaveLength(3);
   });
 });

@@ -15,6 +15,7 @@ import type {
 } from "@out-of-bounds/sim";
 import type { BlockKind, MapDocumentV1, MapPropKind } from "@out-of-bounds/map";
 import type { ChickenPaletteName } from "../game/colors";
+import type { QualityTier } from "../game/quality";
 
 export type ShellMode =
   | "boot"
@@ -120,10 +121,23 @@ export interface GameDiagnostics {
   terrainRevision: number;
   dirtyChunkCount: number;
   runtime: SimulationPerformanceDiagnostics;
-  render?: {
-    sunShadowsEnabled: boolean;
-    shadowMapRefreshCount: number;
-  };
+  render?: GameRenderDiagnostics;
+}
+
+export interface GameRenderDiagnostics {
+  fps: number;
+  p95FrameMs: number;
+  renderCalls: number;
+  renderTriangles: number;
+  geometries: number;
+  textures: number;
+  terrainChunkCount: number;
+  terrainDrawCalls: number;
+  terrainTriangles: number;
+  qualityTier: QualityTier;
+  targetFps: number;
+  sunShadowsEnabled: boolean;
+  shadowMapRefreshCount: number;
 }
 
 export interface GameOverlayUpdate {

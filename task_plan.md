@@ -1,26 +1,25 @@
-# Multiplayer Implementation Plan
+# Worker-Only Three.js Migration Plan
 
 ## Goal
-- Ship the planned multiplayer/auth/persistence foundation end-to-end in this repo without regressing the existing solo/editor flows.
+- Move all Three.js rendering and render-loop computation into a background worker that owns an `OffscreenCanvas`, while React remains a canvas shell plus DOM UI only.
 
 ## Phases
-- [x] Add shared multiplayer/server/db packages and server foundation.
-- [x] Wire the web client to Better Auth sessions and persistent player profiles.
-- [x] Add multiplayer transport support that preserves the existing `GameClient` rendering contract.
-- [x] Add lobby, waiting-room, roster, countdown, and chat UI.
-- [x] Verify builds and targeted tests; fix integration regressions.
+- [ ] Replace the current planning files and document the migration scope.
+- [ ] Refactor engine protocols and the `GameClient` / `GameHost` seam into a thin worker controller.
+- [ ] Move renderer ownership, diagnostics, camera, terrain, and multiplayer visual state into the worker runtime.
+- [ ] Remove the legacy React Three.js renderer stack and its obsolete tests.
+- [ ] Verify web tests and workspace checks, then fix regressions.
 
 ## Constraints
-- Keep the runtime hot path allocation-light.
-- Preserve the current worker-based solo mode.
-- Use FaceHash as the v1 avatar source.
-- Keep waiting-room state explicit and easy to understand.
+- No React-side Three.js rendering path or main-thread renderer fallback.
+- Keep pointer-lock, HUD, status, pause overlays, and multiplayer room UI in the DOM shell.
+- Preserve worker-driven local simulation and expand it to own rendering too.
 
 ## Open Risks
-- Websocket-backed multiplayer needs to fit the existing worker-style rendering pipeline cleanly.
-- Better Auth client integration has to avoid creating a second, conflicting identity source in the browser.
+- The current `GameClient` mixes renderer logic with host event wiring, so the split has to preserve shell callbacks without leaving visual work behind.
+- Multiplayer currently enters through a main-thread bridge and needs to be rerouted into the worker without regressing room sync.
+- Unsupported browsers must fail clearly instead of silently falling back to a main-thread renderer.
 
 ## Validation
 - `bun run test:web`
-- `bun run test:server`
 - `bun run check`

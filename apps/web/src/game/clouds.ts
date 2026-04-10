@@ -14,6 +14,7 @@ export interface VoxelCloudPreset {
   baseX: number;
   driftSpeed: number;
   bobPhase: number;
+  scale: number;
   cubes: readonly VoxelCloudCube[];
 }
 
@@ -89,6 +90,37 @@ const cloudShapes = {
     "swwwwws",
     ".swwws.",
     "..sws.."
+  ]),
+  chunky: buildVoxelCloud([
+    "..swws..",
+    ".swwwws.",
+    "swwwwwws",
+    "wwwwwwww",
+    ".swwwws.",
+    "..swws.."
+  ]),
+  shelf: buildVoxelCloud([
+    "...swws...",
+    "..swwwws..",
+    ".swwwwwws.",
+    "swwwwwwwws",
+    "..sswwss.."
+  ]),
+  anvil: buildVoxelCloud([
+    "...sww...",
+    "..swwww..",
+    ".swwwwww.",
+    "swwwwwwww",
+    "..sswws..",
+    "...sws..."
+  ]),
+  tower: buildVoxelCloud([
+    "...sw...",
+    "..swww..",
+    "..swww..",
+    ".swwwww.",
+    "..swww..",
+    "...sw..."
   ])
 } as const;
 
@@ -100,6 +132,7 @@ export const cloudPresets: readonly VoxelCloudPreset[] = [
     z: 14,
     driftSpeed: 0.72,
     bobPhase: 0.2,
+    scale: 1,
     cubes: cloudShapes.broad
   },
   {
@@ -109,6 +142,7 @@ export const cloudPresets: readonly VoxelCloudPreset[] = [
     z: 27,
     driftSpeed: 0.61,
     bobPhase: 1.3,
+    scale: 0.9,
     cubes: cloudShapes.wispy
   },
   {
@@ -118,6 +152,7 @@ export const cloudPresets: readonly VoxelCloudPreset[] = [
     z: 57,
     driftSpeed: 0.61,
     bobPhase: 2.1,
+    scale: 1.08,
     cubes: cloudShapes.tall
   },
   {
@@ -127,7 +162,8 @@ export const cloudPresets: readonly VoxelCloudPreset[] = [
     z: 18,
     driftSpeed: 0.46,
     bobPhase: 0.9,
-    cubes: cloudShapes.broad
+    scale: 1.18,
+    cubes: cloudShapes.chunky
   },
   {
     id: "cloud-5",
@@ -136,7 +172,8 @@ export const cloudPresets: readonly VoxelCloudPreset[] = [
     z: 36,
     driftSpeed: 0.42,
     bobPhase: 1.8,
-    cubes: cloudShapes.wispy
+    scale: 1.12,
+    cubes: cloudShapes.shelf
   },
   {
     id: "cloud-6",
@@ -145,7 +182,8 @@ export const cloudPresets: readonly VoxelCloudPreset[] = [
     z: 68,
     driftSpeed: 0.38,
     bobPhase: 2.5,
-    cubes: cloudShapes.tall
+    scale: 0.84,
+    cubes: cloudShapes.tower
   },
   {
     id: "cloud-7",
@@ -154,6 +192,7 @@ export const cloudPresets: readonly VoxelCloudPreset[] = [
     z: 22,
     driftSpeed: 0.28,
     bobPhase: 0.55,
+    scale: 0.78,
     cubes: cloudShapes.wispy
   },
   {
@@ -163,7 +202,8 @@ export const cloudPresets: readonly VoxelCloudPreset[] = [
     z: 52,
     driftSpeed: 0.24,
     bobPhase: 1.95,
-    cubes: cloudShapes.broad
+    scale: 1.3,
+    cubes: cloudShapes.anvil
   },
   {
     id: "cloud-9",
@@ -172,7 +212,38 @@ export const cloudPresets: readonly VoxelCloudPreset[] = [
     z: 74,
     driftSpeed: 0.22,
     bobPhase: 2.85,
+    scale: 1.16,
     cubes: cloudShapes.wispy
+  },
+  {
+    id: "cloud-10",
+    baseX: 132,
+    y: 26.2,
+    z: 48,
+    driftSpeed: 0.34,
+    bobPhase: 0.4,
+    scale: 0.96,
+    cubes: cloudShapes.chunky
+  },
+  {
+    id: "cloud-11",
+    baseX: -62,
+    y: 31.8,
+    z: 62,
+    driftSpeed: 0.26,
+    bobPhase: 1.22,
+    scale: 1.4,
+    cubes: cloudShapes.shelf
+  },
+  {
+    id: "cloud-12",
+    baseX: 148,
+    y: 37.4,
+    z: 12,
+    driftSpeed: 0.19,
+    bobPhase: 2.42,
+    scale: 1.02,
+    cubes: cloudShapes.tall
   }
 ] as const;
 

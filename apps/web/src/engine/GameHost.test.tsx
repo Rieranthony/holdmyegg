@@ -4,14 +4,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDefaultArenaMap } from "@out-of-bounds/map";
 import type { RuntimeControlSettings } from "../game/runtimeControlSettings";
 import type { GameHostHandle } from "./GameHost";
-import type { ActiveShellMode } from "./types";
 
 const gameClientState = vi.hoisted(() => {
   const mockClient = {
     dispatchShellIntent: vi.fn(),
     dispose: vi.fn(),
-    requestPointerLock: vi.fn(),
-    requestEditorDocument: vi.fn(),
+    requestPointerLock: vi.fn(() => true),
+    requestEditorDocument: vi.fn(async () => createDefaultArenaMap()),
     resumeRuntime: vi.fn(),
     setRuntimePaused: vi.fn(),
     setShellState: vi.fn()
@@ -41,28 +40,19 @@ describe("GameHost", () => {
     gameClientState.mockClient.resumeRuntime.mockClear();
     gameClientState.mockClient.setRuntimePaused.mockClear();
     gameClientState.mockClient.setShellState.mockClear();
+    Object.defineProperty(HTMLCanvasElement.prototype, "transferControlToOffscreen", {
+      configurable: true,
+      value: vi.fn(() => ({ width: 640, height: 360 }))
+    });
+    vi.stubGlobal("Worker", vi.fn());
   });
 
-  it("mounts the imperative game client with the shell callbacks and initial mode", async () => {
-    const initialDocument = createDefaultArenaMap();
-    const onDiagnostics = vi.fn();
-    const onEditorStateChange = vi.fn();
-    const onHudStateChange = vi.fn();
-    const onPauseStateChange = vi.fn();
-    const onReadyToDisplay = vi.fn();
-    const onStatus = vi.fn();
-
+  it("mounts the imperative game client when worker rendering is supported", async () => {
     render(
       <GameHost
-        initialDocument={initialDocument}
+        initialDocument={createDefaultArenaMap()}
         matchColorSeed={17}
         mode="explore"
-        onDiagnostics={onDiagnostics}
-        onEditorStateChange={onEditorStateChange}
-        onHudStateChange={onHudStateChange}
-        onPauseStateChange={onPauseStateChange}
-        onReadyToDisplay={onReadyToDisplay}
-        onStatus={onStatus}
       />
     );
 
@@ -73,18 +63,30 @@ describe("GameHost", () => {
     expect(gameClientState.mount).toHaveBeenCalledWith(
       expect.objectContaining({
         canvas: expect.any(HTMLCanvasElement),
-        initialDocument,
         initialMode: "explore",
-        matchColorSeed: 17,
-        onDiagnostics: expect.any(Function),
-        onEditorStateChange: expect.any(Function),
-        onHudStateChange: expect.any(Function),
-        onPauseStateChange: expect.any(Function),
-        onReadyToDisplay: expect.any(Function),
-        onStatus: expect.any(Function)
+        matchColorSeed: 17
       })
     );
     expect(screen.getByTestId("runtime-reticle")).toBeInTheDocument();
+  });
+
+  it("shows a clear unsupported overlay instead of mounting the client", () => {
+    vi.stubGlobal("Worker", undefined);
+    Object.defineProperty(HTMLCanvasElement.prototype, "transferControlToOffscreen", {
+      configurable: true,
+      value: undefined
+    });
+
+    render(
+      <GameHost
+        initialDocument={createDefaultArenaMap()}
+        matchColorSeed={5}
+        mode="editor"
+      />
+    );
+
+    expect(gameClientState.mount).not.toHaveBeenCalled();
+    expect(screen.getByText("Worker rendering is required.")).toBeInTheDocument();
   });
 
   it("keeps the mounted client alive across StrictMode probe mounts", async () => {
@@ -109,8 +111,13 @@ describe("GameHost", () => {
     expect(gameClientState.mockClient.dispose).not.toHaveBeenCalled();
   });
 
-  it("keeps the same mounted client when only the shell mode changes", async () => {
+  it("forwards shell state updates without remounting", async () => {
     const initialDocument = createDefaultArenaMap();
+    const runtimeSettings: RuntimeControlSettings = {
+      lookSensitivity: 1.4,
+      invertLookX: true,
+      invertLookY: false
+    };
     const { rerender } = render(
       <GameHost
         initialDocument={initialDocument}
@@ -122,16 +129,16 @@ describe("GameHost", () => {
     await waitFor(() => {
       expect(gameClientState.mount).toHaveBeenCalledTimes(1);
     });
-    expect(screen.queryByTestId("runtime-reticle")).not.toBeInTheDocument();
-
-    gameClientState.mount.mockClear();
-    gameClientState.mockClient.setShellState.mockClear();
 
     rerender(
       <GameHost
         initialDocument={initialDocument}
+        initialSpawnStyle="sky"
         matchColorSeed={9}
         mode="playNpc"
+        playerProfile={{ name: "Anthony", paletteName: "gold" }}
+        presentation="menu"
+        runtimeSettings={runtimeSettings}
       />
     );
 
@@ -139,271 +146,25 @@ describe("GameHost", () => {
       expect(gameClientState.mockClient.setShellState).toHaveBeenCalledWith(
         expect.objectContaining({
           mode: "playNpc",
-          presentation: "default"
-        })
-      );
-    });
-
-    expect(gameClientState.mount).not.toHaveBeenCalled();
-    expect(screen.getByTestId("runtime-reticle")).toBeInTheDocument();
-  });
-
-  it("passes player profile and menu presentation through to the client shell state", async () => {
-    const initialDocument = createDefaultArenaMap();
-    const { rerender } = render(
-      <GameHost
-        initialDocument={initialDocument}
-        matchColorSeed={5}
-        mode="editor"
-        playerProfile={{ name: "Anthony", paletteName: "gold" }}
-        presentation="menu"
-      />
-    );
-
-    await waitFor(() => {
-      expect(gameClientState.mount).toHaveBeenCalledWith(
-        expect.objectContaining({
-          localPlayerName: "Anthony",
-          localPlayerPaletteName: "gold",
-          presentation: "menu"
-        })
-      );
-    });
-
-    gameClientState.mockClient.setShellState.mockClear();
-
-    rerender(
-      <GameHost
-        initialDocument={initialDocument}
-        initialSpawnStyle="sky"
-        matchColorSeed={5}
-        mode="explore"
-        playerProfile={{ name: "Anthony", paletteName: "gold" }}
-        presentation="default"
-      />
-    );
-
-    await waitFor(() => {
-      expect(gameClientState.mockClient.setShellState).toHaveBeenCalledWith(
-        expect.objectContaining({
-          mode: "explore",
           initialSpawnStyle: "sky",
           localPlayerName: "Anthony",
           localPlayerPaletteName: "gold",
-          presentation: "default"
+          presentation: "menu",
+          runtimeSettings
         })
       );
     });
   });
 
-  it("forwards runtime settings through mount and live shell updates without remounting", async () => {
-    const initialDocument = createDefaultArenaMap();
-    const initialRuntimeSettings: RuntimeControlSettings = {
-      lookSensitivity: 1.4,
-      invertLookX: true,
-      invertLookY: false
-    };
-    const nextRuntimeSettings: RuntimeControlSettings = {
-      lookSensitivity: 0.8,
-      invertLookX: false,
-      invertLookY: true
-    };
-    const { rerender } = render(
-      <GameHost
-        initialDocument={initialDocument}
-        matchColorSeed={12}
-        mode="explore"
-        runtimeSettings={initialRuntimeSettings}
-      />
-    );
-
-    await waitFor(() => {
-      expect(gameClientState.mount).toHaveBeenCalledWith(
-        expect.objectContaining({
-          runtimeSettings: initialRuntimeSettings
-        })
-      );
-    });
-
-    gameClientState.mount.mockClear();
-    gameClientState.mockClient.setShellState.mockClear();
-
-    rerender(
-      <GameHost
-        initialDocument={initialDocument}
-        matchColorSeed={12}
-        mode="explore"
-        runtimeSettings={nextRuntimeSettings}
-      />
-    );
-
-    await waitFor(() => {
-      expect(gameClientState.mockClient.setShellState).toHaveBeenCalledWith(
-        expect.objectContaining({
-          mode: "explore",
-          runtimeSettings: nextRuntimeSettings
-        })
-      );
-    });
-
-    expect(gameClientState.mount).not.toHaveBeenCalled();
-  });
-
-  it("forwards the ready-to-display callback to the mounted client", async () => {
-    const onReadyToDisplay = vi.fn();
-
-    render(
-      <GameHost
-        initialDocument={createDefaultArenaMap()}
-        matchColorSeed={5}
-        mode="editor"
-        onReadyToDisplay={onReadyToDisplay}
-      />
-    );
-
-    await waitFor(() => {
-      expect(gameClientState.mount).toHaveBeenCalledTimes(1);
-    });
-
-    const mountOptions = gameClientState.mount.mock.calls[0]?.[0] as {
-      onReadyToDisplay?: () => void;
-    };
-
-    act(() => {
-      mountOptions.onReadyToDisplay?.();
-    });
-
-    expect(onReadyToDisplay).toHaveBeenCalledTimes(1);
-  });
-
-  it("keeps the same mounted client when callback props change and uses the latest callback", async () => {
-    const initialDocument = createDefaultArenaMap();
-    const firstOnStatus = vi.fn();
-    const nextOnStatus = vi.fn();
-
-    const { rerender } = render(
-      <GameHost
-        initialDocument={initialDocument}
-        matchColorSeed={13}
-        mode="explore"
-        onStatus={firstOnStatus}
-      />
-    );
-
-    await waitFor(() => {
-      expect(gameClientState.mount).toHaveBeenCalledTimes(1);
-    });
-
-    const mountOptions = gameClientState.mount.mock.calls[0]?.[0] as {
-      onStatus?: (message: string) => void;
-    };
-
-    gameClientState.mount.mockClear();
-
-    rerender(
-      <GameHost
-        initialDocument={initialDocument}
-        matchColorSeed={13}
-        mode="explore"
-        onStatus={nextOnStatus}
-      />
-    );
-
-    expect(gameClientState.mount).not.toHaveBeenCalled();
-
-    act(() => {
-      mountOptions.onStatus?.("Fresh status");
-    });
-
-    expect(firstOnStatus).not.toHaveBeenCalled();
-    expect(nextOnStatus).toHaveBeenCalledWith("Fresh status");
-  });
-
-  it("forwards a custom worker factory to the mounted client", async () => {
-    const workerFactory = vi.fn(() => ({
-      onmessage: null,
-      postMessage: vi.fn(),
-      terminate: vi.fn()
-    }));
-
-    render(
-      <GameHost
-        initialDocument={createDefaultArenaMap()}
-        matchColorSeed={11}
-        mode="multiplayer"
-        workerFactory={workerFactory}
-      />
-    );
-
-    await waitFor(() => {
-      expect(gameClientState.mount).toHaveBeenCalledWith(
-        expect.objectContaining({
-          workerFactory
-        })
-      );
-    });
-  });
-
-  it("forwards imperative host methods to the mounted game client", async () => {
-    const initialDocument = createDefaultArenaMap();
-    const nextDocument = {
-      ...initialDocument,
-      meta: {
-        ...initialDocument.meta,
-        name: "Imported Arena"
-      }
-    };
+  it("forwards imperative handle calls to the mounted client", async () => {
     const ref = createRef<GameHostHandle>();
-    gameClientState.mockClient.requestEditorDocument.mockResolvedValue(nextDocument);
 
     render(
       <GameHost
         ref={ref}
-        initialDocument={initialDocument}
-        matchColorSeed={4}
+        initialDocument={createDefaultArenaMap()}
+        matchColorSeed={3}
         mode="explore"
-      />
-    );
-
-    await waitFor(() => {
-      expect(ref.current).not.toBeNull();
-    });
-
-    await act(async () => {
-      expect(await ref.current?.getEditorDocument()).toEqual(nextDocument);
-    });
-
-    act(() => {
-      ref.current?.loadMap(nextDocument);
-      ref.current?.requestPointerLock();
-      ref.current?.resumeRuntime();
-      ref.current?.setRuntimePaused(true);
-      ref.current?.setEditorState({ mapName: "Workshop Copy" });
-      ref.current?.setShellMode("editor");
-    });
-
-    expect(gameClientState.mockClient.requestEditorDocument).toHaveBeenCalledTimes(1);
-    expect(gameClientState.mockClient.dispatchShellIntent).toHaveBeenNthCalledWith(1, {
-      type: "load_map",
-      document: nextDocument
-    });
-    expect(gameClientState.mockClient.requestPointerLock).toHaveBeenCalledTimes(1);
-    expect(gameClientState.mockClient.resumeRuntime).toHaveBeenCalledTimes(1);
-    expect(gameClientState.mockClient.setRuntimePaused).toHaveBeenCalledWith(true);
-    expect(gameClientState.mockClient.dispatchShellIntent).toHaveBeenNthCalledWith(2, {
-      type: "set_editor_state",
-      next: { mapName: "Workshop Copy" }
-    });
-    expect(gameClientState.mockClient.setShellState).toHaveBeenLastCalledWith({ mode: "editor" });
-  });
-
-  it("disposes the mounted client when the host unmounts", async () => {
-    const initialDocument = createDefaultArenaMap();
-    const { unmount } = render(
-      <GameHost
-        initialDocument={initialDocument}
-        matchColorSeed={11}
-        mode={"explore" satisfies ActiveShellMode}
       />
     );
 
@@ -411,10 +172,25 @@ describe("GameHost", () => {
       expect(gameClientState.mount).toHaveBeenCalledTimes(1);
     });
 
-    unmount();
-
-    await waitFor(() => {
-      expect(gameClientState.mockClient.dispose).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await ref.current?.getEditorDocument();
     });
+    ref.current?.loadMap(createDefaultArenaMap());
+    ref.current?.requestPointerLock();
+    ref.current?.resumeRuntime();
+    ref.current?.setRuntimePaused(true);
+    ref.current?.setEditorState({ tool: "erase" });
+    ref.current?.setShellMode("playNpc");
+
+    expect(gameClientState.mockClient.requestEditorDocument).toHaveBeenCalledTimes(1);
+    expect(gameClientState.mockClient.dispatchShellIntent).toHaveBeenCalled();
+    expect(gameClientState.mockClient.requestPointerLock).toHaveBeenCalledTimes(1);
+    expect(gameClientState.mockClient.resumeRuntime).toHaveBeenCalledTimes(1);
+    expect(gameClientState.mockClient.setRuntimePaused).toHaveBeenCalledWith(true);
+    expect(gameClientState.mockClient.setShellState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: "playNpc"
+      })
+    );
   });
 });

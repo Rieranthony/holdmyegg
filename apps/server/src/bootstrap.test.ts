@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ServerEnv } from "./lib/env";
+import { LOCAL_DEV_SERVER_PORT, LOCAL_DEV_SERVER_URL } from "./lib/env";
 
 vi.mock("./runtime", () => ({
   createRuntimeApp: vi.fn(),
@@ -9,11 +10,11 @@ vi.mock("./runtime", () => ({
 import { bootstrapServerApp } from "./bootstrap";
 
 const env: ServerEnv = {
-  port: 3000,
+  port: LOCAL_DEV_SERVER_PORT,
   databaseUrl: "postgres://postgres:postgres@localhost:55432/out_of_bounds",
   betterAuthSecret: "secret",
-  betterAuthUrl: "http://localhost:3000",
-  publicServerUrl: "http://localhost:3000",
+  betterAuthUrl: LOCAL_DEV_SERVER_URL,
+  publicServerUrl: LOCAL_DEV_SERVER_URL,
   webOrigin: "http://localhost:5173",
   region: "local-us"
 };

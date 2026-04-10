@@ -43,6 +43,7 @@ export interface VoxelBurstParticleState {
   rotationZ: number;
   scale: number;
   opacity: number;
+  bucket: VoxelBurstParticleBucket;
 }
 
 export interface VoxelBurstShockwaveState {
@@ -51,21 +52,31 @@ export interface VoxelBurstShockwaveState {
   opacity: number;
 }
 
+export type VoxelBurstParticleBucket = "terrain" | "accent";
+
 export const voxelBurstParticleCountByStyle = {
-  eggExplosion: 132,
+  eggExplosion: 288,
   harvest: 7,
-  superBoomExplosion: 228
+  superBoomExplosion: 432
 } as const;
 
 export const getVoxelBurstParticleCount = (burst: RuntimeVoxelBurstState) =>
   voxelBurstParticleCountByStyle[burst.style];
 
 export const getVoxelBurstMaterialProfile = (burst: RuntimeVoxelBurstState): BlockRenderProfile | null => {
-  if (burst.style !== "harvest" || !burst.kind) {
-    return null;
+  if (burst.style === "harvest") {
+    if (!burst.kind) {
+      return null;
+    }
+
+    return getBlockRenderProfile(burst.kind, Math.floor(burst.position.y));
   }
 
-  return getBlockRenderProfile(burst.kind, Math.floor(burst.position.y));
+  if (burst.style === "eggExplosion" || burst.style === "superBoomExplosion") {
+    return getBlockRenderProfile("ground", Math.floor(burst.position.y));
+  }
+
+  return null;
 };
 
 export const getEggScatterDebrisVisualState = (
@@ -104,17 +115,25 @@ export const getVoxelBurstParticleState = (
   const spinZ = progress * Math.PI * (1.1 + getNoise(seed, 7) * 2.4);
 
   if (burst.style === "eggExplosion") {
-    const burstBand = particleIndex % 4;
-    const bandDistanceStart = [0.08, 0.22, 0.42, 0.62][burstBand]!;
-    const bandDistanceEnd = [1.34, 1.86, 2.36, 2.92][burstBand]!;
-    const bandLift = [1.18, 1.54, 1.92, 1.08][burstBand]!;
-    const bandScaleStart = [0.42, 0.34, 0.26, 0.19][burstBand]!;
-    const distance = lerp(bandDistanceStart, bandDistanceEnd, progress) * radialJitter;
+    const burstBand = particleIndex % 6;
+    const bandDistanceStart = [0.02, 0.08, 0.2, 0.16, 0.12, 0.04][burstBand]!;
+    const bandDistanceEnd = [0.86, 1.78, 2.38, 3.24, 2.18, 1.28][burstBand]!;
+    const bandLift = [0.42, 2.18, 1.08, 0.18, 0.62, 0.88][burstBand]!;
+    const bandGravity = [0.42, 0.62, 0.74, 0.2, 0.92, 0.28][burstBand]!;
+    const bandScaleStart = [0.28, 0.22, 0.18, 0.12, 0.1, 0.08][burstBand]!;
+    const bandScaleEnd = [0.04, 0.05, 0.045, 0.03, 0.03, 0.02][burstBand]!;
+    const bandBucket: VoxelBurstParticleBucket =
+      burstBand === 0 || burstBand === 5 ? "accent" : "terrain";
+    const distance =
+      lerp(bandDistanceStart, bandDistanceEnd, progress) * (0.72 + radialJitter * 0.74);
+    const flutter =
+      Math.sin(progress * Math.PI * (2.2 + burstBand * 0.2) + getNoise(seed, 8) * Math.PI) *
+      (burstBand === 3 ? 0.035 : 0.08);
     const lift =
-      Math.sin(progress * Math.PI) * bandLift * liftJitter -
-      progress * progress * gravityJitter * 0.84 +
-      Math.sin(progress * Math.PI * (2.5 + burstBand * 0.22)) * 0.12;
-    const corePulse = 1 + Math.sin(progress * Math.PI) * 0.28;
+      Math.sin(progress * Math.PI) * bandLift * (0.62 + liftJitter * 0.44) -
+      progress * progress * gravityJitter * bandGravity +
+      flutter;
+    const corePulse = 1 + Math.sin(progress * Math.PI) * (bandBucket === "accent" ? 0.36 : 0.22);
     return {
       position: {
         x: burst.position.x + Math.cos(yaw) * distance,
@@ -124,23 +143,35 @@ export const getVoxelBurstParticleState = (
       rotationX: spinX * 1.34,
       rotationY: spinY * 1.48,
       rotationZ: spinZ * 1.32,
-      scale: lerp(bandScaleStart, 0.08, progress) * corePulse,
-      opacity: clamp(1.12 - Math.pow(progress, 1.62), 0, 1)
+      scale: lerp(bandScaleStart, bandScaleEnd, progress) * corePulse,
+      opacity: clamp(
+        (bandBucket === "accent" ? 1.18 : 1.08) - Math.pow(progress, bandBucket === "accent" ? 1.36 : 1.54),
+        0,
+        1
+      ),
+      bucket: bandBucket
     };
   }
 
   if (burst.style === "superBoomExplosion") {
-    const burstBand = particleIndex % 6;
-    const bandDistanceStart = [0.18, 0.42, 0.72, 1.02, 1.34, 1.7][burstBand]!;
-    const bandDistanceEnd = [2.4, 3.1, 4.05, 4.95, 5.9, 6.75][burstBand]!;
-    const bandLift = [1.72, 2.14, 2.56, 2.94, 2.08, 1.46][burstBand]!;
-    const bandScaleStart = [0.62, 0.5, 0.4, 0.32, 0.24, 0.18][burstBand]!;
-    const distance = lerp(bandDistanceStart, bandDistanceEnd, progress) * (0.94 + radialJitter * 0.72);
+    const burstBand = particleIndex % 8;
+    const bandDistanceStart = [0.08, 0.18, 0.42, 0.78, 1.14, 0.34, 0.12, 0.56][burstBand]!;
+    const bandDistanceEnd = [1.68, 2.74, 4.12, 5.64, 7.34, 4.82, 2.9, 6.4][burstBand]!;
+    const bandLift = [0.66, 2.96, 1.82, 1.22, 0.22, 0.84, 1.1, 1.54][burstBand]!;
+    const bandGravity = [0.48, 0.7, 0.96, 1.08, 0.24, 1.16, 0.32, 0.88][burstBand]!;
+    const bandScaleStart = [0.34, 0.28, 0.24, 0.2, 0.14, 0.12, 0.1, 0.16][burstBand]!;
+    const bandScaleEnd = [0.08, 0.07, 0.06, 0.05, 0.035, 0.03, 0.03, 0.04][burstBand]!;
+    const bandBucket: VoxelBurstParticleBucket =
+      burstBand === 0 || burstBand === 6 || burstBand === 7 ? "accent" : "terrain";
+    const distance = lerp(bandDistanceStart, bandDistanceEnd, progress) * (0.88 + radialJitter * 0.86);
+    const flutter =
+      Math.sin(progress * Math.PI * (2.5 + burstBand * 0.16) + getNoise(seed, 8) * Math.PI * 2) *
+      (burstBand === 4 ? 0.06 : 0.12);
     const lift =
-      Math.sin(progress * Math.PI) * bandLift * liftJitter -
-      progress * progress * gravityJitter * 1.18 +
-      Math.sin(progress * Math.PI * (2.9 + burstBand * 0.18)) * 0.2;
-    const corePulse = 1 + Math.sin(progress * Math.PI) * 0.36;
+      Math.sin(progress * Math.PI) * bandLift * (0.68 + liftJitter * 0.48) -
+      progress * progress * gravityJitter * bandGravity +
+      flutter;
+    const corePulse = 1 + Math.sin(progress * Math.PI) * (bandBucket === "accent" ? 0.46 : 0.28);
     return {
       position: {
         x: burst.position.x + Math.cos(yaw) * distance,
@@ -150,8 +181,13 @@ export const getVoxelBurstParticleState = (
       rotationX: spinX * 1.46,
       rotationY: spinY * 1.6,
       rotationZ: spinZ * 1.42,
-      scale: lerp(bandScaleStart, 0.11, progress) * corePulse,
-      opacity: clamp(1.2 - Math.pow(progress, 1.48), 0, 1)
+      scale: lerp(bandScaleStart, bandScaleEnd, progress) * corePulse,
+      opacity: clamp(
+        (bandBucket === "accent" ? 1.22 : 1.14) - Math.pow(progress, bandBucket === "accent" ? 1.28 : 1.42),
+        0,
+        1
+      ),
+      bucket: bandBucket
     };
   }
 
@@ -167,7 +203,8 @@ export const getVoxelBurstParticleState = (
     rotationY: spinY * 0.82,
     rotationZ: spinZ * 0.9,
     scale: lerp(0.16, 0.035, progress),
-    opacity: 1 - Math.pow(progress, 1.7)
+    opacity: 1 - Math.pow(progress, 1.7),
+    bucket: "terrain"
   };
 };
 

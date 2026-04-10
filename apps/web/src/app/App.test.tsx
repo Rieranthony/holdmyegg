@@ -124,6 +124,7 @@ vi.mock("../engine/GameHost", () => ({
         presentation,
         playerProfile,
         onEditorStateChange,
+        onDiagnostics,
         onHudStateChange,
         onPauseStateChange,
         onReadyToDisplay
@@ -137,6 +138,36 @@ vi.mock("../engine/GameHost", () => ({
           mapName: string;
           propKind: "tree-oak";
           tool: "add";
+        }) => void;
+        onDiagnostics?: (diagnostics: {
+          mode: "editor" | "explore" | "playNpc";
+          tick: number;
+          terrainRevision: number;
+          dirtyChunkCount: number;
+          runtime: {
+            skyDropUpdateMs: number;
+            skyDropLandingMs: number;
+            detachedComponentMs: number;
+            fallingClusterLandingMs: number;
+            fixedStepMaxStepsPerFrame: number;
+            fixedStepClampedFrames: number;
+            fixedStepDroppedMs: number;
+          };
+          render?: {
+            fps: number;
+            p95FrameMs: number;
+            renderCalls: number;
+            renderTriangles: number;
+            geometries: number;
+            textures: number;
+            terrainChunkCount: number;
+            terrainDrawCalls: number;
+            terrainTriangles: number;
+            qualityTier: "medium";
+            targetFps: number;
+            sunShadowsEnabled: boolean;
+            shadowMapRefreshCount: number;
+          };
         }) => void;
         onHudStateChange?: (state: HudState | null) => void;
         onPauseStateChange?: (state: {
@@ -220,9 +251,39 @@ vi.mock("../engine/GameHost", () => ({
         pointerCaptureFailureReasonRef.current = null;
         pointerCapturePendingRef.current = false;
         pendingResumeAfterPointerLockRef.current = false;
+        onDiagnostics?.({
+          mode: mode as "explore" | "playNpc",
+          tick: 1,
+          terrainRevision: 1,
+          dirtyChunkCount: 0,
+          runtime: {
+            skyDropUpdateMs: 0,
+            skyDropLandingMs: 0,
+            detachedComponentMs: 0,
+            fallingClusterLandingMs: 0,
+            fixedStepMaxStepsPerFrame: 0,
+            fixedStepClampedFrames: 0,
+            fixedStepDroppedMs: 0
+          },
+          render: {
+            fps: 57.4,
+            p95FrameMs: 18,
+            renderCalls: 8,
+            renderTriangles: 256,
+            geometries: 10,
+            textures: 4,
+            terrainChunkCount: 6,
+            terrainDrawCalls: 12,
+            terrainTriangles: 90,
+            qualityTier: "medium",
+            targetFps: 90,
+            sunShadowsEnabled: false,
+            shadowMapRefreshCount: 0
+          }
+        });
         onHudStateChange?.(createHudState(mode as "explore" | "playNpc", playerProfile?.name || "You"));
         emitPauseState();
-      }, [mode, onHudStateChange, onPauseStateChange, playerProfile?.name]);
+      }, [mode, onDiagnostics, onHudStateChange, onPauseStateChange, playerProfile?.name]);
 
       useEffect(() => {
         gameHostState.registerPauseBridge({
@@ -681,6 +742,36 @@ describe("App", () => {
     expect(screen.getByTestId("boot-splash")).toBeInTheDocument();
     await signalMenuReady();
     expect(screen.queryByRole("button", { name: "Feedback / bug" })).not.toBeInTheDocument();
+    },
+    APP_FLOW_TIMEOUT
+  );
+
+  it(
+    "shows the worker-sourced FPS badge during runtime play only",
+    async () => {
+      vi.useFakeTimers();
+      render(<App />);
+
+      await signalMenuReady();
+      expect(screen.queryByTestId("runtime-fps-badge")).not.toBeInTheDocument();
+
+      unlockMenuPlayer();
+      fireEvent.click(screen.getByRole("button", { name: /Explore/i }));
+      await advanceLaunchIntro();
+
+      expect(screen.getByTestId("runtime-fps-badge")).toHaveTextContent("FPS 57.4");
+      expect(screen.getByTestId("runtime-fps-badge")).toHaveTextContent("MEDIUM");
+
+      fireEvent.click(screen.getByRole("button", { name: "Pause runtime" }));
+      expect(screen.getByTestId("runtime-fps-badge")).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "Menu" }));
+      await act(async () => {
+        await Promise.resolve();
+      });
+      await signalMenuReady();
+
+      expect(screen.queryByTestId("runtime-fps-badge")).not.toBeInTheDocument();
     },
     APP_FLOW_TIMEOUT
   );

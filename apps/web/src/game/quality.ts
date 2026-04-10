@@ -13,6 +13,7 @@ export interface RendererQualityProfile {
   antialias: boolean;
   dpr: [number, number];
   decorationDensity: number;
+  cloudCount: number;
   enableClouds: boolean;
   skyBirdCount: number;
   enableAtmosphereSky: boolean;
@@ -31,6 +32,7 @@ const highProfile = (gpu: TierResult | null): RendererQualityProfile => ({
   antialias: true,
   dpr: [1, 1.5],
   decorationDensity: getDecorationDensityForQualityTier("high"),
+  cloudCount: 8,
   enableClouds: true,
   skyBirdCount: 3,
   enableAtmosphereSky: true,
@@ -49,6 +51,7 @@ const mediumProfile = (gpu: TierResult | null): RendererQualityProfile => ({
   antialias: false,
   dpr: [1, 1.25],
   decorationDensity: getDecorationDensityForQualityTier("medium"),
+  cloudCount: 5,
   enableClouds: true,
   skyBirdCount: 2,
   enableAtmosphereSky: true,
@@ -67,6 +70,7 @@ const lowProfile = (gpu: TierResult | null): RendererQualityProfile => ({
   antialias: false,
   dpr: [1, 1],
   decorationDensity: getDecorationDensityForQualityTier("low"),
+  cloudCount: 0,
   enableClouds: false,
   skyBirdCount: 1,
   enableAtmosphereSky: false,
@@ -110,6 +114,12 @@ export const resolveQualityProfile = (gpu: TierResult | null): RendererQualityPr
 
   return lowProfile(gpu);
 };
+
+export const getRendererQualityProfileForTier = (
+  tier: QualityTier,
+  gpu: TierResult | null = null
+): RendererQualityProfile =>
+  tier === "high" ? highProfile(gpu) : tier === "medium" ? mediumProfile(gpu) : lowProfile(gpu);
 
 export function useRendererQualityProfile() {
   const [profile, setProfile] = useState<RendererQualityProfile>(() => resolveFallbackProfile());

@@ -7,6 +7,7 @@ vi.mock("hono/bun", () => ({
 }));
 
 import { createApp, type AuthLike, type RoomManagerLike } from "./app";
+import { LOCAL_DEV_SERVER_URL } from "./lib/env";
 import { MemoryPlayerRepository } from "./lib/playerRepository";
 
 const roomState: JoinedRoomState = {
@@ -51,7 +52,7 @@ const roomSummary: RoomSummary = {
 const joinTicket: JoinTicket = {
   ticket: "ticket-1",
   roomId: "warm-1",
-  wsUrl: "ws://localhost:3000/ws?ticket=ticket-1",
+  wsUrl: `${LOCAL_DEV_SERVER_URL.replace(/^http/, "ws")}/ws?ticket=ticket-1`,
   room: roomState
 };
 
@@ -84,7 +85,7 @@ const createRoomManager = (): RoomManagerLike => ({
     ticket: `reconnect-${roomPlayerId}`,
     roomId: "warm-1",
     expiresAt: new Date(60_000).toISOString(),
-    wsUrl: "ws://localhost:3000/ws?ticket=reconnect"
+    wsUrl: `${LOCAL_DEV_SERVER_URL.replace(/^http/, "ws")}/ws?ticket=reconnect`
   }))
 });
 

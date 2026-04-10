@@ -5,6 +5,7 @@ import {
   encodeRuntimeInputPacket,
   packRuntimeInputCommand
 } from "@out-of-bounds/netcode";
+import { LOCAL_DEV_SERVER_URL } from "../lib/env";
 import { createWarmPlaylistMaps } from "../lib/maps";
 import { MemoryPlayerRepository } from "../lib/playerRepository";
 import { RoomManager } from "./manager";
@@ -38,7 +39,7 @@ const findLastControlPacket = (
 const createManager = () =>
   new RoomManager({
     region: "local-us",
-    publicServerUrl: "http://localhost:3000",
+    publicServerUrl: LOCAL_DEV_SERVER_URL,
     playerRepository: new MemoryPlayerRepository(),
     warmRooms: createWarmPlaylistMaps().slice(0, 2).map((map, index) => ({
       id: `warm-${index + 1}`,

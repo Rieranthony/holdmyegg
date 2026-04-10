@@ -10,7 +10,6 @@ import type {
   EditorPanelState,
   GameDiagnostics,
   PlayerProfile,
-  RuntimeOverlayState,
   RuntimePauseState,
   ShellPresentation
 } from "./types";
@@ -38,7 +37,6 @@ interface GameHostProps {
   onDiagnostics?: (diagnostics: GameDiagnostics) => void;
   onEditorStateChange?: (editorState: EditorPanelState) => void;
   onHudStateChange?: (hudState: HudState | null) => void;
-  onRuntimeOverlayChange?: (state: RuntimeOverlayState | null) => void;
   onPauseStateChange?: (state: RuntimePauseState) => void;
   onReadyToDisplay?: () => void;
   onStatus?: (message: string) => void;
@@ -51,6 +49,12 @@ interface GameClientLease {
 
 const gameClientLeases = new WeakMap<HTMLCanvasElement, GameClientLease>();
 const gameClientDisposalGraceMs = 32;
+const isWorkerRendererSupported = () =>
+  typeof Worker !== "undefined" &&
+  typeof HTMLCanvasElement !== "undefined" &&
+  typeof (HTMLCanvasElement.prototype as HTMLCanvasElement & {
+    transferControlToOffscreen?: () => OffscreenCanvas;
+  }).transferControlToOffscreen === "function";
 
 const cancelLeaseDisposal = (lease: GameClientLease) => {
   if (lease.disposeTimeoutId === null) {
@@ -95,7 +99,6 @@ export const GameHost = forwardRef<GameHostHandle, GameHostProps>(function GameH
     onDiagnostics,
     onEditorStateChange,
     onHudStateChange,
-    onRuntimeOverlayChange,
     onPauseStateChange,
     onReadyToDisplay,
     onStatus
@@ -108,7 +111,6 @@ export const GameHost = forwardRef<GameHostHandle, GameHostProps>(function GameH
     onDiagnostics,
     onEditorStateChange,
     onHudStateChange,
-    onRuntimeOverlayChange,
     onPauseStateChange,
     onReadyToDisplay,
     onStatus
@@ -117,8 +119,6 @@ export const GameHost = forwardRef<GameHostHandle, GameHostProps>(function GameH
     onDiagnostics: (diagnostics: GameDiagnostics) => callbackStateRef.current.onDiagnostics?.(diagnostics),
     onEditorStateChange: (editorState: EditorPanelState) => callbackStateRef.current.onEditorStateChange?.(editorState),
     onHudStateChange: (hudState: HudState | null) => callbackStateRef.current.onHudStateChange?.(hudState),
-    onRuntimeOverlayChange: (state: RuntimeOverlayState | null) =>
-      callbackStateRef.current.onRuntimeOverlayChange?.(state),
     onPauseStateChange: (state: RuntimePauseState) => callbackStateRef.current.onPauseStateChange?.(state),
     onReadyToDisplay: () => callbackStateRef.current.onReadyToDisplay?.(),
     onStatus: (message: string) => callbackStateRef.current.onStatus?.(message)
@@ -128,7 +128,6 @@ export const GameHost = forwardRef<GameHostHandle, GameHostProps>(function GameH
     onDiagnostics,
     onEditorStateChange,
     onHudStateChange,
-    onRuntimeOverlayChange,
     onPauseStateChange,
     onReadyToDisplay,
     onStatus
@@ -136,7 +135,7 @@ export const GameHost = forwardRef<GameHostHandle, GameHostProps>(function GameH
 
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas) {
+    if (!canvas || !isWorkerRendererSupported()) {
       return;
     }
 
@@ -241,6 +240,13 @@ export const GameHost = forwardRef<GameHostHandle, GameHostProps>(function GameH
         className="game-host__canvas"
         ref={canvasRef}
       />
+      {!isWorkerRendererSupported() && (
+        <div className="game-host__unsupported">
+          <p className="panel-kicker">Renderer Unsupported</p>
+          <h2>Worker rendering is required.</h2>
+          <p>The current browser cannot run the background-worker Three.js renderer for this game.</p>
+        </div>
+      )}
       {mode !== "editor" && presentation !== "menu" && (
         <div
           aria-hidden="true"

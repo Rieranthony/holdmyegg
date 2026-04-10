@@ -8,7 +8,19 @@ import {
   type MapDocumentV1
 } from "@out-of-bounds/map";
 import type { EditorTool } from "../engine/types";
-import type { VoxelInteractPayload } from "../components/VoxelWorld";
+
+interface VoxelInteractPayload {
+  voxel: {
+    x: number;
+    y: number;
+    z: number;
+  };
+  normal: {
+    x: number;
+    y: number;
+    z: number;
+  };
+}
 
 interface UseEditorSessionOptions {
   onStatus: (message: string) => void;

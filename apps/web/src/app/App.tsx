@@ -35,7 +35,6 @@ import {
   type PointerCaptureFailureReason,
   type PlayerProfile,
   type RuntimePauseState,
-  type RuntimeOverlayState,
   type ShellMode,
 } from "../engine/types";
 import { chickenPalettes } from "../game/colors";
@@ -233,8 +232,6 @@ export function App({
     createDefaultEditorPanelState(createDefaultArenaMap()),
   );
   const [hudState, setHudState] = useState<HudState | null>(null);
-  const [runtimeOverlayState, setRuntimeOverlayState] =
-    useState<RuntimeOverlayState | null>(null);
   const [pauseState, setPauseState] = useState<RuntimePauseState>(
     createDefaultPauseState,
   );
@@ -358,12 +355,6 @@ export function App({
     multiplayer,
     playerProfile.name,
   );
-
-  useEffect(() => {
-    if (!isRuntimePlay) {
-      setRuntimeOverlayState(null);
-    }
-  }, [isRuntimePlay]);
 
   const releaseLaunchSequence = useCallback((resumeRuntime: boolean) => {
     clearLaunchTimers();
@@ -1021,7 +1012,6 @@ export function App({
             onEditorStateChange={handleEditorStateChange}
             onHudStateChange={setHudState}
             onPauseStateChange={setPauseState}
-            onRuntimeOverlayChange={setRuntimeOverlayState}
             onStatus={updateStatus}
             qualityTier={rendererQualityProfile.tier}
             ref={hostRef}
@@ -1055,8 +1045,10 @@ export function App({
             <Hud
               hudState={hudState}
               mode={activePlayMode}
-              overlayState={runtimeOverlayState}
             />
+          )}
+          {!launchState && !isRulesFromPause && diagnostics?.render && (
+            <RuntimeFpsBadge diagnostics={diagnostics} />
           )}
           {pauseState.paused && !launchState && !isRulesFromPause && (
             <RuntimePauseOverlay
@@ -1372,6 +1364,30 @@ function BootSplashScreen() {
   return (
     <div className="boot-splash" data-testid="boot-splash">
       <div className="boot-splash__wordmark">HoldMyEgg</div>
+    </div>
+  );
+}
+
+function RuntimeFpsBadge({ diagnostics }: { diagnostics: GameDiagnostics }) {
+  const render = diagnostics.render;
+  if (!render) {
+    return null;
+  }
+
+  const badgeTone =
+    render.fps >= render.targetFps
+      ? "ok"
+      : render.fps >= render.targetFps * 0.8
+        ? "warn"
+        : "hot";
+
+  return (
+    <div
+      className={`fps-badge fps-badge--${badgeTone}`}
+      data-testid="runtime-fps-badge"
+    >
+      <span>FPS {render.fps.toFixed(1)}</span>
+      <span>{render.qualityTier.toUpperCase()}</span>
     </div>
   );
 }

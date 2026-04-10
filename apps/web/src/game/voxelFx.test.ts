@@ -38,7 +38,7 @@ describe("voxelFx", () => {
         elapsed: 0.05,
         duration: 0.42
       })
-    ).toBeNull();
+    ).toBe("earthSurface");
     expect(
       getVoxelBurstMaterialProfile({
         id: "super-boom",
@@ -48,10 +48,10 @@ describe("voxelFx", () => {
         elapsed: 0.05,
         duration: 0.56
       })
-    ).toBeNull();
+    ).toBe("earthSurface");
   });
 
-  it("drives tighter harvest particles and wider egg explosion particles with shrinking opacity", () => {
+  it("routes harvest debris to terrain materials and egg blasts to denser terrain plus accent buckets", () => {
     const harvestBurst = {
       id: "harvest-1",
       style: "harvest" as const,
@@ -74,10 +74,14 @@ describe("voxelFx", () => {
     const harvestDistance = Math.hypot(harvestParticle.position.x - 10, harvestParticle.position.z - 8);
     const eggDistance = Math.hypot(eggParticle.position.x - 10, eggParticle.position.z - 8);
 
+    expect(getVoxelBurstParticleCount(harvestBurst)).toBe(7);
+    expect(getVoxelBurstParticleCount(eggBurst)).toBe(288);
     expect(getVoxelBurstParticleCount(harvestBurst)).toBeLessThan(getVoxelBurstParticleCount(eggBurst));
     expect(eggDistance).toBeGreaterThan(harvestDistance);
     expect(harvestParticle.scale).toBeLessThan(0.16);
     expect(eggParticle.scale).toBeLessThan(0.36);
+    expect(harvestParticle.bucket).toBe("terrain");
+    expect(eggParticle.bucket).toBe("accent");
     expect(harvestParticle.opacity).toBeGreaterThan(0);
     expect(harvestParticle.opacity).toBeLessThan(1);
     expect(eggParticle.opacity).toBeGreaterThan(0);
@@ -107,11 +111,31 @@ describe("voxelFx", () => {
     const eggDistance = Math.hypot(eggParticle.position.x - 10, eggParticle.position.z - 8);
     const superBoomDistance = Math.hypot(superBoomParticle.position.x - 10, superBoomParticle.position.z - 8);
 
+    expect(getVoxelBurstParticleCount(superBoomBurst)).toBe(432);
     expect(getVoxelBurstParticleCount(superBoomBurst)).toBeGreaterThan(getVoxelBurstParticleCount(eggBurst));
     expect(superBoomDistance).toBeGreaterThan(eggDistance);
     expect(superBoomParticle.scale).toBeGreaterThan(eggParticle.scale);
+    expect(superBoomParticle.bucket).toBe("accent");
     expect(superBoomParticle.opacity).toBeGreaterThan(0);
     expect(superBoomParticle.opacity).toBeLessThanOrEqual(1);
+  });
+
+  it("keeps low-skimmer egg particles close to the surface while spraying outward", () => {
+    const burst = {
+      id: "egg-surface",
+      style: "eggExplosion" as const,
+      kind: null,
+      position: { x: 10, y: 6, z: 8 },
+      elapsed: 0.21,
+      duration: 0.42
+    };
+
+    const skimmerParticle = getVoxelBurstParticleState(burst, 3);
+    const horizontalDistance = Math.hypot(skimmerParticle.position.x - 10, skimmerParticle.position.z - 8);
+
+    expect(skimmerParticle.bucket).toBe("terrain");
+    expect(horizontalDistance).toBeGreaterThan(1);
+    expect(Math.abs(skimmerParticle.position.y - 6)).toBeLessThan(0.45);
   });
 
   it("adds a fast shockwave ring for egg explosions only", () => {

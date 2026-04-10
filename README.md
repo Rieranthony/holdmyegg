@@ -32,33 +32,27 @@ This starts a local Postgres instance on `localhost:55432` by default with:
 - user: `postgres`
 - password: `postgres`
 
-### 2. Add env files
+### 2. Optional env overrides
 
-Copy these examples into real env files before starting the app:
+Local dev now works without creating any extra env files. Use these examples only if you want to override the tracked local defaults:
 
 - [`.env.example`](.env.example)
 - [`apps/server/.env.example`](apps/server/.env.example)
 - [`apps/web/.env.example`](apps/web/.env.example)
 
-The root `.env` is used by Docker Compose for local infra defaults like `POSTGRES_PORT`.
-
-Required server env vars:
-
-- `DATABASE_URL`
-- `BETTER_AUTH_SECRET`
-- `BETTER_AUTH_URL`
-- `PUBLIC_SERVER_URL`
-- `WEB_ORIGIN`
+The root `.env` is optional and is only used by Docker Compose if you want to override infra defaults like `POSTGRES_PORT`.
 
 Local default values:
 
 ```env
 POSTGRES_PORT=55432
+PORT=8787
 DATABASE_URL=postgres://postgres:postgres@localhost:55432/out_of_bounds
-BETTER_AUTH_URL=http://localhost:3000
-PUBLIC_SERVER_URL=http://localhost:3000
+BETTER_AUTH_SECRET=local-dev-auth-secret-change-me-1234567890
+BETTER_AUTH_URL=http://localhost:8787
+PUBLIC_SERVER_URL=http://localhost:8787
 WEB_ORIGIN=http://localhost:5173
-VITE_SERVER_URL=http://localhost:3000
+VITE_SERVER_URL=http://localhost:8787
 ```
 
 ### 3. Install dependencies
@@ -76,7 +70,7 @@ bun run dev
 This starts both local processes:
 
 - web app on `http://localhost:5173`
-- Bun server on `http://localhost:3000`
+- Bun server on `http://localhost:8787`
 
 Important: the server still runs pending Drizzle migrations automatically before it starts serving HTTP or websocket traffic. This is the same fail-fast behavior used for local dev and Railway startup.
 
