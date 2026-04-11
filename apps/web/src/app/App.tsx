@@ -421,7 +421,9 @@ export function App({
   const explorePortalRuntimeConfig = useMemo(
     () =>
       buildExplorePortalRuntimeConfig(editorDocument, {
-        includeReturnPortal: portalArrivalState?.incomingRefUrl !== null,
+        includeReturnPortal:
+          portalArrivalState !== null &&
+          portalArrivalState.incomingRefUrl !== null,
       }),
     [editorDocument, portalArrivalState?.incomingRefUrl],
   );

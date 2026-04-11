@@ -532,8 +532,7 @@ const MAX_BURNING_PROP_EMBER_PARTICLES = 30;
 const MAX_BURNING_PROP_SMOKE_PARTICLES = 36;
 const MAX_PROP_REMAINS_INSTANCES_PER_MATERIAL = 4096;
 const MAX_PROP_REMAINS_EMBER_INSTANCES = 768;
-const MAX_PROP_REMAINS_SMOKE_INSTANCES = 1024;
-const MAX_PROP_REMAINS_FLAME_INSTANCES = 896;
+const MAX_PROP_REMAINS_FLAME_INSTANCES = 1536;
 const MAX_TRACKED_PROP_DELTA_KEYS = 1024;
 const RECENT_EXPLOSION_IMPACT_WINDOW_SECONDS = 2.8;
 const voxelFxProfiles = ["earthSurface", "earthSubsoil", "darkness"] as const satisfies readonly BlockRenderProfile[];
@@ -1126,7 +1125,6 @@ export class WorkerGameRuntime {
   private readonly recentExplosionImpacts: RecentExplosionImpact[] = [];
   private propRemainsEmberMesh: DynamicOpacityMeshResource | null = null;
   private readonly propRemainsFlameMeshes: DynamicOpacityMeshResource[] = [];
-  private propRemainsSmokeMesh: DynamicOpacityMeshResource | null = null;
   private eggExplosionAccentBurstMesh: DynamicOpacityMeshResource | null = null;
   private eggExplosionShockwaveMesh: DynamicOpacityMeshResource | null = null;
   private readonly cloudMainMaterial = new THREE.MeshStandardMaterial({
@@ -1827,20 +1825,6 @@ export class WorkerGameRuntime {
     );
     this.voxelFxGroup.add(this.propRemainsEmberMesh.mesh);
 
-    this.propRemainsSmokeMesh = createDynamicOpacityMeshResource(
-      MAX_PROP_REMAINS_SMOKE_INSTANCES,
-      new THREE.MeshBasicMaterial({
-        color: "#3c312d",
-        opacity: 1,
-        transparent: true,
-        blending: THREE.NormalBlending,
-        depthWrite: false,
-        toneMapped: false
-      }),
-      sharedVoxelGeometry.clone()
-    );
-    this.voxelFxGroup.add(this.propRemainsSmokeMesh.mesh);
-
     this.eggExplosionAccentBurstMesh = createDynamicOpacityMeshResource(
       MAX_EGG_EXPLOSION_ACCENT_INSTANCES,
       new THREE.MeshBasicMaterial({
@@ -2179,7 +2163,6 @@ export class WorkerGameRuntime {
     };
     const flameCounts = new Array(this.propRemainsFlameMeshes.length).fill(0);
     let emberCount = 0;
-    let smokeCount = 0;
 
     for (const state of this.propRemainsStates.values()) {
       for (let fragmentIndex = 0; fragmentIndex < state.fragments.length; fragmentIndex += 1) {
@@ -2210,13 +2193,13 @@ export class WorkerGameRuntime {
 
         const flameStride =
           fragment.phase === "collapse"
-            ? 4
+            ? 3
             : fragment.phase === "settled"
-              ? 2
-              : 6;
+              ? 1
+              : 4;
         const flameCardCopies =
           fragment.phase === "settled"
-            ? 2
+            ? 3
             : fragment.phase === "collapse"
               ? 2
               : 1;
@@ -2225,34 +2208,36 @@ export class WorkerGameRuntime {
             const frameIndex = Math.floor(
               (state.elapsed * 10.8 + fragmentIndex * 0.9 + cardIndex * 0.7) %
                 this.propRemainsFlameMeshes.length
-            );
+              );
             const flameResource = this.propRemainsFlameMeshes[frameIndex]!;
             const flameCount = flameCounts[frameIndex] ?? 0;
             if (flameCount >= MAX_PROP_REMAINS_FLAME_INSTANCES) {
               continue;
             }
 
-            const lateralOffset = cardIndex === 0 ? -0.05 : 0.05;
+            const cardSpread = cardIndex - (flameCardCopies - 1) / 2;
+            const lateralOffset = cardSpread * (fragment.phase === "settled" ? 0.085 : 0.05);
+            const depthOffset = -cardSpread * (fragment.phase === "settled" ? 0.04 : 0.03);
             const flameHeightBoost =
               fragment.phase === "settled"
-                ? 0.24
+                ? 0.28
                 : fragment.phase === "collapse"
                   ? 0.2
                   : 0.16;
             voxelFxTempObject.position.set(
               fragment.position.x + lateralOffset,
               fragment.position.y + flameHeightBoost + fragment.burningAlpha * 0.22,
-              fragment.position.z + (cardIndex === 0 ? 0.03 : -0.03)
+              fragment.position.z + depthOffset
             );
             voxelFxTempObject.rotation.set(
               0,
-              (fragmentIndex % 8) * (Math.PI / 4) + cardIndex * (Math.PI / 2),
+              (fragmentIndex % 8) * (Math.PI / 4) + cardSpread * (Math.PI / 3),
               0
             );
             voxelFxTempObject.scale.set(
-              0.2 + fragment.burningAlpha * 0.28,
-              0.38 + fragment.burningAlpha * 0.46,
-              0.2 + fragment.burningAlpha * 0.28
+              (fragment.phase === "settled" ? 0.24 : 0.2) + fragment.burningAlpha * 0.32,
+              (fragment.phase === "settled" ? 0.48 : 0.38) + fragment.burningAlpha * 0.54,
+              (fragment.phase === "settled" ? 0.24 : 0.2) + fragment.burningAlpha * 0.32
             );
             voxelFxTempObject.updateMatrix();
             flameResource.mesh.setMatrixAt(flameCount, voxelFxTempObject.matrix);
@@ -2261,7 +2246,7 @@ export class WorkerGameRuntime {
               Math.min(
                 1,
                 fragment.burningAlpha *
-                  (fragment.phase === "settled" ? 1 : fragment.phase === "collapse" ? 0.95 : 0.7)
+                  (fragment.phase === "settled" ? 1.15 : fragment.phase === "collapse" ? 1 : 0.72)
               )
             );
             flameCounts[frameIndex] = flameCount + 1;
@@ -2284,27 +2269,6 @@ export class WorkerGameRuntime {
           );
           emberCount += 1;
         }
-
-        if (
-          this.propRemainsSmokeMesh &&
-          smokeCount < MAX_PROP_REMAINS_SMOKE_INSTANCES &&
-          fragmentIndex % 5 === 0
-        ) {
-          voxelFxTempObject.position.set(
-            fragment.position.x + Math.sin(fragmentIndex * 1.37 + state.elapsed * 1.8) * 0.08,
-            fragment.position.y + 0.3 + fragment.burningAlpha * 0.44,
-            fragment.position.z + Math.cos(fragmentIndex * 1.11 + state.elapsed * 1.5) * 0.08
-          );
-          voxelFxTempObject.rotation.set(0, fragmentIndex * 0.23, 0);
-          voxelFxTempObject.scale.setScalar(0.24 + fragment.burningAlpha * 0.42);
-          voxelFxTempObject.updateMatrix();
-          this.propRemainsSmokeMesh.mesh.setMatrixAt(smokeCount, voxelFxTempObject.matrix);
-          this.propRemainsSmokeMesh.opacityAttribute.setX(
-            smokeCount,
-            0.18 + fragment.burningAlpha * 0.34
-          );
-          smokeCount += 1;
-        }
       }
     }
 
@@ -2319,7 +2283,6 @@ export class WorkerGameRuntime {
       finalizeDynamicOpacityMesh(resource, flameCounts[frameIndex] ?? 0);
     });
     finalizeDynamicOpacityMesh(this.propRemainsEmberMesh, emberCount);
-    finalizeDynamicOpacityMesh(this.propRemainsSmokeMesh, smokeCount);
   }
 
   private ensureLoop() {

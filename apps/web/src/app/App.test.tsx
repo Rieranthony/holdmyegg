@@ -590,6 +590,12 @@ vi.mock("../engine/GameHost", () => ({
           <div data-testid="game-host">{mode}</div>
           <div data-testid="capture-mode">{captureMode ?? "locked"}</div>
           <div data-testid="portal-scene">{portalScene ? "present" : "absent"}</div>
+          <div data-testid="portal-count">
+            {
+              ((portalScene as { portals?: unknown[] } | undefined)?.portals
+                ?.length ?? 0)
+            }
+          </div>
           <div data-testid="spawn-override">
             {localPlayerSpawnOverride ? "present" : "absent"}
           </div>
@@ -823,9 +829,26 @@ describe("App", () => {
       expect(await screen.findByTestId("game-host")).toHaveTextContent("explore");
       expect(screen.getByTestId("capture-mode")).toHaveTextContent("free");
       expect(screen.getByTestId("portal-scene")).toHaveTextContent("present");
+      expect(screen.getByTestId("portal-count")).toHaveTextContent("2");
       expect(screen.getByTestId("spawn-override")).toHaveTextContent("present");
       expect(screen.getByLabelText("Matter 24 of 500")).toBeInTheDocument();
       expect(screen.queryByRole("button", { name: "Capture Mouse" })).not.toBeInTheDocument();
+    } finally {
+      window.history.replaceState({}, "", previousUrl);
+    }
+  });
+
+  it("shows only the exit portal when there is no valid return ref", async () => {
+    const previousUrl = window.location.href;
+    window.history.replaceState({}, "", "/?portal=true&username=Levels");
+
+    try {
+      render(<App />);
+
+      expect(await screen.findByTestId("game-host")).toHaveTextContent("explore");
+      expect(screen.getByTestId("portal-scene")).toHaveTextContent("present");
+      expect(screen.getByTestId("portal-count")).toHaveTextContent("1");
+      expect(screen.getByTestId("spawn-override")).toHaveTextContent("present");
     } finally {
       window.history.replaceState({}, "", previousUrl);
     }
