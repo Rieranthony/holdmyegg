@@ -67,6 +67,15 @@ export const normalizeSnapshot = (snapshot: SimulationSnapshot) => ({
     elapsed: round(debris.elapsed),
     duration: round(debris.duration)
   })),
+  burningProps: snapshot.burningProps.map((prop) => ({
+    id: prop.id,
+    kind: prop.kind,
+    x: prop.x,
+    y: prop.y,
+    z: prop.z,
+    remaining: round(prop.remaining),
+    sourceKind: prop.sourceKind
+  })),
   voxelBursts: snapshot.voxelBursts.map((burst) => ({
     id: burst.id,
     style: burst.style,
@@ -230,6 +239,15 @@ export const normalizeAuthoritativeMatchState = (
       },
       elapsed: round(debris.elapsed),
       duration: round(debris.duration)
+    })),
+    burningProps: state.hazards.burningProps.map((prop) => ({
+      id: prop.id,
+      kind: prop.kind,
+      x: prop.x,
+      y: prop.y,
+      z: prop.z,
+      remaining: round(prop.remaining),
+      sourceKind: prop.sourceKind
     })),
     waterFlood: {
       active: state.hazards.waterFlood.active,

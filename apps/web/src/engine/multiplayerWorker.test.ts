@@ -37,6 +37,7 @@ const createSharedFrame = (terrainDeltaBatch: ServerStateDeltaFrame["sharedFrame
   players: [],
   eggs: [],
   eggScatterDebris: [],
+  burningProps: [],
   voxelBursts: [],
   skyDrops: [],
   fallingClusters: [],
@@ -51,6 +52,7 @@ const createSharedFrame = (terrainDeltaBatch: ServerStateDeltaFrame["sharedFrame
       fallingClusters: [],
       skyDrops: [],
       eggScatterDebris: [],
+      burningProps: [],
       waterFlood: {
         active: false,
         breachLevelY: 0,

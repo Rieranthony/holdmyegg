@@ -743,7 +743,7 @@ describe("WorkerGameRuntime", () => {
     expect(runtimeState.eggExplosionAccentBurstMesh?.mesh.count ?? 0).toBeGreaterThan(0);
   });
 
-  it("applies prop-only authoritative removals and fills prop shatter meshes", () => {
+  it("applies prop-only authoritative removals and fills prop remains meshes", () => {
     const runtime = new WorkerGameRuntime(createScope());
     const worldDocument = normalizeArenaBudgetMapDocument(createDefaultArenaMap());
     const prop = worldDocument.props[0]!;
@@ -779,6 +779,7 @@ describe("WorkerGameRuntime", () => {
           players: [];
           eggs: [];
           eggScatterDebris: [];
+          burningProps: [];
           voxelBursts: [];
           skyDrops: [];
           fallingClusters: [];
@@ -789,8 +790,8 @@ describe("WorkerGameRuntime", () => {
         patches: Array<unknown>
       ) => void;
       propsGroup: { children: Array<unknown> };
-      syncPropShatterBursts: () => void;
-      propShatterBurstMeshes: Map<string, { mesh: { count: number } }>;
+      syncPropRemains: () => void;
+      propRemainsMeshes: Map<string, { mesh: { count: number } }>;
     };
 
     runtimeState.mode = "multiplayer";
@@ -826,17 +827,169 @@ describe("WorkerGameRuntime", () => {
         players: [],
         eggs: [],
         eggScatterDebris: [],
+        burningProps: [],
         voxelBursts: [],
         skyDrops: [],
         fallingClusters: []
       }
     });
-    runtimeState.syncPropShatterBursts();
+    runtimeState.syncPropRemains();
 
     expect(runtimeState.currentDocument.props.some((entry) => entry.id === prop.id)).toBe(false);
     expect(runtimeState.propsGroup.children).toHaveLength(0);
     expect(
-      [...runtimeState.propShatterBurstMeshes.values()].some((resource) => resource.mesh.count > 0)
+      [...runtimeState.propRemainsMeshes.values()].some((resource) => resource.mesh.count > 0)
     ).toBe(true);
+  });
+
+  it("keeps burning trees stationary while flames and pixel particles animate around hot voxels", () => {
+    const runtime = new WorkerGameRuntime(createScope());
+    const worldDocument = normalizeArenaBudgetMapDocument(createDefaultArenaMap());
+    const prop = worldDocument.props[0]!;
+    worldDocument.props = [prop];
+
+    const runtimeState = runtime as unknown as {
+      mode: "editor" | "explore" | "playNpc" | "multiplayer";
+      applyFullWorld: (
+        document: typeof worldDocument,
+        patches: Array<unknown>
+      ) => void;
+      handleExternalMessage: (message: {
+        type: "frame";
+        frame: {
+          authoritative?: {
+            gameplayEventBatch: {
+              tick: number;
+              events: Array<{
+                type: "explosion_resolved";
+                entityId: string;
+                sourceEntityId: string;
+                position: { x: number; y: number; z: number };
+                destroyedVoxelCount: number;
+                hitPlayerIds: string[];
+              }>;
+            } | null;
+            terrainDeltaBatch: null;
+          };
+          tick: number;
+          time: number;
+          mode: "multiplayer";
+          localPlayerId: null;
+          hudState: null;
+          focusState: null;
+          players: [];
+          eggs: [];
+          eggScatterDebris: [];
+          burningProps: Array<{
+            id: string;
+            kind: typeof prop.kind;
+            x: number;
+            y: number;
+            z: number;
+            remaining: number;
+            sourceKind: "eggExplosion";
+          }>;
+          voxelBursts: [];
+          skyDrops: [];
+          fallingClusters: [];
+        };
+      }) => void;
+      propVisuals: Map<
+        string,
+        {
+          emberMeshes: Array<{ visible: boolean }>;
+          flameEmitters: Array<{ group: { visible: boolean } }>;
+          group: { rotation: { x: number; z: number } };
+          smokeMeshes: Array<{ visible: boolean }>;
+          voxelMeshes: Array<{
+            material: {
+              color: { b: number; g: number; r: number };
+              emissiveIntensity: number;
+            };
+          }>;
+        }
+      >;
+      syncActiveVisuals: (delta: number, elapsed: number) => void;
+    };
+
+    runtimeState.mode = "multiplayer";
+    runtimeState.applyFullWorld(worldDocument, []);
+    runtimeState.handleExternalMessage({
+      type: "frame",
+      frame: {
+        tick: 4,
+        time: 1.8,
+        mode: "multiplayer",
+        localPlayerId: null,
+        hudState: null,
+        focusState: null,
+        authoritative: {
+          terrainDeltaBatch: null,
+          gameplayEventBatch: {
+            tick: 4,
+            events: [
+              {
+                type: "explosion_resolved",
+                entityId: "explosion-1",
+                sourceEntityId: "egg-1",
+                position: {
+                  x: prop.x - 2.5,
+                  y: prop.y + 2,
+                  z: prop.z + 0.5
+                },
+                destroyedVoxelCount: 4,
+                hitPlayerIds: []
+              }
+            ]
+          }
+        },
+        players: [],
+        eggs: [],
+        eggScatterDebris: [],
+        burningProps: [
+          {
+            id: prop.id,
+            kind: prop.kind,
+            x: prop.x,
+            y: prop.y,
+            z: prop.z,
+            remaining: 4.2,
+            sourceKind: "eggExplosion"
+          }
+        ],
+        voxelBursts: [],
+        skyDrops: [],
+        fallingClusters: []
+      }
+    });
+    runtimeState.syncActiveVisuals(0.016, 1.8);
+
+    const visual = runtimeState.propVisuals.get(prop.id);
+    const litVoxelCount =
+      visual?.voxelMeshes.filter((mesh) => mesh.material.emissiveIntensity > 0.05)
+        .length ?? 0;
+    const visibleFlameCount =
+      visual?.flameEmitters.filter((emitter) => emitter.group.visible).length ?? 0;
+    const visibleSmokeCount =
+      visual?.smokeMeshes.filter((mesh) => mesh.visible).length ?? 0;
+    const charredVoxelCount =
+      visual?.voxelMeshes.filter(
+        (mesh) =>
+          mesh.material.color.r < 0.35 &&
+          mesh.material.color.g < 0.28 &&
+          mesh.material.color.b < 0.22
+      ).length ?? 0;
+
+    expect(visual?.group.rotation.x ?? 1).toBeCloseTo(0, 6);
+    expect(visual?.group.rotation.z ?? 1).toBeCloseTo(0, 6);
+    expect(litVoxelCount).toBeGreaterThan(0);
+    expect(litVoxelCount).toBeLessThan(visual?.voxelMeshes.length ?? 0);
+    expect(visibleFlameCount).toBeGreaterThan(6);
+    expect(visibleFlameCount).toBeLessThan(visual?.voxelMeshes.length ?? 0);
+    expect(visibleSmokeCount).toBeGreaterThan(10);
+    expect(charredVoxelCount).toBeGreaterThan(0);
+    expect(visual?.flameEmitters.some((emitter) => emitter.group.visible)).toBe(true);
+    expect(visual?.emberMeshes.some((mesh) => mesh.visible)).toBe(true);
+    expect(visual?.smokeMeshes.some((mesh) => mesh.visible)).toBe(true);
   });
 });

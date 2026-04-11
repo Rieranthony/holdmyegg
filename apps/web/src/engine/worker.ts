@@ -7,7 +7,8 @@ import {
   createDefaultArenaMap,
   getMapPropVoxels,
   normalizeArenaBudgetMapDocument,
-  type MapDocumentV1
+  type MapDocumentV1,
+  type MapProp
 } from "@out-of-bounds/map";
 import {
   defaultSimulationConfig,
@@ -17,6 +18,7 @@ import {
   getHudEggStatus,
   OutOfBoundsSimulation,
   type GameMode,
+  type GameplayEventBatch,
   type RuntimeEggState,
   type RuntimePlayerState,
   type RuntimeSkyDropState,
@@ -95,7 +97,7 @@ import {
   shouldTriggerChickenLandingTumble,
   wingFeatherletOffsets
 } from "../game/playerVisuals";
-import { propMaterials } from "../game/propMaterials";
+import { propFxTextures, propMaterials } from "../game/propMaterials";
 import {
   chickenModelRig,
   createChickenMaterialBundle,
@@ -135,11 +137,15 @@ import {
   updateVoxelMaterialAnimation
 } from "../game/voxelMaterials";
 import {
-  DEFAULT_PROP_SHATTER_DURATION,
-  createPropShatterBurstState,
+  createBurningTreeFxState,
+  createPropRemainsState,
   getEggScatterDebrisVisualState,
-  getPropShatterFragmentState,
-  type PropShatterBurstState,
+  getBurningTreeActiveVoxelIndices,
+  getBurningTreeVoxelVisualState,
+  getPropRemainsDuration,
+  getPropRemainsFragmentState,
+  type BurningTreeFxState,
+  type PropRemainsState,
   type PropShatterMaterialKey,
   type VoxelBurstParticleBucket,
   getVoxelBurstMaterialProfile,
@@ -194,6 +200,16 @@ const EMPTY_DIAGNOSTICS: SimulationPerformanceDiagnostics = {
 };
 
 const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
+const hashString = (value: string) => {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 33 + value.charCodeAt(index)) >>> 0;
+  }
+
+  return hash;
+};
+const emitterSeed = (index: number, propId: string) =>
+  hashString(`${propId}:burn-particle:${index}`) * 0.000001;
 const MAX_FIXED_STEPS_PER_FRAME = 5;
 const MAX_FRAME_DELTA_SECONDS = 0.1;
 const MULTIPLAYER_INPUT_INTERVAL_SECONDS = 1 / 20;
@@ -313,6 +329,7 @@ const createLocalRuntimeFrame = (runtime: OutOfBoundsSimulation): EngineRuntimeR
       .map((eggId) => runtime.getEggRuntimeState(eggId))
       .filter((egg): egg is RuntimeEggState => egg !== null),
     eggScatterDebris: runtime.getEggScatterDebris(),
+    burningProps: runtime.getBurningProps(),
     voxelBursts: runtime.getVoxelBursts(),
     skyDrops: runtime.getSkyDrops(),
     fallingClusters: runtime.getFallingClusters()
@@ -419,6 +436,35 @@ interface DynamicOpacityMeshResource {
   opacityAttribute: THREE.InstancedBufferAttribute;
 }
 
+interface BurningTreeFlameEmitter {
+  currentFrame: number;
+  group: THREE.Group;
+  material: THREE.MeshBasicMaterial;
+  quads: THREE.Mesh[];
+  seed: number;
+}
+
+type PropVoxelMesh = THREE.Mesh & {
+  userData: {
+    burningMaterial: THREE.MeshStandardMaterial | null;
+    localPosition: THREE.Vector3;
+    voxelKind: "wood" | "leaves";
+  };
+};
+
+interface PropVisual {
+  prop: MapProp;
+  center: THREE.Vector3;
+  burningFxState: BurningTreeFxState | null;
+  flameEmitters: BurningTreeFlameEmitter[];
+  group: THREE.Group;
+  voxelMeshes: PropVoxelMesh[];
+  emberMeshes: THREE.Mesh[];
+  emberMaterial: THREE.MeshBasicMaterial | null;
+  smokeMeshes: THREE.Mesh[];
+  smokeMaterial: THREE.MeshBasicMaterial | null;
+}
+
 type EggChargeInputSource = "key" | "pointer";
 
 interface EggChargeState {
@@ -460,19 +506,33 @@ const MAX_HARVEST_BURST_INSTANCES_PER_PROFILE = 128;
 const MAX_EGG_EXPLOSION_BURST_INSTANCES = 1024;
 const MAX_EGG_EXPLOSION_ACCENT_INSTANCES = 512;
 const MAX_EGG_EXPLOSION_SHOCKWAVE_INSTANCES = 32;
-const MAX_PROP_SHATTER_INSTANCES_PER_MATERIAL = 512;
+const BURNING_TREE_STANDING_DURATION = 15;
+const MAX_BURNING_PROP_FLAME_EMITTERS = 18;
+const MAX_BURNING_PROP_EMBER_PARTICLES = 30;
+const MAX_BURNING_PROP_SMOKE_PARTICLES = 36;
+const MAX_PROP_REMAINS_INSTANCES_PER_MATERIAL = 4096;
+const MAX_PROP_REMAINS_EMBER_INSTANCES = 768;
+const MAX_PROP_REMAINS_SMOKE_INSTANCES = 1024;
+const MAX_PROP_REMAINS_FLAME_INSTANCES = 384;
 const MAX_TRACKED_PROP_DELTA_KEYS = 1024;
+const RECENT_EXPLOSION_IMPACT_WINDOW_SECONDS = 2.8;
 const voxelFxProfiles = ["earthSurface", "earthSubsoil", "darkness"] as const satisfies readonly BlockRenderProfile[];
-const propShatterMaterialEntries = [
+const propRemainsMaterialEntries = [
   ["bark", propMaterials.bark],
   ["leavesOak", propMaterials.leavesOak],
   ["leavesPine", propMaterials.leavesPine],
   ["leavesAutumn", propMaterials.leavesAutumn]
 ] as const satisfies readonly [PropShatterMaterialKey, THREE.Material][];
 const cloudGeometry = new THREE.BoxGeometry(1.6, 0.9, 1.6);
+const flameCardGeometry = new THREE.PlaneGeometry(0.92, 1.24);
 const cloudTempObject = new THREE.Object3D();
 const voxelFxTempObject = new THREE.Object3D();
 const clusterTempObject = new THREE.Object3D();
+
+interface RecentExplosionImpact {
+  position: { x: number; y: number; z: number };
+  time: number;
+}
 
 const configureStaticInstancedMesh = (mesh: THREE.InstancedMesh, matrices: readonly THREE.Matrix4[]) => {
   mesh.count = matrices.length;
@@ -880,18 +940,23 @@ export class WorkerGameRuntime {
   private readonly waterfallVisuals = new Map<string, WaterfallVisual>();
   private readonly cloudVisuals: CloudVisual[] = [];
   private readonly skyBirdVisuals: SkyBirdVisual[] = [];
+  private readonly propVisuals = new Map<string, PropVisual>();
   private readonly playerVisuals = new Map<string, PlayerVisual>();
   private readonly eggVisuals = new Map<string, EggDisplayVisual>();
   private readonly eggScatterMeshes = new Map<BlockRenderProfile, THREE.InstancedMesh>();
   private readonly harvestBurstMeshes = new Map<BlockRenderProfile, DynamicOpacityMeshResource>();
   private readonly eggExplosionBurstMeshes = new Map<BlockRenderProfile, DynamicOpacityMeshResource>();
-  private readonly propShatterBurstMeshes = new Map<PropShatterMaterialKey, DynamicOpacityMeshResource>();
+  private readonly propRemainsMeshes = new Map<PropShatterMaterialKey, DynamicOpacityMeshResource>();
   private readonly skyDropVisuals = new Map<string, SkyDropVisual>();
   private readonly clusterVisuals = new Map<string, ClusterVisual>();
   private readonly spacePlanetVisuals: SpacePlanetVisual[] = [];
-  private readonly propShatterBursts = new Map<string, PropShatterBurstState>();
+  private readonly propRemainsStates = new Map<string, PropRemainsState>();
   private readonly processedPropDeltaKeys = new Set<string>();
   private readonly processedPropDeltaKeyOrder: string[] = [];
+  private readonly recentExplosionImpacts: RecentExplosionImpact[] = [];
+  private propRemainsEmberMesh: DynamicOpacityMeshResource | null = null;
+  private readonly propRemainsFlameMeshes: DynamicOpacityMeshResource[] = [];
+  private propRemainsSmokeMesh: DynamicOpacityMeshResource | null = null;
   private eggExplosionAccentBurstMesh: DynamicOpacityMeshResource | null = null;
   private eggExplosionShockwaveMesh: DynamicOpacityMeshResource | null = null;
   private readonly cloudMainMaterial = new THREE.MeshStandardMaterial({
@@ -1514,15 +1579,62 @@ export class WorkerGameRuntime {
       this.voxelFxGroup.add(explosionMesh.mesh);
     }
 
-    for (const [materialKey, material] of propShatterMaterialEntries) {
-      const shatterMesh = createDynamicOpacityMeshResource(
-        MAX_PROP_SHATTER_INSTANCES_PER_MATERIAL,
+    for (const [materialKey, material] of propRemainsMaterialEntries) {
+      const remainsMesh = createDynamicOpacityMeshResource(
+        MAX_PROP_REMAINS_INSTANCES_PER_MATERIAL,
         material,
         this.propGeometry.clone()
       );
-      this.propShatterBurstMeshes.set(materialKey, shatterMesh);
-      this.voxelFxGroup.add(shatterMesh.mesh);
+      this.propRemainsMeshes.set(materialKey, remainsMesh);
+      this.voxelFxGroup.add(remainsMesh.mesh);
     }
+
+    for (const texture of propFxTextures.flameFrames) {
+      const flameMesh = createDynamicOpacityMeshResource(
+        MAX_PROP_REMAINS_FLAME_INSTANCES,
+        new THREE.MeshBasicMaterial({
+          alphaTest: 0.24,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+          map: texture,
+          opacity: 1,
+          side: THREE.DoubleSide,
+          toneMapped: false,
+          transparent: true
+        }),
+        flameCardGeometry.clone()
+      );
+      this.propRemainsFlameMeshes.push(flameMesh);
+      this.voxelFxGroup.add(flameMesh.mesh);
+    }
+
+    this.propRemainsEmberMesh = createDynamicOpacityMeshResource(
+      MAX_PROP_REMAINS_EMBER_INSTANCES,
+      new THREE.MeshBasicMaterial({
+        color: "#ff9d42",
+        opacity: 1,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        toneMapped: false
+      }),
+      sharedVoxelGeometry.clone()
+    );
+    this.voxelFxGroup.add(this.propRemainsEmberMesh.mesh);
+
+    this.propRemainsSmokeMesh = createDynamicOpacityMeshResource(
+      MAX_PROP_REMAINS_SMOKE_INSTANCES,
+      new THREE.MeshBasicMaterial({
+        color: "#3c312d",
+        opacity: 1,
+        transparent: true,
+        blending: THREE.NormalBlending,
+        depthWrite: false,
+        toneMapped: false
+      }),
+      sharedVoxelGeometry.clone()
+    );
+    this.voxelFxGroup.add(this.propRemainsSmokeMesh.mesh);
 
     this.eggExplosionAccentBurstMesh = createDynamicOpacityMeshResource(
       MAX_EGG_EXPLOSION_ACCENT_INSTANCES,
@@ -1554,10 +1666,11 @@ export class WorkerGameRuntime {
     this.voxelFxGroup.add(this.eggExplosionShockwaveMesh.mesh);
   }
 
-  private resetPropShatterState() {
-    this.propShatterBursts.clear();
+  private resetPropRemainsState() {
+    this.propRemainsStates.clear();
     this.processedPropDeltaKeys.clear();
     this.processedPropDeltaKeyOrder.length = 0;
+    this.recentExplosionImpacts.length = 0;
   }
 
   private rememberProcessedPropDeltaKey(key: string) {
@@ -1588,33 +1701,180 @@ export class WorkerGameRuntime {
     return `${source}:${batchTick}:${operation}:${id}`;
   }
 
-  private spawnPropShatterBurst(
-    change: TerrainDeltaBatch["propChanges"][number],
-    batchTick: number
-  ) {
-    const burstId = `prop-shatter-${batchTick}-${change.id}`;
-    this.propShatterBursts.set(
-      burstId,
-      createPropShatterBurstState({
-        id: burstId,
-        duration: DEFAULT_PROP_SHATTER_DURATION,
-        prop: {
-          id: change.id,
-          kind: change.kind,
-          x: change.x,
-          y: change.y,
-          z: change.z
-        }
-      })
-    );
+  private getFrameBurningPropIds(frame: EngineRuntimeRenderFrame | null) {
+    return new Set((frame?.burningProps ?? []).map((prop) => prop.id));
   }
 
-  private processLocalPropChangeBatch(batch: TerrainDeltaBatch | null) {
+  private pruneRecentExplosionImpacts(frameTime: number) {
+    while (
+      this.recentExplosionImpacts.length > 0 &&
+      frameTime - this.recentExplosionImpacts[0]!.time > RECENT_EXPLOSION_IMPACT_WINDOW_SECONDS
+    ) {
+      this.recentExplosionImpacts.shift();
+    }
+  }
+
+  private recordRecentExplosionImpacts(batch: GameplayEventBatch | null, frameTime: number) {
+    if (!batch) {
+      this.pruneRecentExplosionImpacts(frameTime);
+      return;
+    }
+
+    for (const event of batch.events) {
+      if (event.type !== "explosion_resolved") {
+        continue;
+      }
+
+      this.recentExplosionImpacts.push({
+        position: {
+          x: event.position.x,
+          y: event.position.y,
+          z: event.position.z
+        },
+        time: frameTime
+      });
+    }
+
+    this.pruneRecentExplosionImpacts(frameTime);
+  }
+
+  private resolveBurningIgnitionOrigin(visual: PropVisual, frameTime: number) {
+    this.pruneRecentExplosionImpacts(frameTime);
+    const nearestImpact = this.recentExplosionImpacts.reduce<RecentExplosionImpact | null>(
+      (best, impact) => {
+        if (!best) {
+          return impact;
+        }
+
+        const bestDistance = visual.center.distanceToSquared(
+          new THREE.Vector3(best.position.x, best.position.y, best.position.z)
+        );
+        const impactDistance = visual.center.distanceToSquared(
+          new THREE.Vector3(impact.position.x, impact.position.y, impact.position.z)
+        );
+        return impactDistance < bestDistance ? impact : best;
+      },
+      null
+    );
+
+    if (nearestImpact) {
+      return nearestImpact.position;
+    }
+
+    const fallbackSeed =
+      hashString(`${visual.prop.id}:${visual.prop.kind}:${visual.prop.x}:${visual.prop.z}`) * 0.0001;
+    const fallbackAngle = fallbackSeed * Math.PI * 2;
+    return {
+      x: visual.center.x + Math.cos(fallbackAngle) * 5.5,
+      y: visual.center.y + 1.8,
+      z: visual.center.z + Math.sin(fallbackAngle) * 5.5
+    };
+  }
+
+  private getWorldSettleHeight(world: MutableVoxelWorld, x: number, z: number) {
+    const cellX = THREE.MathUtils.clamp(Math.floor(x), 0, world.size.x - 1);
+    const cellZ = THREE.MathUtils.clamp(Math.floor(z), 0, world.size.z - 1);
+    const topSolidY = world.getTopSolidY(cellX, cellZ);
+    const topGroundY = world.getTopGroundY(cellX, cellZ);
+    return Math.max(topSolidY, topGroundY, 0);
+  }
+
+  private countPropRemainsFragmentsByMaterial(
+    state: Pick<PropRemainsState, "fragments">
+  ): Record<PropShatterMaterialKey, number> {
+    const counts: Record<PropShatterMaterialKey, number> = {
+      bark: 0,
+      leavesOak: 0,
+      leavesPine: 0,
+      leavesAutumn: 0
+    };
+
+    for (const fragment of state.fragments) {
+      counts[fragment.materialKey] += 1;
+    }
+
+    return counts;
+  }
+
+  private evictPropRemainsUntilWithinBudget(nextState: PropRemainsState) {
+    const incomingCounts = this.countPropRemainsFragmentsByMaterial(nextState);
+    const capacityByMaterial: Record<PropShatterMaterialKey, number> = {
+      bark: MAX_PROP_REMAINS_INSTANCES_PER_MATERIAL,
+      leavesOak: MAX_PROP_REMAINS_INSTANCES_PER_MATERIAL,
+      leavesPine: MAX_PROP_REMAINS_INSTANCES_PER_MATERIAL,
+      leavesAutumn: MAX_PROP_REMAINS_INSTANCES_PER_MATERIAL
+    };
+    const aggregateCounts: Record<PropShatterMaterialKey, number> = {
+      bark: incomingCounts.bark,
+      leavesOak: incomingCounts.leavesOak,
+      leavesPine: incomingCounts.leavesPine,
+      leavesAutumn: incomingCounts.leavesAutumn
+    };
+
+    for (const state of this.propRemainsStates.values()) {
+      const counts = this.countPropRemainsFragmentsByMaterial(state);
+      aggregateCounts.bark += counts.bark;
+      aggregateCounts.leavesOak += counts.leavesOak;
+      aggregateCounts.leavesPine += counts.leavesPine;
+      aggregateCounts.leavesAutumn += counts.leavesAutumn;
+    }
+
+    while (
+      [...propRemainsMaterialEntries].some(
+        ([materialKey]) => aggregateCounts[materialKey] > capacityByMaterial[materialKey]
+      ) &&
+      this.propRemainsStates.size > 0
+    ) {
+      const oldestEntry = this.propRemainsStates.entries().next().value as
+        | [string, PropRemainsState]
+        | undefined;
+      if (!oldestEntry) {
+        break;
+      }
+
+      const [oldestId, oldestState] = oldestEntry;
+      const counts = this.countPropRemainsFragmentsByMaterial(oldestState);
+      aggregateCounts.bark -= counts.bark;
+      aggregateCounts.leavesOak -= counts.leavesOak;
+      aggregateCounts.leavesPine -= counts.leavesPine;
+      aggregateCounts.leavesAutumn -= counts.leavesAutumn;
+      this.propRemainsStates.delete(oldestId);
+    }
+  }
+
+  private spawnPropRemains(
+    change: TerrainDeltaBatch["propChanges"][number],
+    batchTick: number,
+    world: MutableVoxelWorld,
+    burning: boolean
+  ) {
+    const remainsId = `prop-remains-${batchTick}-${change.id}`;
+    const nextState = createPropRemainsState({
+      id: remainsId,
+      burning,
+      prop: {
+        id: change.id,
+        kind: change.kind,
+        x: change.x,
+        y: change.y,
+        z: change.z
+      },
+      settleHeightAt: (x, z) => this.getWorldSettleHeight(world, x, z)
+    });
+    this.evictPropRemainsUntilWithinBudget(nextState);
+    this.propRemainsStates.set(remainsId, nextState);
+  }
+
+  private processLocalPropChangeBatch(
+    batch: TerrainDeltaBatch | null,
+    burningPropIds: ReadonlySet<string>
+  ) {
     if (!batch || batch.propChanges.length === 0) {
       return false;
     }
 
     let hasFreshChange = false;
+    const world = this.runtime.getWorld();
     for (const change of batch.propChanges) {
       const dedupeKey = this.buildProcessedPropDeltaKey("local", batch.tick, change.operation, change.id);
       if (!this.rememberProcessedPropDeltaKey(dedupeKey)) {
@@ -1623,14 +1883,17 @@ export class WorkerGameRuntime {
 
       hasFreshChange = true;
       if (change.operation === "remove") {
-        this.spawnPropShatterBurst(change, batch.tick);
+        this.spawnPropRemains(change, batch.tick, world, burningPropIds.has(change.id));
       }
     }
 
     return hasFreshChange;
   }
 
-  private applyMultiplayerTerrainDeltaBatchToRuntimeWorld(batch: TerrainDeltaBatch | null) {
+  private applyMultiplayerTerrainDeltaBatchToRuntimeWorld(
+    batch: TerrainDeltaBatch | null,
+    burningPropIds: ReadonlySet<string>
+  ) {
     if (!batch || !this.runtimeWorld) {
       return false;
     }
@@ -1668,7 +1931,12 @@ export class WorkerGameRuntime {
       if (change.operation === "remove") {
         propsChanged = this.runtimeWorld.removeProp(change.id) || propsChanged;
         if (isFreshChange) {
-          this.spawnPropShatterBurst(change, batch.tick);
+          this.spawnPropRemains(
+            change,
+            batch.tick,
+            this.runtimeWorld,
+            burningPropIds.has(change.id)
+          );
         }
         continue;
       }
@@ -1686,58 +1954,134 @@ export class WorkerGameRuntime {
     return propsChanged;
   }
 
-  private advancePropShatterBursts(delta: number) {
-    for (const [burstId, burst] of this.propShatterBursts) {
-      burst.elapsed += delta;
-      if (burst.elapsed < burst.duration) {
+  private advancePropRemains(delta: number) {
+    for (const [stateId, state] of this.propRemainsStates) {
+      state.elapsed += delta;
+      if (state.elapsed < getPropRemainsDuration(state)) {
         continue;
       }
 
-      this.propShatterBursts.delete(burstId);
+      this.propRemainsStates.delete(stateId);
     }
   }
 
-  private syncPropShatterBursts() {
+  private syncPropRemains() {
     const counts: Record<PropShatterMaterialKey, number> = {
       bark: 0,
       leavesOak: 0,
       leavesPine: 0,
       leavesAutumn: 0
     };
+    const flameCounts = new Array(this.propRemainsFlameMeshes.length).fill(0);
+    let emberCount = 0;
+    let smokeCount = 0;
 
-    for (const burst of this.propShatterBursts.values()) {
-      for (let fragmentIndex = 0; fragmentIndex < burst.fragments.length; fragmentIndex += 1) {
-        const fragment = getPropShatterFragmentState(burst, fragmentIndex);
-        const resource = this.propShatterBurstMeshes.get(fragment.materialKey);
+    for (const state of this.propRemainsStates.values()) {
+      for (let fragmentIndex = 0; fragmentIndex < state.fragments.length; fragmentIndex += 1) {
+        const fragment = getPropRemainsFragmentState(state, fragmentIndex);
+        const resource = this.propRemainsMeshes.get(fragment.materialKey);
         const instanceIndex = counts[fragment.materialKey];
-        if (!resource || instanceIndex >= MAX_PROP_SHATTER_INSTANCES_PER_MATERIAL) {
+        if (resource && instanceIndex < MAX_PROP_REMAINS_INSTANCES_PER_MATERIAL) {
+          voxelFxTempObject.position.set(
+            fragment.position.x,
+            fragment.position.y,
+            fragment.position.z
+          );
+          voxelFxTempObject.rotation.set(
+            fragment.rotationX,
+            fragment.rotationY,
+            fragment.rotationZ
+          );
+          voxelFxTempObject.scale.setScalar(fragment.scale);
+          voxelFxTempObject.updateMatrix();
+          resource.mesh.setMatrixAt(instanceIndex, voxelFxTempObject.matrix);
+          resource.opacityAttribute.setX(instanceIndex, fragment.opacity);
+          counts[fragment.materialKey] += 1;
+        }
+
+        if (fragment.burningAlpha <= 0.05) {
           continue;
         }
 
-        voxelFxTempObject.position.set(
-          fragment.position.x,
-          fragment.position.y,
-          fragment.position.z
-        );
-        voxelFxTempObject.rotation.set(
-          fragment.rotationX,
-          fragment.rotationY,
-          fragment.rotationZ
-        );
-        voxelFxTempObject.scale.setScalar(fragment.scale);
-        voxelFxTempObject.updateMatrix();
-        resource.mesh.setMatrixAt(instanceIndex, voxelFxTempObject.matrix);
-        resource.opacityAttribute.setX(instanceIndex, fragment.opacity);
-        counts[fragment.materialKey] += 1;
+        if (fragmentIndex % 10 === 0 && this.propRemainsFlameMeshes.length > 0) {
+          const frameIndex =
+            Math.floor((state.elapsed * 9.5 + fragmentIndex * 0.7) % this.propRemainsFlameMeshes.length);
+          const flameResource = this.propRemainsFlameMeshes[frameIndex]!;
+          const flameCount = flameCounts[frameIndex] ?? 0;
+          if (flameCount < MAX_PROP_REMAINS_FLAME_INSTANCES) {
+            voxelFxTempObject.position.set(
+              fragment.position.x,
+              fragment.position.y + 0.18 + fragment.burningAlpha * 0.16,
+              fragment.position.z
+            );
+            voxelFxTempObject.rotation.set(0, (fragmentIndex % 8) * (Math.PI / 4), 0);
+            voxelFxTempObject.scale.set(
+              0.16 + fragment.burningAlpha * 0.22,
+              0.28 + fragment.burningAlpha * 0.34,
+              0.16 + fragment.burningAlpha * 0.22
+            );
+            voxelFxTempObject.updateMatrix();
+            flameResource.mesh.setMatrixAt(flameCount, voxelFxTempObject.matrix);
+            flameResource.opacityAttribute.setX(
+              flameCount,
+              Math.min(1, fragment.burningAlpha * 0.9)
+            );
+            flameCounts[frameIndex] = flameCount + 1;
+          }
+        }
+
+        if (this.propRemainsEmberMesh && emberCount < MAX_PROP_REMAINS_EMBER_INSTANCES && fragmentIndex % 6 === 0) {
+          voxelFxTempObject.position.set(
+            fragment.position.x,
+            fragment.position.y + 0.08 + fragment.burningAlpha * 0.18,
+            fragment.position.z
+          );
+          voxelFxTempObject.rotation.set(0, 0, 0);
+          voxelFxTempObject.scale.setScalar(0.12 + fragment.burningAlpha * 0.14);
+          voxelFxTempObject.updateMatrix();
+          this.propRemainsEmberMesh.mesh.setMatrixAt(emberCount, voxelFxTempObject.matrix);
+          this.propRemainsEmberMesh.opacityAttribute.setX(
+            emberCount,
+            Math.min(1, fragment.burningAlpha * 0.95)
+          );
+          emberCount += 1;
+        }
+
+        if (
+          this.propRemainsSmokeMesh &&
+          smokeCount < MAX_PROP_REMAINS_SMOKE_INSTANCES &&
+          fragmentIndex % 5 === 0
+        ) {
+          voxelFxTempObject.position.set(
+            fragment.position.x + Math.sin(fragmentIndex * 1.37 + state.elapsed * 1.8) * 0.08,
+            fragment.position.y + 0.3 + fragment.burningAlpha * 0.44,
+            fragment.position.z + Math.cos(fragmentIndex * 1.11 + state.elapsed * 1.5) * 0.08
+          );
+          voxelFxTempObject.rotation.set(0, fragmentIndex * 0.23, 0);
+          voxelFxTempObject.scale.setScalar(0.24 + fragment.burningAlpha * 0.42);
+          voxelFxTempObject.updateMatrix();
+          this.propRemainsSmokeMesh.mesh.setMatrixAt(smokeCount, voxelFxTempObject.matrix);
+          this.propRemainsSmokeMesh.opacityAttribute.setX(
+            smokeCount,
+            0.18 + fragment.burningAlpha * 0.34
+          );
+          smokeCount += 1;
+        }
       }
     }
 
-    for (const [materialKey] of propShatterMaterialEntries) {
+    for (const [materialKey] of propRemainsMaterialEntries) {
       finalizeDynamicOpacityMesh(
-        this.propShatterBurstMeshes.get(materialKey) ?? null,
+        this.propRemainsMeshes.get(materialKey) ?? null,
         counts[materialKey]
       );
     }
+
+    this.propRemainsFlameMeshes.forEach((resource, frameIndex) => {
+      finalizeDynamicOpacityMesh(resource, flameCounts[frameIndex] ?? 0);
+    });
+    finalizeDynamicOpacityMesh(this.propRemainsEmberMesh, emberCount);
+    finalizeDynamicOpacityMesh(this.propRemainsSmokeMesh, smokeCount);
   }
 
   private ensureLoop() {
@@ -1776,7 +2120,7 @@ export class WorkerGameRuntime {
       this.updateShellCamera(elapsed);
     }
     this.updateFocusTarget();
-    this.advancePropShatterBursts(delta);
+    this.advancePropRemains(delta);
     this.syncActiveVisuals(delta, elapsed);
     this.syncWaterfalls(elapsed);
     this.updateEggLaunchPreview(this.getLocalRuntimePlayer(), elapsed);
@@ -1814,10 +2158,16 @@ export class WorkerGameRuntime {
     }
 
     this.latestRuntimeDiagnostics = currentDiagnostics;
+    const previousBurningPropIds = this.getFrameBurningPropIds(this.latestRuntimeFrame);
     this.latestRuntimeFrame = createLocalRuntimeFrame(this.runtime);
+    this.recordRecentExplosionImpacts(
+      this.latestRuntimeFrame.authoritative?.gameplayEventBatch ?? null,
+      this.latestRuntimeFrame.time
+    );
     this.postHudState(this.latestRuntimeFrame.hudState);
     const hadPropChanges = this.processLocalPropChangeBatch(
-      this.latestRuntimeFrame.authoritative?.terrainDeltaBatch ?? null
+      this.latestRuntimeFrame.authoritative?.terrainDeltaBatch ?? null,
+      previousBurningPropIds
     );
 
     const terrainRevision = this.runtime.getWorld().getTerrainRevision();
@@ -2412,7 +2762,8 @@ export class WorkerGameRuntime {
     this.syncEggs(frame?.eggs ?? [], elapsed);
     this.syncEggScatterDebris(frame?.eggScatterDebris ?? []);
     this.syncVoxelBursts(frame?.voxelBursts ?? []);
-    this.syncPropShatterBursts();
+    this.syncBurningProps(frame?.burningProps ?? [], elapsed);
+    this.syncPropRemains();
     this.syncSkyDrops(frame?.skyDrops ?? [], elapsed);
     this.syncClusters(frame?.fallingClusters ?? [], elapsed);
   }
@@ -3300,17 +3651,24 @@ export class WorkerGameRuntime {
         this.latestDirtyChunkCount = message.patches.length;
         this.applyTerrainPatches(message.patches);
         return;
-      case "frame":
+      case "frame": {
+        const previousBurningPropIds = this.getFrameBurningPropIds(this.latestExternalFrame);
         this.latestExternalFrame = message.frame;
+        this.recordRecentExplosionImpacts(
+          message.frame.authoritative?.gameplayEventBatch ?? null,
+          message.frame.time
+        );
         if (
           this.applyMultiplayerTerrainDeltaBatchToRuntimeWorld(
-            message.frame.authoritative?.terrainDeltaBatch ?? null
+            message.frame.authoritative?.terrainDeltaBatch ?? null,
+            previousBurningPropIds
           )
         ) {
           this.rebuildProps(this.currentDocument);
         }
         this.postHudState(message.frame.hudState);
         return;
+      }
       case "hud_state":
         this.postHudState(message.hudState);
         return;
@@ -3347,7 +3705,7 @@ export class WorkerGameRuntime {
   private applyFullWorld(document: MapDocumentV1, patches: TerrainChunkPatchPayload[]) {
     this.currentDocument = normalizeArenaBudgetMapDocument(document);
     this.runtimeWorld = new MutableVoxelWorld(this.currentDocument);
-    this.resetPropShatterState();
+    this.resetPropRemainsState();
     this.clearTerrain();
     this.applyTerrainPatches(patches);
     this.rebuildWaterfalls(this.currentDocument);
@@ -3429,25 +3787,436 @@ export class WorkerGameRuntime {
     }
   }
 
+  private getDefaultLeafPropMaterial(propKind: MapProp["kind"]) {
+    if (propKind === "tree-pine") {
+      return propMaterials.leavesPine;
+    }
+
+    if (propKind === "tree-autumn") {
+      return propMaterials.leavesAutumn;
+    }
+
+    return propMaterials.leavesOak;
+  }
+
+  private getDefaultVoxelPropMaterial(
+    propKind: MapProp["kind"],
+    voxelKind: "wood" | "leaves"
+  ) {
+    return voxelKind === "wood"
+      ? propMaterials.bark
+      : this.getDefaultLeafPropMaterial(propKind);
+  }
+
+  private restorePropVisualDefaults(visual: PropVisual) {
+    for (const mesh of visual.voxelMeshes) {
+      mesh.material = this.getDefaultVoxelPropMaterial(
+        visual.prop.kind,
+        mesh.userData.voxelKind
+      );
+      if (mesh.userData.burningMaterial) {
+        mesh.userData.burningMaterial.dispose();
+        mesh.userData.burningMaterial = null;
+      }
+    }
+
+    for (const emitter of visual.flameEmitters) {
+      visual.group.remove(emitter.group);
+      emitter.material.dispose();
+    }
+    visual.flameEmitters = [];
+
+    if (visual.emberMaterial) {
+      visual.emberMaterial.dispose();
+      visual.emberMaterial = null;
+    }
+    for (const emberMesh of visual.emberMeshes) {
+      visual.group.remove(emberMesh);
+    }
+    visual.emberMeshes = [];
+
+    if (visual.smokeMaterial) {
+      visual.smokeMaterial.dispose();
+      visual.smokeMaterial = null;
+    }
+    for (const smokeMesh of visual.smokeMeshes) {
+      visual.group.remove(smokeMesh);
+    }
+    visual.smokeMeshes = [];
+
+    visual.burningFxState = null;
+    visual.group.position.copy(visual.center);
+    visual.group.rotation.set(0, 0, 0);
+  }
+
+  private ensurePropVisualBurningAssets(visual: PropVisual, frameTime: number) {
+    if (!visual.burningFxState) {
+      visual.burningFxState = createBurningTreeFxState({
+        id: `burning-prop-${visual.prop.id}`,
+        duration: BURNING_TREE_STANDING_DURATION,
+        ignitionOrigin: this.resolveBurningIgnitionOrigin(visual, frameTime),
+        prop: visual.prop
+      });
+    }
+
+    for (const mesh of visual.voxelMeshes) {
+      if (!mesh.userData.burningMaterial) {
+        const burningMaterial = this.getDefaultVoxelPropMaterial(
+          visual.prop.kind,
+          mesh.userData.voxelKind
+        ).clone() as THREE.MeshStandardMaterial;
+        burningMaterial.emissive = new THREE.Color(
+          mesh.userData.voxelKind === "wood" ? "#ff6c23" : "#ff962f"
+        );
+        burningMaterial.emissiveIntensity = 0;
+        burningMaterial.color.setRGB(1, 1, 1);
+        burningMaterial.needsUpdate = true;
+        mesh.userData.burningMaterial = burningMaterial;
+        this.sunShadows.trackMaterial(burningMaterial);
+      }
+      mesh.material = mesh.userData.burningMaterial;
+    }
+
+    if (visual.flameEmitters.length === 0) {
+      visual.flameEmitters = Array.from(
+        { length: MAX_BURNING_PROP_FLAME_EMITTERS },
+        (_, index) => {
+          const material = new THREE.MeshBasicMaterial({
+            alphaTest: 0.24,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            map: propFxTextures.flameFrames[0] ?? null,
+            opacity: 0,
+            side: THREE.DoubleSide,
+            toneMapped: false,
+            transparent: true
+          });
+          const group = new THREE.Group();
+          const quads = [0, 1].map((quadIndex) => {
+            const mesh = new THREE.Mesh(flameCardGeometry, material);
+            mesh.castShadow = false;
+            mesh.receiveShadow = false;
+            mesh.frustumCulled = false;
+            mesh.rotation.y = quadIndex * (Math.PI / 2);
+            group.add(mesh);
+            return mesh;
+          });
+          group.visible = false;
+          visual.group.add(group);
+          return {
+            currentFrame: 0,
+            group,
+            material,
+            quads,
+            seed: (index + 1) * 0.173 + hashString(`${visual.prop.id}:flame:${index}`) * 0.0000001
+          };
+        }
+      );
+    }
+
+    if (!visual.emberMaterial) {
+      visual.emberMaterial = new THREE.MeshBasicMaterial({
+        color: "#ffb15a",
+        transparent: true,
+        opacity: 0.86,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        toneMapped: false
+      });
+      visual.emberMeshes = Array.from(
+        { length: MAX_BURNING_PROP_EMBER_PARTICLES },
+        () => {
+        const mesh = new THREE.Mesh(sharedVoxelGeometry, visual.emberMaterial!);
+        mesh.castShadow = false;
+        mesh.receiveShadow = false;
+        mesh.frustumCulled = false;
+        mesh.visible = false;
+        visual.group.add(mesh);
+        return mesh;
+        }
+      );
+    }
+
+    if (!visual.smokeMaterial) {
+      visual.smokeMaterial = new THREE.MeshBasicMaterial({
+        color: "#48362d",
+        transparent: true,
+        opacity: 0.34,
+        blending: THREE.NormalBlending,
+        depthWrite: false,
+        toneMapped: false
+      });
+      visual.smokeMeshes = Array.from(
+        { length: MAX_BURNING_PROP_SMOKE_PARTICLES },
+        () => {
+        const mesh = new THREE.Mesh(sharedVoxelGeometry, visual.smokeMaterial!);
+        mesh.castShadow = false;
+        mesh.receiveShadow = false;
+        mesh.frustumCulled = false;
+        mesh.visible = false;
+        visual.group.add(mesh);
+        return mesh;
+        }
+      );
+    }
+  }
+
+  private disposePropVisual(visual: PropVisual) {
+    this.restorePropVisualDefaults(visual);
+  }
+
+  private syncBurningProps(
+    burningProps: EngineRuntimeRenderFrame["burningProps"],
+    elapsed: number
+  ) {
+    const burningById = new Map(burningProps.map((prop) => [prop.id, prop]));
+    const frameTime =
+      (this.mode === "multiplayer" ? this.latestExternalFrame?.time : this.latestRuntimeFrame?.time) ??
+      elapsed;
+
+    for (const [propId, visual] of this.propVisuals) {
+      const burningProp = burningById.get(propId);
+      if (!burningProp) {
+        this.restorePropVisualDefaults(visual);
+        continue;
+      }
+
+      this.ensurePropVisualBurningAssets(visual, frameTime);
+      const burnElapsed = THREE.MathUtils.clamp(
+        BURNING_TREE_STANDING_DURATION - burningProp.remaining,
+        0,
+        BURNING_TREE_STANDING_DURATION
+      );
+      const activeVoxelIndices = getBurningTreeActiveVoxelIndices(
+        visual.burningFxState!,
+        burnElapsed,
+        MAX_BURNING_PROP_FLAME_EMITTERS
+      );
+      const smokeVoxelIndices = getBurningTreeActiveVoxelIndices(
+        visual.burningFxState!,
+        burnElapsed,
+        MAX_BURNING_PROP_SMOKE_PARTICLES
+      );
+      visual.group.position.copy(visual.center);
+      visual.group.rotation.set(0, 0, 0);
+
+      visual.voxelMeshes.forEach((mesh, voxelIndex) => {
+        const voxelMaterial = mesh.userData.burningMaterial;
+        if (!voxelMaterial) {
+          return;
+        }
+
+        const voxelState = getBurningTreeVoxelVisualState(
+          visual.burningFxState!,
+          voxelIndex,
+          burnElapsed
+        );
+        const isCharred = voxelState.phase === "charred";
+        if (mesh.userData.voxelKind === "wood") {
+          const charBlend = isCharred
+            ? Math.max(0.9, voxelState.charAlpha)
+            : Math.min(0.84, voxelState.charAlpha * 0.96);
+          voxelMaterial.color.setRGB(
+            THREE.MathUtils.lerp(1, 0.22, charBlend),
+            THREE.MathUtils.lerp(1, 0.16, charBlend),
+            THREE.MathUtils.lerp(1, 0.1, charBlend)
+          );
+        } else {
+          const charBlend = isCharred
+            ? Math.max(0.94, voxelState.charAlpha)
+            : Math.min(0.9, voxelState.charAlpha * 0.98);
+          voxelMaterial.color.setRGB(
+            THREE.MathUtils.lerp(1, 0.18, charBlend),
+            THREE.MathUtils.lerp(1, 0.13, charBlend),
+            THREE.MathUtils.lerp(1, 0.09, charBlend)
+          );
+        }
+        voxelMaterial.emissiveIntensity =
+          voxelState.flameAlpha * (mesh.userData.voxelKind === "wood" ? 0.56 : 0.78) +
+          voxelState.emberAlpha * (isCharred ? 0.18 : 0.15);
+      });
+
+      visual.flameEmitters.forEach((emitter, emitterIndex) => {
+        const voxelIndex = activeVoxelIndices[emitterIndex];
+        if (voxelIndex === undefined) {
+          emitter.group.visible = false;
+          return;
+        }
+
+        const voxelState = getBurningTreeVoxelVisualState(
+          visual.burningFxState!,
+          voxelIndex,
+          burnElapsed
+        );
+        if (voxelState.flameAlpha <= 0.04) {
+          emitter.group.visible = false;
+          return;
+        }
+
+        const voxelMesh = visual.voxelMeshes[voxelIndex];
+        if (!voxelMesh) {
+          emitter.group.visible = false;
+          return;
+        }
+
+        const frameIndex = Math.floor(
+          (elapsed * 11.5 + emitter.seed * 19) % propFxTextures.flameFrames.length
+        );
+        if (frameIndex !== emitter.currentFrame) {
+          emitter.currentFrame = frameIndex;
+          emitter.material.map = propFxTextures.flameFrames[frameIndex] ?? null;
+          emitter.material.needsUpdate = true;
+        }
+
+        const wobble = Math.sin(elapsed * 8.8 + emitter.seed * 6.7) * 0.04;
+        const jitterX = Math.sin(elapsed * 6.1 + emitter.seed * 11.3) * 0.06;
+        const jitterZ = Math.cos(elapsed * 7.4 + emitter.seed * 9.1) * 0.06;
+        const baseScale = voxelMesh.userData.voxelKind === "wood" ? 0.44 : 0.58;
+        emitter.material.opacity = Math.min(
+          1,
+          voxelState.flameAlpha * (0.9 + Math.sin(elapsed * 14.2 + emitter.seed * 17) * 0.18)
+        );
+        emitter.group.visible = emitter.material.opacity > 0.05;
+        emitter.group.position.set(
+          voxelMesh.userData.localPosition.x + jitterX,
+          voxelMesh.userData.localPosition.y +
+            (voxelMesh.userData.voxelKind === "wood" ? 0.12 : 0.2) +
+            voxelState.flameAlpha * 0.18,
+          voxelMesh.userData.localPosition.z + jitterZ
+        );
+        emitter.group.rotation.set(0, emitter.seed * Math.PI * 2 + wobble, 0);
+        emitter.group.scale.setScalar(baseScale + voxelState.flameAlpha * 0.42);
+      });
+
+      if (visual.emberMaterial) {
+        visual.emberMaterial.opacity = 0.72;
+      }
+      visual.emberMeshes.forEach((mesh, index) => {
+        const voxelIndex =
+          activeVoxelIndices.length > 0
+            ? activeVoxelIndices[index % activeVoxelIndices.length]!
+            : null;
+        if (voxelIndex === null || voxelIndex === undefined) {
+          mesh.visible = false;
+          return;
+        }
+
+        const voxelMesh = visual.voxelMeshes[voxelIndex];
+        const voxelState = getBurningTreeVoxelVisualState(
+          visual.burningFxState!,
+          voxelIndex,
+          burnElapsed
+        );
+        if (!voxelMesh || voxelState.emberAlpha <= 0.04) {
+          mesh.visible = false;
+          return;
+        }
+
+        const loop = (elapsed * (1.4 + (index % 3) * 0.38) + index * 0.17) % 1;
+        const yaw = emitterSeed(index, visual.prop.id);
+        const driftRadius = 0.08 + (index % 4) * 0.03 + voxelState.flameAlpha * 0.14;
+        mesh.visible = true;
+        mesh.position.set(
+          voxelMesh.userData.localPosition.x + Math.cos(yaw + loop * Math.PI * 2) * driftRadius,
+          voxelMesh.userData.localPosition.y + 0.08 + loop * (0.24 + voxelState.emberAlpha * 0.54),
+          voxelMesh.userData.localPosition.z + Math.sin(yaw + loop * Math.PI * 2) * driftRadius
+        );
+        mesh.scale.setScalar(0.05 + voxelState.emberAlpha * 0.1 + (index % 3) * 0.014);
+        mesh.rotation.set(loop * Math.PI * 4, yaw, loop * Math.PI * 2.6);
+      });
+
+      if (visual.smokeMaterial) {
+        visual.smokeMaterial.opacity = 0.44;
+      }
+      visual.smokeMeshes.forEach((mesh, index) => {
+        const voxelIndex =
+          smokeVoxelIndices.length > 0
+            ? smokeVoxelIndices[index % smokeVoxelIndices.length]!
+            : null;
+        if (voxelIndex === null || voxelIndex === undefined) {
+          mesh.visible = false;
+          return;
+        }
+
+        const voxelMesh = visual.voxelMeshes[voxelIndex];
+        const voxelState = getBurningTreeVoxelVisualState(
+          visual.burningFxState!,
+          voxelIndex,
+          burnElapsed
+        );
+        if (!voxelMesh || voxelState.smokeAlpha <= 0.04) {
+          mesh.visible = false;
+          return;
+        }
+
+        const loop = (elapsed * (0.42 + index * 0.08) + index * 0.21) % 1;
+        const driftAngle = emitterSeed(index + 19, visual.prop.id);
+        const lateralRadius = 0.12 + voxelState.smokeAlpha * 0.2 + (index % 4) * 0.02;
+        mesh.visible = true;
+        mesh.position.set(
+          voxelMesh.userData.localPosition.x + Math.cos(driftAngle + loop * 1.7) * lateralRadius,
+          voxelMesh.userData.localPosition.y + 0.2 + loop * (0.64 + voxelState.smokeAlpha * 0.82),
+          voxelMesh.userData.localPosition.z + Math.sin(driftAngle + loop * 1.7) * lateralRadius
+        );
+        mesh.scale.setScalar(0.12 + voxelState.smokeAlpha * 0.34 + loop * 0.18);
+        mesh.rotation.set(loop * 0.32, driftAngle, loop * 0.08);
+      });
+    }
+  }
+
   private rebuildProps(document: MapDocumentV1) {
+    for (const visual of this.propVisuals.values()) {
+      this.disposePropVisual(visual);
+    }
+
+    this.propVisuals.clear();
     this.propsGroup.clear();
     for (const prop of document.props) {
-      for (const voxel of getMapPropVoxels(prop)) {
+      const voxels = getMapPropVoxels(prop);
+      const center = voxels.reduce(
+        (accumulator, voxel) =>
+          accumulator.add(new THREE.Vector3(voxel.x + 0.5, voxel.y + 0.5, voxel.z + 0.5)),
+        new THREE.Vector3()
+      ).multiplyScalar(1 / Math.max(1, voxels.length));
+      const group = new THREE.Group();
+      group.position.copy(center);
+      const voxelMeshes = voxels.map((voxel) => {
         const mesh = new THREE.Mesh(
           this.propGeometry,
           voxel.kind === "wood"
             ? propMaterials.bark
-            : prop.kind === "tree-pine"
-              ? propMaterials.leavesPine
-              : prop.kind === "tree-autumn"
-                ? propMaterials.leavesAutumn
-                : propMaterials.leavesOak
-        );
-        mesh.position.set(voxel.x + 0.5, voxel.y + 0.5, voxel.z + 0.5);
+            : this.getDefaultLeafPropMaterial(prop.kind)
+        ) as unknown as PropVoxelMesh;
+        mesh.userData = {
+          burningMaterial: null,
+          localPosition: new THREE.Vector3(
+            voxel.x + 0.5 - center.x,
+            voxel.y + 0.5 - center.y,
+            voxel.z + 0.5 - center.z
+          ),
+          voxelKind: voxel.kind
+        };
+        mesh.position.copy(mesh.userData.localPosition);
         mesh.castShadow = true;
         mesh.receiveShadow = true;
-        this.propsGroup.add(mesh);
-      }
+        group.add(mesh);
+        return mesh;
+      });
+
+      const visual: PropVisual = {
+        prop,
+        center,
+        burningFxState: null,
+        flameEmitters: [],
+        group,
+        voxelMeshes,
+        emberMeshes: [],
+        emberMaterial: null,
+        smokeMeshes: [],
+        smokeMaterial: null
+      };
+      this.propVisuals.set(prop.id, visual);
+      this.propsGroup.add(group);
     }
   }
 

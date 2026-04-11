@@ -73,22 +73,25 @@ const cloneAuthoritativeState = (
     position: { ...projectile.position },
     velocity: { ...projectile.velocity }
   })),
-  hazards: {
-    fallingClusters: state.hazards.fallingClusters.map((cluster) => ({
-      ...cluster,
-      voxels: cluster.voxels.map((voxel) => ({ ...voxel }))
-    })),
-    skyDrops: state.hazards.skyDrops.map((skyDrop) => ({
-      ...skyDrop,
-      landingVoxel: { ...skyDrop.landingVoxel }
-    })),
-    eggScatterDebris: state.hazards.eggScatterDebris.map((debris) => ({
-      ...debris,
-      origin: { ...debris.origin },
-      destination: { ...debris.destination }
-    })),
-    waterFlood: { ...state.hazards.waterFlood }
-  },
+    hazards: {
+      fallingClusters: state.hazards.fallingClusters.map((cluster) => ({
+        ...cluster,
+        voxels: cluster.voxels.map((voxel) => ({ ...voxel }))
+      })),
+      skyDrops: state.hazards.skyDrops.map((skyDrop) => ({
+        ...skyDrop,
+        landingVoxel: { ...skyDrop.landingVoxel }
+      })),
+      eggScatterDebris: state.hazards.eggScatterDebris.map((debris) => ({
+        ...debris,
+        origin: { ...debris.origin },
+        destination: { ...debris.destination }
+      })),
+      burningProps: state.hazards.burningProps.map((prop) => ({
+        ...prop
+      })),
+      waterFlood: { ...state.hazards.waterFlood }
+    },
   stats: {
     terrainRevision: state.stats.terrainRevision
   },

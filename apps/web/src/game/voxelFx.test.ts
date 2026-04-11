@@ -1,13 +1,19 @@
 import { describe, expect, it } from "vitest";
+import { getMapPropVoxels } from "@out-of-bounds/map";
 import {
-  createPropShatterBurstState,
+  createBurningTreeFxState,
+  createPropRemainsState,
   getEggScatterDebrisVisualState,
-  getPropShatterFragmentState,
+  getBurningTreeActiveVoxelIndices,
+  getBurningTreeVoxelVisualState,
+  getPropRemainsDuration,
+  getPropRemainsFragmentState,
   getPropShatterMaterialKey,
   getVoxelBurstMaterialProfile,
   getVoxelBurstParticleCount,
   getVoxelBurstParticleState,
-  getVoxelBurstShockwaveState
+  getVoxelBurstShockwaveState,
+  SETTLED_PROP_REMAINS_SCALE
 } from "./voxelFx";
 
 describe("voxelFx", () => {
@@ -197,74 +203,237 @@ describe("voxelFx", () => {
     expect(visual.scaleY).not.toBe(1);
   });
 
-  it("samples tree shatter fragments deterministically while preserving bark and leaves", () => {
-    const burst = createPropShatterBurstState({
-      id: "tree-burst-1",
-      prop: {
-        id: "prop-1",
-        kind: "tree-oak",
-        x: 12,
-        y: 4,
-        z: 9
-      }
+  it("uses every authored tree voxel when building settled remains", () => {
+    const oakProp = {
+      id: "prop-oak",
+      kind: "tree-oak" as const,
+      x: 12,
+      y: 4,
+      z: 9
+    };
+    const pineProp = {
+      id: "prop-pine",
+      kind: "tree-pine" as const,
+      x: 10,
+      y: 4,
+      z: 10
+    };
+    const autumnProp = {
+      id: "prop-autumn",
+      kind: "tree-autumn" as const,
+      x: 14,
+      y: 4,
+      z: 12
+    };
+    const oakRemains = createPropRemainsState({
+      id: "remains-oak",
+      prop: oakProp,
+      settleHeightAt: () => 2
     });
-    const repeated = createPropShatterBurstState({
-      id: "tree-burst-1",
-      prop: {
-        id: "prop-1",
-        kind: "tree-oak",
-        x: 12,
-        y: 4,
-        z: 9
-      }
+    const pineRemains = createPropRemainsState({
+      id: "remains-pine",
+      prop: pineProp,
+      settleHeightAt: () => 2
+    });
+    const autumnRemains = createPropRemainsState({
+      id: "remains-autumn",
+      prop: autumnProp,
+      settleHeightAt: () => 2
     });
 
-    expect(burst.fragments.length).toBeLessThanOrEqual(96);
-    expect(burst.fragments).toEqual(repeated.fragments);
-    expect(burst.fragments.some((fragment) => fragment.materialKey === "bark")).toBe(true);
-    expect(burst.fragments.some((fragment) => fragment.materialKey === "leavesOak")).toBe(true);
-
-    const fragment = getPropShatterFragmentState(
-      {
-        ...burst,
-        elapsed: 0.2
-      },
-      0
-    );
-    expect(fragment.opacity).toBeGreaterThan(0);
-    expect(fragment.scale).toBeGreaterThan(0);
+    expect(oakRemains.fragments).toHaveLength(getMapPropVoxels(oakProp).length);
+    expect(pineRemains.fragments).toHaveLength(getMapPropVoxels(pineProp).length);
+    expect(autumnRemains.fragments).toHaveLength(getMapPropVoxels(autumnProp).length);
+    expect(oakRemains.fragments.some((fragment) => fragment.materialKey === "bark")).toBe(true);
+    expect(oakRemains.fragments.some((fragment) => fragment.materialKey === "leavesOak")).toBe(true);
+    expect(pineRemains.fragments.some((fragment) => fragment.materialKey === "leavesPine")).toBe(true);
+    expect(autumnRemains.fragments.some((fragment) => fragment.materialKey === "leavesAutumn")).toBe(true);
   });
 
-  it("routes prop shatter leaves to the matching tree material family", () => {
+  it("routes prop remains leaves to the matching tree material family", () => {
     expect(getPropShatterMaterialKey("tree-oak", "wood")).toBe("bark");
     expect(getPropShatterMaterialKey("tree-oak", "leaves")).toBe("leavesOak");
     expect(getPropShatterMaterialKey("tree-pine", "leaves")).toBe("leavesPine");
     expect(getPropShatterMaterialKey("tree-autumn", "leaves")).toBe("leavesAutumn");
 
-    const pineBurst = createPropShatterBurstState({
-      id: "tree-burst-2",
+    const pineRemains = createPropRemainsState({
+      id: "tree-remains-2",
       prop: {
         id: "prop-2",
         kind: "tree-pine",
         x: 10,
         y: 4,
         z: 10
-      }
+      },
+      settleHeightAt: () => 3
     });
-    const autumnBurst = createPropShatterBurstState({
-      id: "tree-burst-3",
+    const autumnRemains = createPropRemainsState({
+      id: "tree-remains-3",
       prop: {
         id: "prop-3",
         kind: "tree-autumn",
         x: 10,
         y: 4,
         z: 10
+      },
+      settleHeightAt: () => 3
+    });
+
+    expect(pineRemains.fragments.some((fragment) => fragment.materialKey === "leavesPine")).toBe(true);
+    expect(pineRemains.fragments.some((fragment) => fragment.materialKey === "leavesAutumn")).toBe(false);
+    expect(autumnRemains.fragments.some((fragment) => fragment.materialKey === "leavesAutumn")).toBe(true);
+    expect(autumnRemains.fragments.some((fragment) => fragment.materialKey === "leavesPine")).toBe(false);
+  });
+
+  it("starts tree ignition from blast-facing wood pockets and keeps untouched voxels unburned", () => {
+    const state = createBurningTreeFxState({
+      id: "burn-tree-1",
+      prop: {
+        id: "prop-burn-1",
+        kind: "tree-oak",
+        x: 11,
+        y: 4,
+        z: 11
+      },
+      ignitionOrigin: {
+        x: 7.5,
+        y: 6.5,
+        z: 11.5
       }
     });
 
-    expect(pineBurst.fragments.some((fragment) => fragment.materialKey === "leavesPine")).toBe(true);
-    expect(pineBurst.fragments.some((fragment) => fragment.materialKey === "leavesAutumn")).toBe(false);
-    expect(autumnBurst.fragments.some((fragment) => fragment.materialKey === "leavesAutumn")).toBe(true);
-    expect(autumnBurst.fragments.some((fragment) => fragment.materialKey === "leavesPine")).toBe(false);
+    const earliestWood = state.voxels
+      .filter((voxel) => voxel.voxelKind === "wood")
+      .sort((left, right) => left.ignitionTime - right.ignitionTime)[0]!;
+    const earliestLeafIgnition = Math.min(
+      ...state.voxels
+        .filter((voxel) => voxel.voxelKind === "leaves")
+        .map((voxel) => voxel.ignitionTime)
+    );
+    const lateLeafIndex = state.voxels.findIndex(
+      (voxel) =>
+        voxel.voxelKind === "leaves" &&
+        voxel.ignitionTime > earliestWood.ignitionTime + 1.5
+    );
+
+    expect(earliestWood.position.x).toBeLessThanOrEqual(state.center.x + 0.25);
+    expect(earliestWood.ignitionTime).toBeLessThan(earliestLeafIgnition);
+    expect(lateLeafIndex).toBeGreaterThanOrEqual(0);
+    expect(
+      getBurningTreeVoxelVisualState(
+        state,
+        lateLeafIndex,
+        earliestWood.ignitionTime + 0.45
+      )
+    ).toEqual(
+      expect.objectContaining({
+        charAlpha: 0,
+        flameAlpha: 0,
+        phase: "untouched"
+      })
+    );
+
+    const earlyIgnitedCount = state.voxels.filter(
+      (_, index) =>
+        getBurningTreeVoxelVisualState(state, index, 6).phase !== "untouched"
+    ).length;
+    expect(earlyIgnitedCount).toBeGreaterThan(Math.floor(state.voxels.length * 0.52));
+  });
+
+  it("limits active burn emitters to currently hot voxel subsets", () => {
+    const state = createBurningTreeFxState({
+      id: "burn-tree-2",
+      prop: {
+        id: "prop-burn-2",
+        kind: "tree-pine",
+        x: 10,
+        y: 4,
+        z: 10
+      },
+      ignitionOrigin: {
+        x: 14.5,
+        y: 6.5,
+        z: 10.5
+      }
+    });
+
+    const activeIndices = getBurningTreeActiveVoxelIndices(state, 6.8, 18);
+    const charredVoxel = state.voxels.findIndex(
+      (voxel) => voxel.burnoutTime < 6.8
+    );
+
+    expect(activeIndices.length).toBeGreaterThan(0);
+    expect(activeIndices.length).toBeGreaterThan(8);
+    expect(activeIndices.length).toBeLessThanOrEqual(18);
+    expect(
+      activeIndices.every(
+        (index) => getBurningTreeVoxelVisualState(state, index, 6.8).activeScore > 0
+      )
+    ).toBe(true);
+    expect(charredVoxel).toBeGreaterThanOrEqual(0);
+    expect(
+      getBurningTreeVoxelVisualState(state, charredVoxel, 6.8)
+    ).toEqual(
+      expect.objectContaining({
+        phase: "charred"
+      })
+    );
+    expect(
+      getBurningTreeVoxelVisualState(state, charredVoxel, 6.8).charAlpha
+    ).toBeGreaterThan(0.8);
+    expect(
+      getBurningTreeVoxelVisualState(state, charredVoxel, 6.8).activeScore
+    ).toBeGreaterThan(0.1);
+  });
+
+  it("settles remains onto sampled ground and transitions through collapse, settled, and fade", () => {
+    const remains = createPropRemainsState({
+      id: "tree-remains-phases",
+      burning: true,
+      prop: {
+        id: "prop-4",
+        kind: "tree-oak",
+        x: 11,
+        y: 4,
+        z: 11
+      },
+      settleHeightAt: (x, z) => (x + z > 23 ? 5 : 3)
+    });
+    const collapseFragment = getPropRemainsFragmentState(
+      {
+        ...remains,
+        elapsed: 0.2
+      },
+      0
+    );
+    const settledFragment = getPropRemainsFragmentState(
+      {
+        ...remains,
+        elapsed: remains.collapseDuration + 0.8
+      },
+      0
+    );
+    const fadeFragment = getPropRemainsFragmentState(
+      {
+        ...remains,
+        elapsed: remains.collapseDuration + remains.settledDuration + 1.2
+      },
+      0
+    );
+
+    expect(remains.fragments[0]?.target.y).toBeGreaterThanOrEqual(3.5);
+    expect(getPropRemainsDuration(remains)).toBeCloseTo(
+      remains.collapseDuration + remains.settledDuration + remains.fadeDuration
+    );
+    expect(collapseFragment.phase).toBe("collapse");
+    expect(collapseFragment.scale).toBeGreaterThan(SETTLED_PROP_REMAINS_SCALE);
+    expect(collapseFragment.position.y).not.toBe(remains.fragments[0]?.target.y);
+    expect(settledFragment.phase).toBe("settled");
+    expect(settledFragment.scale).toBeCloseTo(SETTLED_PROP_REMAINS_SCALE, 2);
+    expect(settledFragment.position.y).toBeGreaterThanOrEqual((remains.fragments[0]?.target.y ?? 0) - 0.02);
+    expect(settledFragment.burningAlpha).toBeGreaterThan(0);
+    expect(fadeFragment.phase).toBe("fade");
+    expect(fadeFragment.scale).toBeLessThan(SETTLED_PROP_REMAINS_SCALE);
+    expect(fadeFragment.opacity).toBeLessThan(1);
   });
 });

@@ -62,6 +62,7 @@ describe("wire helpers", () => {
             players: [],
             eggs: [],
             eggScatterDebris: [],
+            burningProps: [],
             voxelBursts: [],
             skyDrops: [],
             fallingClusters: [],
@@ -76,6 +77,7 @@ describe("wire helpers", () => {
                 fallingClusters: [],
                 skyDrops: [],
                 eggScatterDebris: [],
+                burningProps: [],
                 waterFlood: {
                   active: false,
                   breachLevelY: 0,

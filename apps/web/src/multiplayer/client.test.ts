@@ -80,6 +80,7 @@ const createSharedFrame = (
   players: [],
   eggs: [],
   eggScatterDebris: [],
+  burningProps: [],
   voxelBursts: [],
   skyDrops: [],
   fallingClusters: [],
@@ -94,6 +95,7 @@ const createSharedFrame = (
       fallingClusters: [],
       skyDrops: [],
       eggScatterDebris: [],
+      burningProps: [],
       waterFlood: {
         active: false,
         breachLevelY: 0,

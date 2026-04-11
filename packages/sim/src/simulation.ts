@@ -4,6 +4,7 @@ import {
   MutableVoxelWorld,
   WORLD_FLOOR_Y,
   createDefaultArenaMap,
+  getMapPropVoxels,
   createVoxelKey,
   isInBounds,
   parseVoxelKey
@@ -24,6 +25,8 @@ import type {
   AuthoritativePlayerState,
   AuthoritativeProjectileState,
   AuthoritativeSkyDropState,
+  BurningPropSourceKind,
+  BurningPropViewState,
   EggScatterDebrisViewState,
   EggViewState,
   FallingClusterPhase,
@@ -46,6 +49,7 @@ import type {
   RuntimeFallingClusterState,
   RuntimeInteractionFocusState,
   RuntimeInteractionInvalidReason,
+  RuntimeBurningPropState,
   RuntimePlayerState,
   RuntimeSkyDropState,
   RuntimeVoxelBurstState,
@@ -127,6 +131,7 @@ const WATER_JUMP_SPEED_MULTIPLIER = 0.72;
 const WATER_EGG_DRAG = 7.5;
 const WATER_EGG_VERTICAL_DRAG = 4.2;
 const WATER_EGG_BOUNCE_MULTIPLIER = 0.4;
+const BURNING_TREE_DURATION = 15;
 const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
 
 interface SimPlayer {
@@ -209,6 +214,16 @@ interface SimEggScatterDebris {
   destination: Vector3;
   elapsed: number;
   duration: number;
+}
+
+interface SimBurningProp {
+  id: string;
+  kind: MapPropKind;
+  x: number;
+  y: number;
+  z: number;
+  remaining: number;
+  sourceKind: BurningPropSourceKind;
 }
 
 interface SimVoxelBurst {
@@ -418,6 +433,7 @@ export class OutOfBoundsSimulation {
   private readonly fallingClusters = new Map<string, SimFallingCluster>();
   private readonly eggs = new Map<string, SimEgg>();
   private readonly eggScatterDebris = new Map<string, SimEggScatterDebris>();
+  private readonly burningProps = new Map<string, SimBurningProp>();
   private readonly voxelBursts = new Map<string, SimVoxelBurst>();
   private readonly skyDrops = new Map<string, SimSkyDrop>();
   private readonly npcMemories = new Map<string, NpcMemory>();
@@ -487,6 +503,7 @@ export class OutOfBoundsSimulation {
     this.fallingClusters.clear();
     this.eggs.clear();
     this.eggScatterDebris.clear();
+    this.burningProps.clear();
     this.voxelBursts.clear();
     this.skyDrops.clear();
     this.npcMemories.clear();
@@ -716,6 +733,17 @@ export class OutOfBoundsSimulation {
   getEggScatterDebrisState(debrisId: string) {
     const debris = this.eggScatterDebris.get(debrisId);
     return debris ? this.toEggScatterDebrisViewState(debris) : null;
+  }
+
+  getBurningProps(): BurningPropViewState[] {
+    return [...this.burningProps.values()]
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .map((prop) => this.toBurningPropViewState(prop));
+  }
+
+  getBurningPropRuntimeState(propId: string): RuntimeBurningPropState | null {
+    const prop = this.burningProps.get(propId);
+    return prop ? (this.toBurningPropViewState(prop) as RuntimeBurningPropState) : null;
   }
 
   getVoxelBursts(): VoxelBurstViewState[] {
@@ -952,6 +980,7 @@ export class OutOfBoundsSimulation {
     const eggScatterDebris = [...this.eggScatterDebris.values()]
       .map((debris) => this.toAuthoritativeEggScatterDebrisState(debris))
       .sort((left, right) => left.id.localeCompare(right.id));
+    const burningProps = this.getBurningProps();
 
     return {
       tick: this.tick,
@@ -964,6 +993,7 @@ export class OutOfBoundsSimulation {
         fallingClusters,
         skyDrops,
         eggScatterDebris,
+        burningProps,
         waterFlood: this.toWaterFloodState()
       },
       stats: {
@@ -990,6 +1020,7 @@ export class OutOfBoundsSimulation {
       fallingClusters: this.getFallingClusters(),
       eggs: this.getEggs(),
       eggScatterDebris: this.getEggScatterDebris(),
+      burningProps: this.getBurningProps(),
       voxelBursts: this.getVoxelBursts(),
       skyDrops: this.getSkyDrops(),
       ranking: match.ranking
@@ -1046,6 +1077,7 @@ export class OutOfBoundsSimulation {
     }
 
     this.resolvePlayerCollisions();
+    this.updateBurningProps(dt);
     this.updateEggs(dt);
     this.updateEggScatterDebris(dt);
     this.updateVoxelBursts(dt);
@@ -1725,6 +1757,18 @@ export class OutOfBoundsSimulation {
     };
   }
 
+  private toBurningPropViewState(prop: SimBurningProp): BurningPropViewState {
+    return {
+      id: prop.id,
+      kind: prop.kind,
+      x: prop.x,
+      y: prop.y,
+      z: prop.z,
+      remaining: prop.remaining,
+      sourceKind: prop.sourceKind
+    };
+  }
+
   private toVoxelBurstViewState(burst: SimVoxelBurst): VoxelBurstViewState {
     return {
       id: burst.id,
@@ -1834,13 +1878,95 @@ export class OutOfBoundsSimulation {
     }
   }
 
+  private getProtectedBurningPropIds() {
+    return this.burningProps.size > 0 ? new Set(this.burningProps.keys()) : undefined;
+  }
+
   private pruneUnsupportedPropsAtColumns(columns: ReadonlyArray<Pick<VoxelCell, "x" | "z">>) {
-    const removedProps = this.world.pruneUnsupportedPropsAtColumns(columns);
+    const removedProps = this.world.pruneUnsupportedPropsAtColumns(
+      columns,
+      this.getProtectedBurningPropIds()
+    );
     if (removedProps.length === 0) {
       return;
     }
 
     this.queueTerrainPropChanges(removedProps, "remove");
+  }
+
+  private isBurningPropKind(kind: MapPropKind) {
+    return kind.startsWith("tree-");
+  }
+
+  private collectBurningPropsNearExplosion(center: Vector3, radius: number) {
+    const radiusSquared = radius * radius;
+
+    return this.world
+      .listProps()
+      .filter((prop) => this.isBurningPropKind(prop.kind))
+      .filter((prop) =>
+        getMapPropVoxels(prop).some((voxel) => {
+          const dx = voxel.x + 0.5 - center.x;
+          const dy = voxel.y + 0.5 - center.y;
+          const dz = voxel.z + 0.5 - center.z;
+          return dx * dx + dy * dy + dz * dz <= radiusSquared;
+        })
+      );
+  }
+
+  private igniteProps(
+    props: ReadonlyArray<MapProp>,
+    sourceKind: BurningPropSourceKind
+  ) {
+    for (const prop of props) {
+      if (!this.isBurningPropKind(prop.kind)) {
+        continue;
+      }
+
+      const existing = this.burningProps.get(prop.id);
+      if (existing) {
+        existing.remaining = BURNING_TREE_DURATION;
+        existing.sourceKind = sourceKind;
+        continue;
+      }
+
+      this.burningProps.set(prop.id, {
+        id: prop.id,
+        kind: prop.kind,
+        x: prop.x,
+        y: prop.y,
+        z: prop.z,
+        remaining: BURNING_TREE_DURATION,
+        sourceKind
+      });
+    }
+  }
+
+  private updateBurningProps(dt: number) {
+    if (this.burningProps.size === 0) {
+      return;
+    }
+
+    for (const [propId, burningProp] of [...this.burningProps.entries()].sort((left, right) =>
+      left[0].localeCompare(right[0])
+    )) {
+      burningProp.remaining = Math.max(0, burningProp.remaining - dt);
+      if (burningProp.remaining > EPSILON) {
+        continue;
+      }
+
+      this.burningProps.delete(propId);
+      const prop = this.world.getPropAtVoxel(burningProp.x, burningProp.y, burningProp.z);
+      if (!prop || prop.id !== propId) {
+        continue;
+      }
+
+      if (!this.world.removeProp(prop.id)) {
+        continue;
+      }
+
+      this.queueTerrainPropChanges([prop], "remove");
+    }
   }
 
   private queueTerrainChangedEvent(
@@ -2254,6 +2380,7 @@ export class OutOfBoundsSimulation {
         return;
       }
 
+      this.burningProps.delete(prop.id);
       if (!this.world.removeProp(prop.id)) {
         return;
       }
@@ -3208,6 +3335,10 @@ export class OutOfBoundsSimulation {
       }
     }
 
+    this.igniteProps(
+      this.collectBurningPropsNearExplosion(explosionCenter, this.config.eggBlastVoxelRadius),
+      "eggExplosion"
+    );
     const explodedVoxels = this.collectExplosionVoxels(explosionCenter, this.config.eggBlastVoxelRadius);
     const terrainChanged = explodedVoxels.length > 0;
     if (explodedVoxels.length > 0) {
@@ -3287,6 +3418,10 @@ export class OutOfBoundsSimulation {
       }
     }
 
+    this.igniteProps(
+      this.collectBurningPropsNearExplosion(impactCenter, SUPER_BOOM_BLAST_VOXEL_RADIUS),
+      "superBoomExplosion"
+    );
     const explodedVoxels = this.collectExplosionVoxels(impactCenter, SUPER_BOOM_BLAST_VOXEL_RADIUS);
     if (explodedVoxels.length > 0) {
       this.removeTerrainVoxels(explodedVoxels, "super_boom_explosion");

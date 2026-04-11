@@ -5,6 +5,7 @@ import type {
   GameplayEventBatch,
   HudState,
   RuntimeInteractionFocusState,
+  RuntimeBurningPropState,
   RuntimeEggScatterDebrisState,
   RuntimeEggState,
   RuntimePlayerState,
@@ -120,6 +121,7 @@ export interface RuntimeRenderFrame {
   players: RuntimePlayerState[];
   eggs: RuntimeEggState[];
   eggScatterDebris: RuntimeEggScatterDebrisState[];
+  burningProps: RuntimeBurningPropState[];
   voxelBursts: RuntimeVoxelBurstState[];
   skyDrops: RuntimeSkyDropState[];
   fallingClusters: FallingClusterViewState[];

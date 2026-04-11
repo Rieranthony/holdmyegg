@@ -415,7 +415,10 @@ export class MutableVoxelWorld {
     return placement;
   }
 
-  pruneUnsupportedPropsAtColumns(columns?: Iterable<Pick<Vec3i, "x" | "z">>) {
+  pruneUnsupportedPropsAtColumns(
+    columns?: Iterable<Pick<Vec3i, "x" | "z">>,
+    protectedPropIds?: ReadonlySet<string>
+  ) {
     const touchedColumns = columns
       ? new Set<number>()
       : null;
@@ -438,6 +441,10 @@ export class MutableVoxelWorld {
 
     for (const prop of this.listProps()) {
       if (touchedColumns && !touchedColumns.has(this.getColumnIndex(prop.x, prop.z))) {
+        continue;
+      }
+
+      if (protectedPropIds?.has(prop.id)) {
         continue;
       }
 

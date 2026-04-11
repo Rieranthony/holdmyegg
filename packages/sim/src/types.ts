@@ -139,6 +139,18 @@ export interface EggScatterDebrisViewState {
   duration: number;
 }
 
+export type BurningPropSourceKind = "eggExplosion" | "superBoomExplosion";
+
+export interface BurningPropViewState {
+  id: string;
+  kind: MapPropKind;
+  x: number;
+  y: number;
+  z: number;
+  remaining: number;
+  sourceKind: BurningPropSourceKind;
+}
+
 export type VoxelBurstStyle = "eggExplosion" | "harvest" | "superBoomExplosion";
 
 export interface VoxelBurstViewState {
@@ -216,6 +228,7 @@ export interface RuntimeFallingClusterState {
 
 export type RuntimeEggState = EggViewState;
 export type RuntimeEggScatterDebrisState = EggScatterDebrisViewState;
+export type RuntimeBurningPropState = BurningPropViewState;
 export type RuntimeVoxelBurstState = VoxelBurstViewState;
 export type RuntimeSkyDropState = SkyDropViewState;
 
@@ -266,6 +279,7 @@ export interface AuthoritativeHazardState {
   fallingClusters: AuthoritativeFallingClusterState[];
   skyDrops: AuthoritativeSkyDropState[];
   eggScatterDebris: AuthoritativeEggScatterDebrisState[];
+  burningProps: BurningPropViewState[];
   waterFlood: WaterFloodState;
 }
 
@@ -518,6 +532,7 @@ export interface SimulationSnapshot {
   fallingClusters: FallingClusterViewState[];
   eggs: EggViewState[];
   eggScatterDebris: EggScatterDebrisViewState[];
+  burningProps: BurningPropViewState[];
   voxelBursts: VoxelBurstViewState[];
   skyDrops: SkyDropViewState[];
   ranking: string[];

@@ -36,73 +36,6 @@ const getProgress = (elapsed: number, duration: number) =>
 const sortDeterministically = <T>(items: readonly T[], getSeed: (item: T) => string) =>
   [...items].sort((left, right) => hashString(getSeed(left)) - hashString(getSeed(right)));
 
-const sampleDeterministicSpread = <T>(items: readonly T[], targetCount: number, seed: string) => {
-  if (targetCount >= items.length) {
-    return [...items];
-  }
-
-  const phase = getNoise(hashString(seed) * 0.0001, 1) - 0.5;
-  const samples: T[] = [];
-  for (let index = 0; index < targetCount; index += 1) {
-    const normalized = (index + 0.5 + phase * 0.8) / targetCount;
-    const sampleIndex = clamp(Math.floor(normalized * items.length), 0, items.length - 1);
-    samples.push(items[sampleIndex]!);
-  }
-
-  return samples;
-};
-
-const allocateFragmentCounts = (woodCount: number, leafCount: number, targetCount: number) => {
-  if (targetCount <= 0) {
-    return {
-      wood: 0,
-      leaves: 0
-    };
-  }
-
-  if (woodCount === 0) {
-    return {
-      wood: 0,
-      leaves: Math.min(leafCount, targetCount)
-    };
-  }
-
-  if (leafCount === 0) {
-    return {
-      wood: Math.min(woodCount, targetCount),
-      leaves: 0
-    };
-  }
-
-  let wood = Math.round((targetCount * woodCount) / (woodCount + leafCount));
-  wood = clamp(wood, 1, Math.min(woodCount, targetCount - 1));
-  let leaves = Math.min(leafCount, targetCount - wood);
-
-  while (wood + leaves < targetCount) {
-    if (leaves < leafCount && leafCount - leaves >= woodCount - wood) {
-      leaves += 1;
-      continue;
-    }
-
-    if (wood < woodCount) {
-      wood += 1;
-      continue;
-    }
-
-    if (leaves < leafCount) {
-      leaves += 1;
-      continue;
-    }
-
-    break;
-  }
-
-  return {
-    wood,
-    leaves
-  };
-};
-
 export interface EggScatterDebrisVisualState {
   position: Vector3;
   rotationX: number;
@@ -132,34 +65,385 @@ export interface VoxelBurstShockwaveState {
 export type VoxelBurstParticleBucket = "terrain" | "accent";
 export type PropShatterMaterialKey = "bark" | "leavesOak" | "leavesPine" | "leavesAutumn";
 
-export interface PropShatterFragment {
+export type PropRemainsPhase = "collapse" | "settled" | "fade";
+export type BurningTreeVoxelPhase = "untouched" | "igniting" | "burning" | "charred";
+
+export interface PropRemainsFragment {
   materialKey: PropShatterMaterialKey;
   origin: Vector3;
+  target: Vector3;
   voxelKind: MapPropVoxelKind;
 }
 
-export interface PropShatterBurstState {
+export interface BurningTreeVoxelState {
+  voxelKind: MapPropVoxelKind;
+  position: Vector3;
+  ignitionTime: number;
+  burnoutTime: number;
+}
+
+export interface BurningTreeFxState {
+  id: string;
+  propId: string;
+  kind: MapPropKind;
+  duration: number;
+  center: Vector3;
+  ignitionOrigin: Vector3;
+  voxels: BurningTreeVoxelState[];
+}
+
+export interface BurningTreeVoxelVisualState {
+  phase: BurningTreeVoxelPhase;
+  charAlpha: number;
+  flameAlpha: number;
+  emberAlpha: number;
+  smokeAlpha: number;
+  activeScore: number;
+}
+
+export interface PropRemainsState {
   id: string;
   propId: string;
   kind: MapPropKind;
   center: Vector3;
   elapsed: number;
-  duration: number;
-  fragments: PropShatterFragment[];
+  burning: boolean;
+  collapseDuration: number;
+  settledDuration: number;
+  fadeDuration: number;
+  fragments: PropRemainsFragment[];
 }
 
-export interface PropShatterFragmentState {
+export interface PropRemainsFragmentState {
   position: Vector3;
   rotationX: number;
   rotationY: number;
   rotationZ: number;
   scale: number;
   opacity: number;
+  phase: PropRemainsPhase;
+  burningAlpha: number;
   materialKey: PropShatterMaterialKey;
 }
 
-export const DEFAULT_PROP_SHATTER_DURATION = 0.48;
-export const MAX_PROP_SHATTER_FRAGMENTS = 96;
+export const DEFAULT_PROP_REMAINS_COLLAPSE_DURATION = 0.45;
+export const DEFAULT_PROP_REMAINS_SETTLED_DURATION = 15;
+export const DEFAULT_PROP_REMAINS_FADE_DURATION = 2.5;
+export const SETTLED_PROP_REMAINS_SCALE = 0.33;
+export const DEFAULT_BURNING_TREE_DURATION = 15;
+
+const BURNING_TREE_SPREAD_DURATION_RATIO = 0.52;
+const BURNING_TREE_IGNITION_POCKET_COUNT = 4;
+const BURNING_TREE_IGNITION_POCKET_MIN_DISTANCE = 1.75;
+
+const areNeighboringTreeVoxels = (left: Vector3, right: Vector3) => {
+  const deltaX = Math.abs(left.x - right.x);
+  const deltaY = Math.abs(left.y - right.y);
+  const deltaZ = Math.abs(left.z - right.z);
+  return (deltaX > 0 || deltaY > 0 || deltaZ > 0) && deltaX <= 1 && deltaY <= 1 && deltaZ <= 1;
+};
+
+const getVoxelCenter = (voxel: MapPropVoxel): Vector3 => ({
+  x: voxel.x + 0.5,
+  y: voxel.y + 0.5,
+  z: voxel.z + 0.5
+});
+
+const getPropVoxelCenter = (voxels: readonly MapPropVoxel[]) =>
+  voxels.reduce<Vector3>(
+    (accumulator, voxel) => ({
+      x: accumulator.x + voxel.x + 0.5,
+      y: accumulator.y + voxel.y + 0.5,
+      z: accumulator.z + voxel.z + 0.5
+    }),
+    { x: 0, y: 0, z: 0 }
+  );
+
+const getFallbackIgnitionOrigin = (
+  prop: Pick<MapProp, "id" | "x" | "y" | "z">,
+  center: Vector3
+): Vector3 => {
+  const seed = hashString(`${prop.id}:${prop.x}:${prop.y}:${prop.z}`) * 0.0001;
+  const angle = getNoise(seed, 201) * Math.PI * 2;
+  const radius = 5.5;
+  return {
+    x: center.x + Math.cos(angle) * radius,
+    y: center.y + 1.4 + getNoise(seed, 202) * 1.2,
+    z: center.z + Math.sin(angle) * radius
+  };
+};
+
+const selectBurningTreeIgnitionPocketIndices = (
+  voxels: readonly MapPropVoxel[],
+  centers: readonly Vector3[],
+  ignitionOrigin: Vector3
+) => {
+  const preferredIndices = voxels
+    .map((voxel, index) => {
+      const center = centers[index]!;
+      const distance = Math.hypot(
+        center.x - ignitionOrigin.x,
+        center.y - ignitionOrigin.y,
+        center.z - ignitionOrigin.z
+      );
+      const woodBias = voxel.kind === "wood" ? -0.65 : 0.18;
+      const heightBias = voxel.kind === "wood" ? Math.abs(center.y - ignitionOrigin.y) * 0.04 : 0;
+      return {
+        distance: distance + woodBias + heightBias,
+        index
+      };
+    })
+    .sort((left, right) => left.distance - right.distance);
+
+  const pockets: number[] = [];
+  for (const candidate of preferredIndices) {
+    const center = centers[candidate.index]!;
+    if (
+      pockets.some((existingIndex) => {
+        const existingCenter = centers[existingIndex]!;
+        return (
+          Math.hypot(
+            center.x - existingCenter.x,
+            center.y - existingCenter.y,
+            center.z - existingCenter.z
+          ) < BURNING_TREE_IGNITION_POCKET_MIN_DISTANCE
+        );
+      })
+    ) {
+      continue;
+    }
+
+    pockets.push(candidate.index);
+    if (pockets.length >= BURNING_TREE_IGNITION_POCKET_COUNT) {
+      break;
+    }
+  }
+
+  if (pockets.length > 0) {
+    return pockets;
+  }
+
+  return voxels.length > 0 ? [0] : [];
+};
+
+const getBurnSpreadStepDuration = (
+  fromVoxel: MapPropVoxel,
+  toVoxel: MapPropVoxel,
+  seed: number
+) => {
+  const towardLeavesPenalty =
+    toVoxel.kind === "leaves"
+      ? fromVoxel.kind === "wood"
+        ? 0.03
+        : 0.1
+      : 0;
+  const canopyPenalty = toVoxel.kind === "leaves" && fromVoxel.kind === "leaves" ? 0.06 : 0;
+  return 0.44 + getNoise(seed, 301) * 0.18 + towardLeavesPenalty + canopyPenalty;
+};
+
+export const createBurningTreeFxState = ({
+  id,
+  prop,
+  duration = DEFAULT_BURNING_TREE_DURATION,
+  ignitionOrigin
+}: {
+  id: string;
+  prop: Pick<MapProp, "id" | "kind" | "x" | "y" | "z">;
+  duration?: number;
+  ignitionOrigin?: Vector3 | null;
+}): BurningTreeFxState => {
+  const voxels = getMapPropVoxels(prop);
+  const totalVoxelCount = Math.max(1, voxels.length);
+  const center = getPropVoxelCenter(voxels);
+  center.x /= totalVoxelCount;
+  center.y /= totalVoxelCount;
+  center.z /= totalVoxelCount;
+
+  const resolvedIgnitionOrigin = ignitionOrigin ?? getFallbackIgnitionOrigin(prop, center);
+  const centers = voxels.map((voxel) => getVoxelCenter(voxel));
+  const pocketIndices = selectBurningTreeIgnitionPocketIndices(
+    voxels,
+    centers,
+    resolvedIgnitionOrigin
+  );
+  const arrivalTimes = new Array(voxels.length).fill(Number.POSITIVE_INFINITY);
+  const visited = new Array(voxels.length).fill(false);
+
+  pocketIndices.forEach((index, pocketIndex) => {
+    arrivalTimes[index] = pocketIndex * 0.22;
+  });
+
+  for (let pass = 0; pass < voxels.length; pass += 1) {
+    let currentIndex = -1;
+    let currentTime = Number.POSITIVE_INFINITY;
+    for (let index = 0; index < arrivalTimes.length; index += 1) {
+      if (visited[index] || arrivalTimes[index] >= currentTime) {
+        continue;
+      }
+
+      currentIndex = index;
+      currentTime = arrivalTimes[index]!;
+    }
+
+    if (currentIndex === -1) {
+      break;
+    }
+
+    visited[currentIndex] = true;
+    const currentVoxel = voxels[currentIndex]!;
+    const currentCenter = centers[currentIndex]!;
+
+    for (let neighborIndex = 0; neighborIndex < voxels.length; neighborIndex += 1) {
+      if (visited[neighborIndex]) {
+        continue;
+      }
+
+      const neighborCenter = centers[neighborIndex]!;
+      if (!areNeighboringTreeVoxels(currentCenter, neighborCenter)) {
+        continue;
+      }
+
+      const neighborVoxel = voxels[neighborIndex]!;
+      const seed =
+        hashString(
+          `${prop.id}:${currentCenter.x}:${currentCenter.y}:${currentCenter.z}:${neighborCenter.x}:${neighborCenter.y}:${neighborCenter.z}`
+        ) * 0.0001;
+      const nextTime =
+        currentTime + getBurnSpreadStepDuration(currentVoxel, neighborVoxel, seed);
+      if (nextTime < arrivalTimes[neighborIndex]!) {
+        arrivalTimes[neighborIndex] = nextTime;
+      }
+    }
+  }
+
+  const latestArrival = arrivalTimes.reduce(
+    (maximum, arrival) => (Number.isFinite(arrival) ? Math.max(maximum, arrival) : maximum),
+    0
+  );
+  const arrivalScale =
+    latestArrival > 0 ? (duration * BURNING_TREE_SPREAD_DURATION_RATIO) / latestArrival : 0;
+
+  return {
+    id,
+    propId: prop.id,
+    kind: prop.kind,
+    duration,
+    center,
+    ignitionOrigin: resolvedIgnitionOrigin,
+    voxels: voxels.map((voxel, index) => {
+      const seed = hashString(
+        `${prop.id}:${voxel.x}:${voxel.y}:${voxel.z}:${voxel.kind}`
+      ) * 0.0001;
+      const ignitionTime = Number.isFinite(arrivalTimes[index]!)
+        ? arrivalTimes[index]! * arrivalScale
+        : duration * 0.94;
+      const burnWindow =
+        voxel.kind === "wood"
+          ? 5.4 + getNoise(seed, 401) * 1.1
+          : 4.8 + getNoise(seed, 402) * 1;
+      return {
+        voxelKind: voxel.kind,
+        position: centers[index]!,
+        ignitionTime,
+        burnoutTime: Math.min(duration, ignitionTime + burnWindow)
+      };
+    })
+  };
+};
+
+export const getBurningTreeVoxelVisualState = (
+  state: BurningTreeFxState,
+  voxelIndex: number,
+  elapsed: number
+): BurningTreeVoxelVisualState => {
+  const voxel = state.voxels[voxelIndex]!;
+  if (!voxel || elapsed < voxel.ignitionTime) {
+    return {
+      phase: "untouched",
+      charAlpha: 0,
+      flameAlpha: 0,
+      emberAlpha: 0,
+      smokeAlpha: 0,
+      activeScore: 0
+    };
+  }
+
+  const seed =
+    hashString(
+      `${state.id}:${voxel.position.x}:${voxel.position.y}:${voxel.position.z}:${voxel.voxelKind}`
+    ) * 0.0001;
+  const burnSpan = Math.max(0.8, voxel.burnoutTime - voxel.ignitionTime);
+  const burnProgress = clamp((elapsed - voxel.ignitionTime) / burnSpan, 0, 1);
+  const postBurnElapsed = Math.max(0, elapsed - voxel.burnoutTime);
+  const coolDuration = voxel.voxelKind === "wood" ? 3.4 : 2.6;
+  const coolProgress = clamp(postBurnElapsed / coolDuration, 0, 1);
+  const maxChar = voxel.voxelKind === "wood" ? 0.9 : 0.96;
+  const flamePeak =
+    Math.sin(burnProgress * Math.PI) *
+    (voxel.voxelKind === "wood" ? 0.82 : 0.96) *
+    (0.96 + getNoise(seed, 501) * 0.16);
+  const charAlpha = clamp(
+    Math.min(
+      maxChar,
+      (elapsed - voxel.ignitionTime) / Math.max(0.38, burnSpan * 0.52)
+    ) * maxChar,
+    0,
+    maxChar
+  );
+  const emberBase = 0.26 + flamePeak * 0.84;
+  const smokeBase = 0.28 + burnProgress * 0.68;
+
+  if (elapsed >= voxel.burnoutTime) {
+    const lingeringFlame = clamp(0.26 - coolProgress * 0.26, 0, 0.26);
+    const lingeringEmbers = clamp(emberBase * (1 - coolProgress * 0.52), 0, 0.72);
+    const lingeringSmoke = clamp(smokeBase * (1 - coolProgress * 0.12), 0, 0.86);
+    return {
+      phase: "charred",
+      charAlpha: Math.max(voxel.voxelKind === "wood" ? 0.82 : 0.88, clamp(charAlpha, 0, maxChar)),
+      flameAlpha: lingeringFlame,
+      emberAlpha: lingeringEmbers,
+      smokeAlpha: lingeringSmoke,
+      activeScore: lingeringFlame * 1.2 + lingeringEmbers * 0.4 + lingeringSmoke * 0.15
+    };
+  }
+
+  return {
+    phase: burnProgress < 0.24 ? "igniting" : "burning",
+    charAlpha,
+    flameAlpha: clamp(flamePeak, 0, 1),
+    emberAlpha: clamp(emberBase, 0, 1),
+    smokeAlpha: clamp(smokeBase, 0, 1),
+    activeScore: flamePeak * 1.25 + emberBase * 0.42 + smokeBase * 0.14
+  };
+};
+
+export const getBurningTreeActiveVoxelIndices = (
+  state: BurningTreeFxState,
+  elapsed: number,
+  limit: number
+) =>
+  state.voxels
+    .map((_, index) => {
+      const visual = getBurningTreeVoxelVisualState(state, index, elapsed);
+      const phasePriority =
+        visual.phase === "burning" ? 0 : visual.phase === "igniting" ? 1 : visual.phase === "charred" ? 2 : 3;
+      return {
+        activeScore: visual.activeScore,
+        ignitionTime: state.voxels[index]!.ignitionTime,
+        index,
+        phasePriority
+      };
+    })
+    .filter((entry) => entry.activeScore > 0.015)
+    .sort(
+      (left, right) =>
+        left.phasePriority - right.phasePriority ||
+        right.activeScore - left.activeScore ||
+        left.ignitionTime - right.ignitionTime ||
+        left.index - right.index
+    )
+    .slice(0, Math.max(0, limit))
+    .map((entry) => entry.index);
 
 export const voxelBurstParticleCountByStyle = {
   eggExplosion: 288,
@@ -189,48 +473,36 @@ export const getPropShatterMaterialKey = (
   return "leavesOak";
 };
 
-export const createPropShatterBurstState = ({
+export const getPropRemainsDuration = (state: Pick<
+  PropRemainsState,
+  "collapseDuration" | "settledDuration" | "fadeDuration"
+>) => state.collapseDuration + state.settledDuration + state.fadeDuration;
+
+export const createPropRemainsState = ({
   id,
   prop,
-  duration = DEFAULT_PROP_SHATTER_DURATION,
-  maxFragments = MAX_PROP_SHATTER_FRAGMENTS
+  burning = false,
+  collapseDuration = DEFAULT_PROP_REMAINS_COLLAPSE_DURATION,
+  settledDuration = DEFAULT_PROP_REMAINS_SETTLED_DURATION,
+  fadeDuration = DEFAULT_PROP_REMAINS_FADE_DURATION,
+  settleHeightAt
 }: {
   id: string;
   prop: Pick<MapProp, "id" | "kind" | "x" | "y" | "z">;
-  duration?: number;
-  maxFragments?: number;
-}): PropShatterBurstState => {
+  burning?: boolean;
+  collapseDuration?: number;
+  settledDuration?: number;
+  fadeDuration?: number;
+  settleHeightAt: (x: number, z: number) => number;
+}): PropRemainsState => {
   const allVoxels = getMapPropVoxels(prop);
   const totalVoxelCount = allVoxels.length;
-  const targetCount = Math.min(totalVoxelCount, Math.max(1, maxFragments));
-  const woodVoxels = sortDeterministically(
-    allVoxels.filter((voxel) => voxel.kind === "wood"),
-    (voxel) => `${prop.id}:wood:${voxel.x}:${voxel.y}:${voxel.z}`
-  );
-  const leafVoxels = sortDeterministically(
-    allVoxels.filter((voxel) => voxel.kind === "leaves"),
-    (voxel) => `${prop.id}:leaves:${voxel.x}:${voxel.y}:${voxel.z}`
-  );
-  const allocation = allocateFragmentCounts(woodVoxels.length, leafVoxels.length, targetCount);
-  const sampledVoxels = sortDeterministically(
-    [
-      ...sampleDeterministicSpread(woodVoxels, allocation.wood, `${prop.id}:wood-sample`),
-      ...sampleDeterministicSpread(leafVoxels, allocation.leaves, `${prop.id}:leaf-sample`)
-    ],
-    (voxel) => `${prop.id}:sample:${voxel.x}:${voxel.y}:${voxel.z}`
-  );
-
-  const center = allVoxels.reduce<Vector3>(
-    (accumulator, voxel) => ({
-      x: accumulator.x + voxel.x + 0.5,
-      y: accumulator.y + voxel.y + 0.5,
-      z: accumulator.z + voxel.z + 0.5
-    }),
-    { x: 0, y: 0, z: 0 }
-  );
+  const center = getPropVoxelCenter(allVoxels);
   center.x /= Math.max(1, totalVoxelCount);
   center.y /= Math.max(1, totalVoxelCount);
   center.z /= Math.max(1, totalVoxelCount);
+
+  const stackHeights = new Map<string, number>();
 
   return {
     id,
@@ -238,63 +510,154 @@ export const createPropShatterBurstState = ({
     kind: prop.kind,
     center,
     elapsed: 0,
-    duration,
-    fragments: sampledVoxels.map((voxel: MapPropVoxel) => ({
-      materialKey: getPropShatterMaterialKey(prop.kind, voxel.kind),
-      origin: {
-        x: voxel.x + 0.5,
-        y: voxel.y + 0.5,
-        z: voxel.z + 0.5
-      },
-      voxelKind: voxel.kind
-    }))
+    burning,
+    collapseDuration,
+    settledDuration,
+    fadeDuration,
+    fragments: sortDeterministically(allVoxels, (voxel) => `${prop.id}:${voxel.x}:${voxel.y}:${voxel.z}`).map(
+      (voxel: MapPropVoxel, index) => {
+        const seed = hashString(`${prop.id}:${voxel.x}:${voxel.y}:${voxel.z}:${index}`) * 0.0001;
+        const isLeaf = voxel.kind === "leaves";
+        const origin = {
+          x: voxel.x + 0.5,
+          y: voxel.y + 0.5,
+          z: voxel.z + 0.5
+        };
+        const centerDeltaX = origin.x - center.x;
+        const centerDeltaZ = origin.z - center.z;
+        const centerDistance = Math.hypot(centerDeltaX, centerDeltaZ);
+        const normalizedDeltaX = centerDistance > 0.001 ? centerDeltaX / centerDistance : Math.cos(getNoise(seed, 1) * Math.PI * 2);
+        const normalizedDeltaZ = centerDistance > 0.001 ? centerDeltaZ / centerDistance : Math.sin(getNoise(seed, 1) * Math.PI * 2);
+        const orthogonalX = -normalizedDeltaZ;
+        const orthogonalZ = normalizedDeltaX;
+        const outwardSpread =
+          (isLeaf ? 0.45 : 0.16) + getNoise(seed, 2) * (isLeaf ? 1.85 : 0.72);
+        const sideDrift = (getNoise(seed, 3) - 0.5) * (isLeaf ? 1.1 : 0.28);
+        const rawTargetX = origin.x + normalizedDeltaX * outwardSpread + orthogonalX * sideDrift;
+        const rawTargetZ = origin.z + normalizedDeltaZ * outwardSpread + orthogonalZ * sideDrift;
+        const settledCellX = Math.floor(rawTargetX);
+        const settledCellZ = Math.floor(rawTargetZ);
+        const settledTopY = settleHeightAt(rawTargetX, rawTargetZ);
+        const stackKey = `${settledCellX}:${settledCellZ}`;
+        const stackIndex = stackHeights.get(stackKey) ?? 0;
+        stackHeights.set(stackKey, stackIndex + 1);
+        const settleJitter = isLeaf ? 0.1 : 0.05;
+
+        return {
+          materialKey: getPropShatterMaterialKey(prop.kind, voxel.kind),
+          origin,
+          target: {
+            x: settledCellX + 0.5 + (getNoise(seed, 4) - 0.5) * settleJitter,
+            y:
+              settledTopY +
+              SETTLED_PROP_REMAINS_SCALE * 0.5 +
+              stackIndex * (SETTLED_PROP_REMAINS_SCALE * 0.58),
+            z: settledCellZ + 0.5 + (getNoise(seed, 5) - 0.5) * settleJitter
+          },
+          voxelKind: voxel.kind
+        };
+      }
+    )
   };
 };
 
-export const getPropShatterFragmentState = (
-  burst: PropShatterBurstState,
+export const getPropRemainsFragmentState = (
+  state: PropRemainsState,
   fragmentIndex: number
-): PropShatterFragmentState => {
-  const fragment = burst.fragments[fragmentIndex]!;
-  const progress = getProgress(burst.elapsed, burst.duration);
-  const seed = hashString(`${burst.id}:${fragmentIndex}:${fragment.materialKey}`) * 0.0001;
+): PropRemainsFragmentState => {
+  const fragment = state.fragments[fragmentIndex]!;
+  const totalDuration = getPropRemainsDuration(state);
+  const progress = getProgress(state.elapsed, totalDuration);
+  const collapseEnd = state.collapseDuration / Math.max(totalDuration, Number.EPSILON);
+  const settledEnd =
+    (state.collapseDuration + state.settledDuration) / Math.max(totalDuration, Number.EPSILON);
+  const seed = hashString(`${state.id}:${fragmentIndex}:${fragment.materialKey}`) * 0.0001;
   const isLeaf = fragment.voxelKind === "leaves";
-  const centerDeltaX = fragment.origin.x - burst.center.x;
-  const centerDeltaZ = fragment.origin.z - burst.center.z;
-  const baseYaw =
-    Math.abs(centerDeltaX) <= Number.EPSILON && Math.abs(centerDeltaZ) <= Number.EPSILON
-      ? getNoise(seed, 1) * Math.PI * 2
-      : Math.atan2(centerDeltaZ, centerDeltaX);
-  const yaw = baseYaw + (getNoise(seed, 2) - 0.5) * (isLeaf ? 1.3 : 0.74);
-  const driftYaw = yaw + (getNoise(seed, 3) - 0.5) * (isLeaf ? 1.18 : 0.4);
-  const distanceStart = isLeaf ? 0.02 + getNoise(seed, 4) * 0.06 : 0.01 + getNoise(seed, 4) * 0.03;
-  const distanceEnd = isLeaf ? 1.18 + getNoise(seed, 5) * 1.12 : 0.58 + getNoise(seed, 5) * 0.82;
-  const lift =
-    Math.sin(progress * Math.PI) * (isLeaf ? 1.08 : 0.62) * (0.78 + getNoise(seed, 6) * 0.52) -
-    progress * progress * (isLeaf ? 0.54 : 1.26) * (0.74 + getNoise(seed, 7) * 0.58) +
-    Math.sin(progress * Math.PI * (isLeaf ? 2.3 : 1.7) + getNoise(seed, 8) * Math.PI * 2) *
-      (isLeaf ? 0.14 : 0.05);
-  const lateralFlutter =
-    Math.sin(progress * Math.PI * (isLeaf ? 1.9 : 1.3) + getNoise(seed, 9) * Math.PI * 2) *
-    (isLeaf ? 0.18 : 0.04);
-  const distance = lerp(distanceStart, distanceEnd, progress);
-  const scaleStart = isLeaf ? 0.24 + getNoise(seed, 10) * 0.12 : 0.32 + getNoise(seed, 10) * 0.14;
-  const scaleEnd = isLeaf ? 0.06 : 0.08;
-  const spinX = progress * Math.PI * (isLeaf ? 2.8 + getNoise(seed, 11) * 2 : 1.8 + getNoise(seed, 11) * 1.6);
-  const spinY = progress * Math.PI * (isLeaf ? 3.4 + getNoise(seed, 12) * 2.8 : 2.1 + getNoise(seed, 12) * 1.8);
-  const spinZ = progress * Math.PI * (isLeaf ? 2.6 + getNoise(seed, 13) * 2.2 : 1.7 + getNoise(seed, 13) * 1.5);
+  const phase: PropRemainsPhase =
+    progress < collapseEnd ? "collapse" : progress < settledEnd ? "settled" : "fade";
+  const collapseProgress =
+    collapseEnd <= 0 ? 1 : clamp(progress / Math.max(collapseEnd, Number.EPSILON), 0, 1);
+  const settledProgress =
+    settledEnd <= collapseEnd
+      ? 1
+      : clamp((progress - collapseEnd) / Math.max(settledEnd - collapseEnd, Number.EPSILON), 0, 1);
+  const fadeProgress =
+    progress <= settledEnd
+      ? 0
+      : clamp((progress - settledEnd) / Math.max(1 - settledEnd, Number.EPSILON), 0, 1);
+  const spinX =
+    collapseProgress * Math.PI * (isLeaf ? 1.8 + getNoise(seed, 6) * 1.4 : 0.9 + getNoise(seed, 6) * 1.1);
+  const spinY =
+    collapseProgress * Math.PI * (isLeaf ? 1.4 + getNoise(seed, 7) * 1.2 : 0.6 + getNoise(seed, 7) * 0.9);
+  const spinZ =
+    collapseProgress * Math.PI * (isLeaf ? 1.6 + getNoise(seed, 8) * 1.4 : 0.8 + getNoise(seed, 8) * 1.1);
+  const emberPulse =
+    state.burning && phase !== "fade"
+      ? 0.55 + Math.sin(state.elapsed * (isLeaf ? 9.8 : 7.2) + getNoise(seed, 9) * Math.PI * 2) * 0.2
+      : 0;
+
+  if (phase === "collapse") {
+    const arcLift =
+      Math.sin(collapseProgress * Math.PI) * (isLeaf ? 0.8 : 0.28) -
+      collapseProgress * collapseProgress * (isLeaf ? 0.18 : 0.42);
+    const settleBias = Math.sin(collapseProgress * Math.PI * (isLeaf ? 2.2 : 1.5) + getNoise(seed, 10) * Math.PI * 2);
+
+    return {
+      position: {
+        x: lerp(fragment.origin.x, fragment.target.x, collapseProgress),
+        y:
+          lerp(fragment.origin.y, fragment.target.y, collapseProgress) +
+          arcLift +
+          settleBias * (isLeaf ? 0.06 : 0.03),
+        z: lerp(fragment.origin.z, fragment.target.z, collapseProgress)
+      },
+      rotationX: spinX,
+      rotationY: spinY,
+      rotationZ: spinZ,
+      scale: lerp(1, SETTLED_PROP_REMAINS_SCALE, collapseProgress),
+      opacity: 1,
+      phase,
+      burningAlpha: state.burning ? 0.95 : 0,
+      materialKey: fragment.materialKey
+    };
+  }
+
+  if (phase === "settled") {
+    const smolderLift = state.burning ? 0.01 + getNoise(seed, 11) * 0.04 : 0;
+    const breathing =
+      Math.sin(state.elapsed * (isLeaf ? 5.6 : 4.2) + getNoise(seed, 12) * Math.PI * 2) *
+      (isLeaf ? 0.015 : 0.008);
+
+    return {
+      position: {
+        x: fragment.target.x,
+        y: fragment.target.y + smolderLift + breathing,
+        z: fragment.target.z
+      },
+      rotationX: isLeaf ? 0.12 + getNoise(seed, 13) * 0.18 : 0.04 + getNoise(seed, 13) * 0.08,
+      rotationY: getNoise(seed, 14) * Math.PI * 2,
+      rotationZ: isLeaf ? -0.1 + getNoise(seed, 15) * 0.22 : -0.04 + getNoise(seed, 15) * 0.08,
+      scale: lerp(SETTLED_PROP_REMAINS_SCALE, SETTLED_PROP_REMAINS_SCALE * 0.96, settledProgress),
+      opacity: 1,
+      phase,
+      burningAlpha: state.burning ? clamp(emberPulse, 0, 1) : 0,
+      materialKey: fragment.materialKey
+    };
+  }
 
   return {
     position: {
-      x: fragment.origin.x + Math.cos(yaw) * distance + Math.cos(driftYaw + Math.PI / 2) * lateralFlutter,
-      y: fragment.origin.y + lift,
-      z: fragment.origin.z + Math.sin(yaw) * distance + Math.sin(driftYaw + Math.PI / 2) * lateralFlutter
+      x: fragment.target.x,
+      y: fragment.target.y - fadeProgress * (isLeaf ? 0.04 : 0.08),
+      z: fragment.target.z
     },
-    rotationX: spinX,
-    rotationY: spinY,
-    rotationZ: spinZ,
-    scale: lerp(scaleStart, scaleEnd, progress),
-    opacity: clamp((isLeaf ? 1.04 : 1.12) - Math.pow(progress, isLeaf ? 1.26 : 1.12), 0, 1),
+    rotationX: isLeaf ? 0.16 + getNoise(seed, 16) * 0.16 : 0.05 + getNoise(seed, 16) * 0.08,
+    rotationY: getNoise(seed, 17) * Math.PI * 2,
+    rotationZ: isLeaf ? -0.14 + getNoise(seed, 18) * 0.2 : -0.05 + getNoise(seed, 18) * 0.08,
+    scale: lerp(SETTLED_PROP_REMAINS_SCALE * 0.96, SETTLED_PROP_REMAINS_SCALE * 0.58, fadeProgress),
+    opacity: clamp(1 - Math.pow(fadeProgress, isLeaf ? 1.36 : 1.12), 0, 1),
+    phase,
+    burningAlpha: state.burning ? clamp(0.32 - fadeProgress * 0.32, 0, 1) : 0,
     materialKey: fragment.materialKey
   };
 };

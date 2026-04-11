@@ -862,6 +862,7 @@ export class Room {
         players: [],
         eggs: [],
         eggScatterDebris: [],
+        burningProps: [],
         voxelBursts: [],
         skyDrops: [],
         fallingClusters: [],
@@ -876,6 +877,7 @@ export class Room {
             fallingClusters: [],
             skyDrops: [],
             eggScatterDebris: [],
+            burningProps: [],
             waterFlood: {
               active: false,
               breachLevelY: 0,
@@ -915,6 +917,7 @@ export class Room {
         .map((eggId) => this.simulation.getEggRuntimeState(eggId))
         .filter((egg): egg is NonNullable<ReturnType<typeof this.simulation.getEggRuntimeState>> => egg !== null),
       eggScatterDebris: this.simulation.getEggScatterDebris(),
+      burningProps: this.simulation.getBurningProps(),
       voxelBursts: this.simulation.getVoxelBursts(),
       skyDrops: this.simulation.getSkyDrops(),
       fallingClusters: this.simulation.getFallingClusters(),

@@ -14,7 +14,12 @@ import {
 } from "@out-of-bounds/map";
 import { createArenaDocument } from "@test/fixtures/maps";
 import { destroy, idle, jump, layEgg, move, place, push } from "@test/helpers/commands";
-import { advanceSimulation, advanceUntilGrounded, createTestSimulation } from "@test/helpers/simulation";
+import {
+  advanceSimulation,
+  advanceUntilGrounded,
+  createTestSimulation,
+  createTestWorld
+} from "@test/helpers/simulation";
 import {
   normalizeAuthoritativeMatchState,
   normalizeGameplayEventBatch,
@@ -192,6 +197,43 @@ const createMultiplayerSimulation = (
     simulation,
     humanPlayers
   };
+};
+
+const createBurningTreeSimulation = (kind: "tree-oak" | "tree-pine" | "tree-autumn" = "tree-oak") => {
+  const world = createTestWorld((voxelWorld) => {
+    voxelWorld.setProp(kind, 8, DEFAULT_SURFACE_Y, 6);
+  });
+  const simulation = new OutOfBoundsSimulation({
+    tickRate: 10,
+    skyDropIntervalMin: 999,
+    skyDropIntervalMax: 999
+  });
+  simulation.reset("explore", world.toDocument(), {
+    localPlayerName: "You"
+  });
+  return simulation;
+};
+
+const createExplosionEgg = (
+  simulation: OutOfBoundsSimulation,
+  id: string,
+  position: { x: number; y: number; z: number }
+) => {
+  const egg = {
+    id,
+    ownerId: simulation.getLocalPlayerId()!,
+    spawnTick: 0,
+    visualSeed: 1,
+    fuseRemaining: 0,
+    grounded: false,
+    orbital: false,
+    explodeOnGroundContact: false,
+    fuseArmedBelowY: null,
+    position,
+    velocity: { x: 0, y: 0, z: 0 }
+  };
+  getInternalEggMap(simulation).set(egg.id, egg);
+  return egg;
 };
 
 describe("OutOfBoundsSimulation", () => {
@@ -1670,6 +1712,126 @@ describe("OutOfBoundsSimulation", () => {
     expect(simulation.getPlayerState(localPlayerId)!.mass).toBe(
       simulation.config.maxMass - simulation.config.placeCost
     );
+  });
+
+  it("ignites nearby trees from egg explosions and removes them only after the full burn", () => {
+    const simulation = createBurningTreeSimulation("tree-oak");
+    const egg = createExplosionEgg(simulation, "burn-egg-1", {
+      x: 8.5,
+      y: DEFAULT_SURFACE_Y + 0.4,
+      z: 6.5
+    });
+
+    getSimulationInternals(simulation).explodeEgg(egg);
+
+    const initialBatch = simulation.consumeTerrainDeltaBatch();
+    expect(simulation.getSnapshot().burningProps).toContainEqual(
+      expect.objectContaining({
+        id: "prop-1",
+        kind: "tree-oak",
+        sourceKind: "eggExplosion"
+      })
+    );
+    expect(simulation.getWorld().getPropAtVoxel(8, DEFAULT_SURFACE_Y, 6)?.id).toBe("prop-1");
+    expect(simulation.getWorld().hasBlockingVoxel(8, DEFAULT_SURFACE_Y, 6)).toBe(true);
+    expect(initialBatch?.propChanges ?? []).toEqual([]);
+
+    advanceSimulation(simulation, 149);
+    expect(simulation.getWorld().getPropAtVoxel(8, DEFAULT_SURFACE_Y, 6)?.id).toBe("prop-1");
+    expect(simulation.getSnapshot().burningProps).toHaveLength(1);
+
+    simulation.step({});
+    const removalBatch = simulation.consumeTerrainDeltaBatch();
+    expect(removalBatch?.propChanges).toEqual([
+      {
+        id: "prop-1",
+        kind: "tree-oak",
+        x: 8,
+        y: DEFAULT_SURFACE_Y,
+        z: 6,
+        operation: "remove"
+      }
+    ]);
+    expect(simulation.getSnapshot().burningProps).toEqual([]);
+    expect(simulation.getWorld().getPropAtVoxel(8, DEFAULT_SURFACE_Y, 6)).toBeUndefined();
+  });
+
+  it("keeps ignited trees standing even when the explosion destroys their support voxel", () => {
+    const simulation = createBurningTreeSimulation("tree-pine");
+    const supportY = DEFAULT_SURFACE_Y - 1;
+    const egg = createExplosionEgg(simulation, "burn-egg-2", {
+      x: 8.5,
+      y: supportY + 0.5,
+      z: 6.5
+    });
+
+    getSimulationInternals(simulation).explodeEgg(egg);
+
+    const terrainBatch = simulation.consumeTerrainDeltaBatch();
+    expect(terrainBatch?.changes).toContainEqual({
+      voxel: { x: 8, y: supportY, z: 6 },
+      kind: null,
+      operation: "remove",
+      source: "projectile_explosion"
+    });
+    expect(terrainBatch?.propChanges ?? []).toEqual([]);
+    expect(simulation.getWorld().getVoxelKind(8, supportY, 6)).toBeUndefined();
+    expect(simulation.getWorld().getPropAtVoxel(8, DEFAULT_SURFACE_Y, 6)?.id).toBe("prop-1");
+    expect(simulation.getSnapshot().burningProps).toContainEqual(
+      expect.objectContaining({
+        id: "prop-1",
+        sourceKind: "eggExplosion"
+      })
+    );
+  });
+
+  it("refreshes the burn timer when a burning tree is hit by another bomb", () => {
+    const simulation = createBurningTreeSimulation("tree-autumn");
+    const firstEgg = createExplosionEgg(simulation, "burn-egg-3", {
+      x: 8.5,
+      y: DEFAULT_SURFACE_Y + 0.6,
+      z: 6.5
+    });
+
+    getSimulationInternals(simulation).explodeEgg(firstEgg);
+    simulation.consumeTerrainDeltaBatch();
+    advanceSimulation(simulation, 80);
+
+    const remainingBeforeRefresh = simulation.getSnapshot().burningProps[0]?.remaining ?? 0;
+    expect(remainingBeforeRefresh).toBeLessThan(8);
+    expect(remainingBeforeRefresh).toBeGreaterThan(6);
+
+    const secondEgg = createExplosionEgg(simulation, "burn-egg-4", {
+      x: 8.5,
+      y: DEFAULT_SURFACE_Y + 0.6,
+      z: 6.5
+    });
+    getSimulationInternals(simulation).explodeEgg(secondEgg);
+
+    const burningProps = simulation.getSnapshot().burningProps;
+    expect(burningProps).toHaveLength(1);
+    expect(burningProps[0]?.id).toBe("prop-1");
+    expect(burningProps[0]?.remaining).toBeCloseTo(15, 4);
+  });
+
+  it("ignites nearby trees from super boom impacts", () => {
+    const simulation = createBurningTreeSimulation("tree-oak");
+    const localPlayerId = simulation.getLocalPlayerId()!;
+    const localPlayer = getInternalPlayer(simulation, localPlayerId);
+
+    localPlayer.position = { x: 8.5, y: DEFAULT_SURFACE_Y + 0.3, z: 6.5 };
+    localPlayer.velocity = { x: 0, y: 0, z: 0 };
+    localPlayer.grounded = false;
+
+    getSimulationInternals(simulation).resolveSuperBoomImpact(localPlayer);
+
+    expect(simulation.getSnapshot().burningProps).toContainEqual(
+      expect.objectContaining({
+        id: "prop-1",
+        sourceKind: "superBoomExplosion"
+      })
+    );
+    expect(simulation.getWorld().getPropAtVoxel(8, DEFAULT_SURFACE_Y, 6)?.id).toBe("prop-1");
   });
 
   it("removes supported tree props from runtime deltas when their base voxel is harvested", () => {

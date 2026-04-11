@@ -41,8 +41,16 @@ const createPixelTexture = (
   rows: readonly string[],
   { flipRowsVertically = false }: { flipRowsVertically?: boolean } = {}
 ) => {
-  const data = new Uint8Array(PIXEL_TEXTURE_SIZE * PIXEL_TEXTURE_SIZE * 4);
   const sourceRows = flipRowsVertically ? [...rows].reverse() : rows;
+  const width = sourceRows[0]?.length ?? PIXEL_TEXTURE_SIZE;
+  const height = sourceRows.length || PIXEL_TEXTURE_SIZE;
+  const data = new Uint8Array(width * height * 4);
+
+  for (const row of sourceRows) {
+    if (row.length !== width) {
+      throw new Error("Pixel texture rows must all share the same width.");
+    }
+  }
 
   sourceRows.forEach((row, y) => {
     [...row].forEach((token, x) => {
@@ -56,7 +64,7 @@ const createPixelTexture = (
       }
 
       const color = hexToRgb(hex);
-      const offset = (y * PIXEL_TEXTURE_SIZE + x) * 4;
+      const offset = (y * width + x) * 4;
       data[offset] = color.r;
       data[offset + 1] = color.g;
       data[offset + 2] = color.b;
@@ -64,7 +72,7 @@ const createPixelTexture = (
     });
   });
 
-  const texture = new THREE.DataTexture(data, PIXEL_TEXTURE_SIZE, PIXEL_TEXTURE_SIZE, THREE.RGBAFormat);
+  const texture = new THREE.DataTexture(data, width, height, THREE.RGBAFormat);
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.magFilter = THREE.NearestFilter;
   texture.minFilter = THREE.NearestFilter;
@@ -363,6 +371,81 @@ export const propTextureRows = {
   ]
 } as const;
 
+export const propFlameTextureRows = [
+  [
+    "................",
+    "................",
+    "......o.........",
+    ".....oRo........",
+    "....oRROo.......",
+    "...ooRwwOo......",
+    "...oRwwRRo......",
+    "..ooRRRROo......",
+    "..oRRORRROo.....",
+    "..ooORRRRo......",
+    "...oROROo.......",
+    "..ooRRRRo.......",
+    "...oRROo........",
+    "....oOo.........",
+    ".....o..........",
+    "................"
+  ],
+  [
+    "................",
+    "................",
+    ".......o........",
+    "......oRo.......",
+    ".....oRRRo......",
+    "....oRwwROo.....",
+    "...ooRwwRROo....",
+    "...oRROORRRo....",
+    "..ooRRRRRROo....",
+    "..oRORRwwROo....",
+    "...ooRRRROo.....",
+    "....oRROOo......",
+    "....ooRRo.......",
+    ".....oOo........",
+    "......o.........",
+    "................"
+  ],
+  [
+    "................",
+    ".......o........",
+    "......oRo.......",
+    ".....oRROo......",
+    "...ooRRRROo.....",
+    "...oRRwwRROo....",
+    "..ooRwwwwRRo....",
+    "..oRRRwwRRROo...",
+    "..oRROORRRROo...",
+    "..ooRRRRRRRo....",
+    "...oRORRRROo....",
+    "...ooRRRROo.....",
+    "....oRROo.......",
+    ".....oOo........",
+    "......o.........",
+    "................"
+  ],
+  [
+    "................",
+    "................",
+    "......o.........",
+    ".....oRo........",
+    "....oRROo.......",
+    "...oRRRRRo......",
+    "..ooRwwRRoo.....",
+    "..oRwwwwRROo....",
+    "..oRRwwRRRRo....",
+    "..ooRRRRRROo....",
+    "...oRORRRRo.....",
+    "...ooRRRROo.....",
+    "....oRROo.......",
+    ".....oOo........",
+    "......o.........",
+    "................"
+  ]
+] as const;
+
 const textures = {
   bark: createPixelTexture(propTextureRows.bark),
   leaves: createPixelTexture(propTextureRows.leaves),
@@ -379,6 +462,12 @@ const textures = {
   bushGreen: createPixelTexture(propTextureRows.bushGreen, { flipRowsVertically: true }),
   bushDark: createPixelTexture(propTextureRows.bushDark, { flipRowsVertically: true }),
   bushAutumn: createPixelTexture(propTextureRows.bushAutumn, { flipRowsVertically: true })
+};
+
+export const propFxTextures = {
+  flameFrames: propFlameTextureRows.map((rows) =>
+    createPixelTexture(rows, { flipRowsVertically: true })
+  )
 };
 
 const leavesOakMaterial = createStandardMaterial(textures.leaves);

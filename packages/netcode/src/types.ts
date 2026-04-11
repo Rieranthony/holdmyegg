@@ -4,6 +4,7 @@ import type {
   GameplayEventBatch,
   HudState,
   RuntimeInteractionFocusState,
+  RuntimeBurningPropState,
   RuntimePlayerState,
   TerrainDeltaBatch
 } from "@out-of-bounds/sim";
@@ -154,6 +155,7 @@ export interface RoomSharedFrame {
   players: RuntimePlayerState[];
   eggs: RuntimeEggState[];
   eggScatterDebris: RuntimeEggScatterDebrisState[];
+  burningProps: RuntimeBurningPropState[];
   voxelBursts: RuntimeVoxelBurstState[];
   skyDrops: RuntimeSkyDropState[];
   fallingClusters: FallingClusterViewState[];
@@ -275,6 +277,7 @@ export const createRuntimeRenderFrame = (
   players: sharedFrame.players,
   eggs: sharedFrame.eggs,
   eggScatterDebris: sharedFrame.eggScatterDebris,
+  burningProps: sharedFrame.burningProps,
   voxelBursts: sharedFrame.voxelBursts,
   skyDrops: sharedFrame.skyDrops,
   fallingClusters: sharedFrame.fallingClusters

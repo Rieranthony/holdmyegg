@@ -54,6 +54,7 @@ const createAuthoritativeFrame = (): RuntimeAuthoritativeFrame => ({
       fallingClusters: [],
       skyDrops: [],
       eggScatterDebris: [],
+      burningProps: [],
       waterFlood: {
         active: false,
         breachLevelY: 0,
