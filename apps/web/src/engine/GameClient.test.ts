@@ -255,4 +255,86 @@ describe("GameClient worker controller", () => {
       })
     );
   });
+
+  it("supports free capture mode without requesting pointer lock", () => {
+    const { canvas, offscreen } = createCanvas();
+    const onPauseStateChange = vi.fn();
+    const client = GameClient.mount({
+      canvas,
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 19,
+      captureMode: "free",
+      onPauseStateChange
+    });
+
+    expect(workerState.renderWorker.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "init",
+        offscreenCanvas: offscreen,
+        captureMode: "free"
+      }),
+      [offscreen]
+    );
+    expect(onPauseStateChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        hasStarted: true,
+        paused: false,
+        pointerLocked: false
+      })
+    );
+
+    expect(client.requestPointerLock()).toBe(true);
+    expect(canvas.requestPointerLock).not.toHaveBeenCalled();
+
+    client.setRuntimePaused(true);
+    expect(onPauseStateChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        hasStarted: true,
+        paused: true
+      })
+    );
+
+    client.resumeRuntime();
+    expect(workerState.renderWorker.postMessage).toHaveBeenCalledWith({
+      type: "set_runtime_paused",
+      paused: false
+    });
+  });
+
+  it("relays portal traversal events from the worker", () => {
+    const { canvas } = createCanvas();
+    const onPortalTriggered = vi.fn();
+    GameClient.mount({
+      canvas,
+      initialDocument: createDefaultArenaMap(),
+      initialMode: "explore",
+      matchColorSeed: 4,
+      onPortalTriggered
+    });
+
+    workerState.renderWorker.onmessage?.({
+      data: {
+        type: "portal_triggered",
+        portalId: "exit-portal",
+        snapshot: {
+          speed: 5,
+          speedX: 1,
+          speedY: -2,
+          speedZ: 4,
+          rotationX: 0.2,
+          rotationY: 1.1,
+          rotationZ: 0
+        }
+      }
+    } as MessageEvent<WorkerResponseMessage>);
+
+    expect(onPortalTriggered).toHaveBeenCalledWith(
+      "exit-portal",
+      expect.objectContaining({
+        speed: 5,
+        rotationY: 1.1
+      })
+    );
+  });
 });

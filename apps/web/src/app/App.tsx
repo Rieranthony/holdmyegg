@@ -2,14 +2,25 @@ import {
   startTransition,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ChangeEvent,
   type CSSProperties,
+  type ReactNode,
 } from "react";
 import { flushSync } from "react-dom";
 import { createDefaultArenaMap, type MapDocumentV1 } from "@out-of-bounds/map";
 import type { GameMode, HudState } from "@out-of-bounds/sim";
+import {
+  chickenRadioStations,
+  getChickenRadioStation,
+  normalizeChickenRadioSettings,
+  type ChickenRadioPlaybackState,
+  type ChickenRadioSettings,
+} from "./chickenRadio";
+import { ChickenRadioOverlay } from "../components/ChickenRadioOverlay";
+import { ChickenRadioPlayerHost } from "../components/ChickenRadioPlayerHost";
 import { ChickenPreview } from "../components/ChickenPreview";
 import { Hud } from "../components/Hud";
 import { MultiplayerRoomCards } from "../components/MultiplayerRoomCards";
@@ -20,6 +31,10 @@ import {
   ShortcutLegend,
   getRuntimeShortcutBindings,
 } from "../components/ShortcutLegend";
+import {
+  loadChickenRadioSettings,
+  saveChickenRadioSettings,
+} from "../data/chickenRadioStorage";
 import {
   loadRuntimeControlSettings,
   resetRuntimeControlSettings,
@@ -36,6 +51,7 @@ import {
   type GameDiagnostics,
   type PointerCaptureFailureReason,
   type PlayerProfile,
+  type RuntimeCaptureMode,
   type RuntimePauseState,
   type ShellMode,
 } from "../engine/types";
@@ -50,6 +66,12 @@ import {
   type MultiplayerSnapshot,
 } from "../multiplayer/client";
 import { useRendererQualityProfile } from "../game/quality";
+import {
+  buildExplorePortalRuntimeConfig,
+  buildPortalRedirectUrl,
+  getCurrentGameUrl,
+  readPortalBootstrapState,
+} from "./portalSession";
 import { useMapPersistence } from "./useMapPersistence";
 
 const defaultStatus =
@@ -219,15 +241,31 @@ export function App({
   multiplayerClient: injectedMultiplayerClient,
   onOpenSupportWidget,
 }: AppProps = {}) {
+  const [portalBootstrap] = useState(() =>
+    readPortalBootstrapState(
+      typeof window === "undefined"
+        ? null
+        : {
+            origin: window.location.origin,
+            pathname: window.location.pathname,
+            search: window.location.search,
+          },
+    ),
+  );
+  const initialShellMode = portalBootstrap ? "explore" : initialMode;
   const hostRef = useRef<GameHostHandle>(null);
   const launchTimersRef = useRef<number[]>([]);
   const menuLoadTokenRef = useRef(1);
   const pauseStateRef = useRef<RuntimePauseState>(createDefaultPauseState());
   const runtimeModeRef = useRef<GameMode>("explore");
   const [statusMessage, setStatusMessage] = useState(() =>
-    initialMode === "editor" ? getModeStatusMessage("editor") : defaultStatus,
+    initialShellMode === "editor"
+      ? getModeStatusMessage("editor")
+      : initialShellMode === "explore"
+        ? getModeStatusMessage("explore")
+        : defaultStatus,
   );
-  const [mode, setMode] = useState<ShellMode>(initialMode);
+  const [mode, setMode] = useState<ShellMode>(initialShellMode);
   const [rulesOrigin, setRulesOrigin] = useState<RulesOrigin | null>(null);
   const [editorDocument, setEditorDocument] = useState<MapDocumentV1>(() =>
     createDefaultArenaMap(),
@@ -237,19 +275,53 @@ export function App({
   );
   const [hudState, setHudState] = useState<HudState | null>(null);
   const [pauseState, setPauseState] = useState<RuntimePauseState>(
-    createDefaultPauseState,
+    () =>
+      portalBootstrap
+        ? {
+            hasStarted: true,
+            paused: false,
+            pointerLocked: false,
+            pointerCapturePending: false,
+            pointerCaptureFailureReason: null,
+          }
+        : createDefaultPauseState(),
   );
   const [launchState, setLaunchState] = useState<LaunchState | null>(null);
   const [menuLoadToken, setMenuLoadToken] = useState(1);
-  const [menuLoading, setMenuLoading] = useState(initialMode === "menu");
+  const [menuLoading, setMenuLoading] = useState(initialShellMode === "menu");
   const [menuControlsOpen, setMenuControlsOpen] = useState(false);
   const [matchColorSeed, setMatchColorSeed] = useState(0);
   const [diagnostics, setDiagnostics] = useState<GameDiagnostics | null>(null);
   const rendererQualityProfile = useRendererQualityProfile();
-  const [playerProfile, setPlayerProfile] = useState<PlayerProfile>({
-    name: "",
-    paletteName: chickenPalettes[0]!.name,
+  const [playerProfile, setPlayerProfile] = useState<PlayerProfile>(() => ({
+    name: portalBootstrap?.playerName ?? "",
+    paletteName: portalBootstrap?.paletteName ?? chickenPalettes[0]!.name,
+  }));
+  const [runtimeCaptureMode, setRuntimeCaptureMode] =
+    useState<RuntimeCaptureMode>(() =>
+      portalBootstrap ? "free" : "locked",
+    );
+  const [portalArrivalState, setPortalArrivalState] = useState(portalBootstrap);
+  const [initialChickenRadioState] = useState<{
+    playbackState: ChickenRadioPlaybackState;
+    settings: ChickenRadioSettings;
+  }>(() => {
+    const settings = loadChickenRadioSettings();
+    return {
+      playbackState:
+        settings.playbackPreference === "play" ? "loading" : "paused",
+      settings,
+    };
   });
+  const [chickenRadioSettings, setChickenRadioSettings] =
+    useState<ChickenRadioSettings>(() => initialChickenRadioState.settings);
+  const [chickenRadioPlaybackState, setChickenRadioPlaybackState] =
+    useState<ChickenRadioPlaybackState>(
+      () => initialChickenRadioState.playbackState,
+    );
+  const [chickenRadioExpanded, setChickenRadioExpanded] = useState(false);
+  const [chickenRadioPlayAttemptToken, setChickenRadioPlayAttemptToken] =
+    useState(0);
   const [runtimeControlSettings, setRuntimeControlSettings] =
     useState<RuntimeControlSettings>(() => loadRuntimeControlSettings());
   const [multiplayerClient] = useState(
@@ -346,6 +418,24 @@ export function App({
   const trimmedPlayerName = playerProfile.name.trim();
   const paletteUnlocked = trimmedPlayerName.length > 0;
   const canStartMatch = paletteUnlocked && playerProfile.paletteName !== null;
+  const explorePortalRuntimeConfig = useMemo(
+    () =>
+      buildExplorePortalRuntimeConfig(editorDocument, {
+        includeReturnPortal: portalArrivalState?.incomingRefUrl !== null,
+      }),
+    [editorDocument, portalArrivalState?.incomingRefUrl],
+  );
+  const runtimePortalScene =
+    activePlayMode === "explore" ? explorePortalRuntimeConfig.scene : null;
+  const portalArrivalSpawnOverride =
+    activePlayMode === "explore" &&
+    portalArrivalState?.localPlayerSpawnOverride &&
+    explorePortalRuntimeConfig.arrivalAnchor
+      ? {
+          ...portalArrivalState.localPlayerSpawnOverride,
+          anchor: explorePortalRuntimeConfig.arrivalAnchor,
+        }
+      : null;
   const selectedPreviewPalette =
     chickenPalettes.find(
       (palette) => palette.name === playerProfile.paletteName,
@@ -359,6 +449,20 @@ export function App({
     multiplayer,
     playerProfile.name,
   );
+  const chickenRadioStation = getChickenRadioStation(
+    chickenRadioSettings.stationId,
+  );
+  const chickenRadioCanExpand =
+    isMenuShell || (isRuntimePlay && pauseState.paused);
+  const chickenRadioIsOnAir =
+    chickenRadioSettings.playbackPreference === "play" &&
+    chickenRadioPlaybackState !== "blocked";
+
+  useEffect(() => {
+    if (isRuntimePlay && !pauseState.paused) {
+      setChickenRadioExpanded(false);
+    }
+  }, [isRuntimePlay, pauseState.paused]);
 
   const releaseLaunchSequence = useCallback((resumeRuntime: boolean) => {
     clearLaunchTimers();
@@ -441,6 +545,81 @@ export function App({
     [paletteUnlocked],
   );
 
+  const updateChickenRadioSettings = useCallback(
+    (patch: Partial<ChickenRadioSettings>) => {
+      setChickenRadioSettings((current) => {
+        const nextSettings = normalizeChickenRadioSettings({
+          ...current,
+          ...patch,
+        });
+        saveChickenRadioSettings(nextSettings);
+        return nextSettings;
+      });
+    },
+    [],
+  );
+
+  const handleChickenRadioPlaybackResume = useCallback(() => {
+    updateChickenRadioSettings({
+      playbackPreference: "play",
+    });
+    setChickenRadioPlaybackState("loading");
+    setChickenRadioPlayAttemptToken((current) => current + 1);
+  }, [updateChickenRadioSettings]);
+
+  const handleChickenRadioPlaybackPause = useCallback(() => {
+    updateChickenRadioSettings({
+      playbackPreference: "pause",
+    });
+    setChickenRadioPlaybackState("paused");
+  }, [updateChickenRadioSettings]);
+
+  const handleChickenRadioTogglePlayback = useCallback(() => {
+    if (chickenRadioIsOnAir) {
+      handleChickenRadioPlaybackPause();
+      return;
+    }
+
+    handleChickenRadioPlaybackResume();
+  }, [
+    chickenRadioIsOnAir,
+    handleChickenRadioPlaybackPause,
+    handleChickenRadioPlaybackResume,
+  ]);
+
+  const handleChickenRadioStationSelect = useCallback(
+    (stationId: ChickenRadioSettings["stationId"]) => {
+      updateChickenRadioSettings({
+        stationId,
+      });
+      if (chickenRadioSettings.playbackPreference === "play") {
+        setChickenRadioPlaybackState("loading");
+      }
+    },
+    [chickenRadioSettings.playbackPreference, updateChickenRadioSettings],
+  );
+
+  const handleChickenRadioVolumeChange = useCallback(
+    (volume: number) => {
+      updateChickenRadioSettings({
+        volume,
+      });
+    },
+    [updateChickenRadioSettings],
+  );
+
+  const handleChickenRadioExpandedChange = useCallback(
+    (expanded: boolean) => {
+      if (expanded && !chickenRadioCanExpand) {
+        setChickenRadioExpanded(false);
+        return;
+      }
+
+      setChickenRadioExpanded(expanded);
+    },
+    [chickenRadioCanExpand],
+  );
+
   const handleRuntimeControlSettingsChange = useCallback(
     (patch: Partial<RuntimeControlSettings>) => {
       setRuntimeControlSettings((current) => {
@@ -463,6 +642,37 @@ export function App({
   const createMultiplayerWorker = useCallback(
     () => multiplayerClient.createWorkerBridge(),
     [multiplayerClient],
+  );
+
+  const handlePortalTriggered = useCallback(
+    (portalId: string, snapshot: Parameters<typeof buildPortalRedirectUrl>[0]["snapshot"]) => {
+      if (typeof window === "undefined") {
+        return;
+      }
+
+      const redirectUrl = buildPortalRedirectUrl({
+        currentGameUrl: getCurrentGameUrl(window.location),
+        incomingRefUrl: portalArrivalState?.incomingRefUrl ?? null,
+        forwardedParams: portalArrivalState?.forwardedParams ?? {},
+        matchColorSeed,
+        paletteName: playerProfile.paletteName,
+        playerName: playerProfile.name,
+        portalId,
+        snapshot,
+      });
+      if (!redirectUrl) {
+        return;
+      }
+
+      window.location.assign(redirectUrl);
+    },
+    [
+      matchColorSeed,
+      playerProfile.name,
+      playerProfile.paletteName,
+      portalArrivalState?.forwardedParams,
+      portalArrivalState?.incomingRefUrl,
+    ],
   );
 
   const enterMultiplayerRoom = useCallback(() => {
@@ -619,6 +829,8 @@ export function App({
         return;
       }
 
+      setRuntimeCaptureMode("locked");
+      setPortalArrivalState(null);
       clearLaunchTimers();
       flushSync(() => {
         enterMode(nextMode);
@@ -656,6 +868,8 @@ export function App({
   const returnToMenu = useCallback(async () => {
     cancelLaunchSequence();
     setRulesOrigin(null);
+    setRuntimeCaptureMode("locked");
+    setPortalArrivalState(null);
     if (activePlayMode === "multiplayer") {
       await multiplayerClient.leaveRoom();
     }
@@ -741,346 +955,440 @@ export function App({
   );
 
   if (isRulesFromMenu) {
-    return <RulesAndControlsScreen onBack={closeRules} />;
+    return (
+      <div className="app-root">
+        <ChickenRadioPlayerHost
+          onPlaybackStateChange={setChickenRadioPlaybackState}
+          playAttemptToken={chickenRadioPlayAttemptToken}
+          playbackPreference={chickenRadioSettings.playbackPreference}
+          station={chickenRadioStation}
+          volume={chickenRadioSettings.volume}
+        />
+        <RulesAndControlsScreen onBack={closeRules} />
+      </div>
+    );
   }
 
   if (isMenuShell) {
     return (
-      <main className="menu-shell">
-        <div className="menu-background">
-          <GameHost
-            initialDocument={editorDocument}
-            matchColorSeed={matchColorSeed}
-            mode="editor"
-            onReadyToDisplay={handleMenuReadyToDisplay}
-            playerProfile={playerProfile}
-            presentation="menu"
-            qualityTier={rendererQualityProfile.tier}
-            runtimeSettings={runtimeControlSettings}
-          />
-        </div>
-        <div
-          className="menu-screen-gradient"
-          style={
-            {
-              "--preview-gradient-solid": hexToRgba(
-                selectedPreviewPalette.body,
-                0.92,
-              ),
-              "--preview-gradient-mid": hexToRgba(
-                selectedPreviewPalette.shade,
-                0.54,
-              ),
-              "--preview-gradient-soft": hexToRgba(
-                selectedPreviewPalette.body,
-                0.14,
-              ),
-            } as CSSProperties
-          }
+      <div className="app-root">
+        <ChickenRadioPlayerHost
+          onPlaybackStateChange={setChickenRadioPlaybackState}
+          playAttemptToken={chickenRadioPlayAttemptToken}
+          playbackPreference={chickenRadioSettings.playbackPreference}
+          station={chickenRadioStation}
+          volume={chickenRadioSettings.volume}
         />
-        <div className="menu-corner-status" role="status">
-          <span className="menu-corner-status__title">
-            {multiplayerIdentityTitle}
-          </span>
-          <span className="menu-corner-status__detail">
-            {multiplayerIdentityDetail}
-          </span>
-        </div>
-        <div className="menu-overlay">
-          <section className="menu-sidebar">
-            <div className="menu-sidebar__content">
-              <h1 className="menu-title">HoldMyEgg</h1>
-              <label className="field">
-                <span>Player Name</span>
-                <input
-                  autoFocus
-                  maxLength={18}
-                  onChange={handlePlayerNameChange}
-                  placeholder="TYPE YOUR NAME"
-                  value={playerProfile.name}
-                />
-              </label>
-              <div className="field">
-                <span>Chicken Color</span>
-                <div
-                  aria-label="Chicken Color"
-                  className={`menu-palette-grid ${paletteUnlocked ? "" : "menu-palette-grid--locked"}`.trim()}
-                  role="radiogroup"
-                >
-                  {chickenPalettes.map((palette) => {
-                    const selected = playerProfile.paletteName === palette.name;
-                    return (
-                      <button
-                        aria-checked={selected}
-                        aria-label={`${palette.name} chicken`}
-                        className={`palette-swatch ${selected ? "palette-swatch--selected" : ""}`.trim()}
-                        disabled={!paletteUnlocked}
-                        key={palette.name}
-                        onClick={() => handlePalettePick(palette.name)}
-                        role="radio"
-                        style={
-                          {
-                            "--swatch-body": palette.body,
-                            "--swatch-shade": palette.shade,
-                            "--swatch-ring": palette.ringAccent,
-                          } as CSSProperties
-                        }
-                        title={palette.name}
-                        type="button"
-                      >
-                        <span className="palette-swatch__chip" />
-                        <span className="palette-swatch__name">
-                          {palette.name}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-                {!paletteUnlocked && (
-                  <span className="menu-hint">
-                    Type your name to unlock the coop colors.
-                  </span>
-                )}
-              </div>
-
-              {isMenu && (
-                <div
-                  aria-label="Modes"
-                  className="menu-primary-actions"
-                  role="group"
-                >
-                  {multiplayer.available && (
-                    <button
-                      className="menu-action menu-action--full menu-action--hero"
-                      disabled={multiplayer.joining}
-                      onClick={() => {
-                        void openMultiplayerMenu();
-                      }}
-                      type="button"
-                    >
-                      {`Multiplayer · ${multiplayer.onlinePlayers} online`}
-                    </button>
-                  )}
-                  <button
-                    className="menu-action menu-action--full menu-action--hero-secondary"
-                    disabled={!canStartMatch}
-                    onClick={() => beginMode("explore")}
-                    type="button"
-                  >
-                    Explore
-                  </button>
-                  <button
-                    className="menu-action menu-action--full menu-action--compact"
-                    disabled={!canStartMatch}
-                    onClick={() => beginMode("playNpc")}
-                    type="button"
-                  >
-                    PLAY NPC
-                  </button>
-                </div>
-              )}
-              {isMultiplayerMenu && (
-                <section className="multiplayer-menu-screen">
-                  <div className="multiplayer-menu-screen__header">
-                    <div>
-                      <span className="menu-kicker">Multiplayer</span>
-                      <h2>US Rooms</h2>
-                    </div>
-                    <button
-                      className="menu-action menu-action--compact"
-                      onClick={returnToMainMenu}
-                      type="button"
-                    >
-                      Back
-                    </button>
-                  </div>
-                  <p className="multiplayer-menu-screen__copy">
-                    {multiplayer.available
-                      ? "Watch the live room flow, quick join the best match, or pick a room."
-                      : "Multiplayer is offline right now. We will keep checking for it."}
-                  </p>
-                  {multiplayer.available && (
-                    <MultiplayerRoomCards
-                      busy={multiplayer.joining}
-                      onJoinRoom={(roomId) => {
-                        void handleJoinSpecificRoom(roomId);
-                      }}
-                      onQuickJoin={() => {
-                        void handleQuickJoinMultiplayer();
-                      }}
-                      rooms={multiplayer.rooms}
-                      sessionReady={!multiplayer.booting && canStartMatch}
-                    />
-                  )}
-                </section>
-              )}
-              {isMenu && (
-                <div className="menu-utility">
+        <main className="menu-shell">
+          <div className="menu-background">
+            <GameHost
+              initialDocument={editorDocument}
+              matchColorSeed={matchColorSeed}
+              mode="editor"
+              onReadyToDisplay={handleMenuReadyToDisplay}
+              playerProfile={playerProfile}
+              presentation="menu"
+              qualityTier={rendererQualityProfile.tier}
+              runtimeSettings={runtimeControlSettings}
+            />
+          </div>
+          <div
+            className="menu-screen-gradient"
+            style={
+              {
+                "--preview-gradient-solid": hexToRgba(
+                  selectedPreviewPalette.body,
+                  0.92,
+                ),
+                "--preview-gradient-mid": hexToRgba(
+                  selectedPreviewPalette.shade,
+                  0.54,
+                ),
+                "--preview-gradient-soft": hexToRgba(
+                  selectedPreviewPalette.body,
+                  0.14,
+                ),
+              } as CSSProperties
+            }
+          />
+          <div className="menu-top-right-stack">
+            <ChickenRadioOverlay
+              expanded={chickenRadioExpanded && chickenRadioCanExpand}
+              interactive
+              onSelectStation={handleChickenRadioStationSelect}
+              onSetExpanded={handleChickenRadioExpandedChange}
+              onTogglePlayback={handleChickenRadioTogglePlayback}
+              onVolumeChange={handleChickenRadioVolumeChange}
+              playbackState={chickenRadioPlaybackState}
+              station={chickenRadioStation}
+              stations={chickenRadioStations}
+              variant="menu"
+              volume={chickenRadioSettings.volume}
+            />
+            <div className="menu-corner-status" role="status">
+              <span className="menu-corner-status__title">
+                {multiplayerIdentityTitle}
+              </span>
+              <span className="menu-corner-status__detail">
+                {multiplayerIdentityDetail}
+              </span>
+            </div>
+          </div>
+          <div className="menu-overlay">
+            <section className="menu-sidebar">
+              <div className="menu-sidebar__content">
+                <h1 className="menu-title">HoldMyEgg</h1>
+                <label className="field">
+                  <span>Player Name</span>
+                  <input
+                    autoFocus
+                    autoComplete="off"
+                    autoCorrect="off"
+                    data-1p-ignore="true"
+                    data-lpignore="true"
+                    maxLength={18}
+                    onChange={handlePlayerNameChange}
+                    placeholder="TYPE YOUR NAME"
+                    spellCheck={false}
+                    value={playerProfile.name}
+                  />
+                </label>
+                <div className="field">
+                  <span>Chicken Color</span>
                   <div
-                    aria-label="Menu links"
-                    className="menu-secondary-actions"
+                    aria-label="Chicken Color"
+                    className={`menu-palette-grid ${paletteUnlocked ? "" : "menu-palette-grid--locked"}`.trim()}
+                    role="radiogroup"
+                  >
+                    {chickenPalettes.map((palette) => {
+                      const selected = playerProfile.paletteName === palette.name;
+                      return (
+                        <button
+                          aria-checked={selected}
+                          aria-label={`${palette.name} chicken`}
+                          className={`palette-swatch ${selected ? "palette-swatch--selected" : ""}`.trim()}
+                          disabled={!paletteUnlocked}
+                          key={palette.name}
+                          onClick={() => handlePalettePick(palette.name)}
+                          role="radio"
+                          style={
+                            {
+                              "--swatch-body": palette.body,
+                              "--swatch-shade": palette.shade,
+                              "--swatch-ring": palette.ringAccent,
+                            } as CSSProperties
+                          }
+                          title={palette.name}
+                          type="button"
+                        >
+                          <span className="palette-swatch__chip" />
+                          <span className="palette-swatch__name">
+                            {palette.name}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {!paletteUnlocked && (
+                    <span className="menu-hint">
+                      Type your name to unlock the coop colors.
+                    </span>
+                  )}
+                </div>
+
+                {isMenu && (
+                  <div
+                    aria-label="Modes"
+                    className="menu-primary-actions"
                     role="group"
                   >
+                    {multiplayer.available && (
+                      <button
+                        className="menu-action menu-action--full menu-action--hero"
+                        disabled={multiplayer.joining}
+                        onClick={() => {
+                          void openMultiplayerMenu();
+                        }}
+                        type="button"
+                      >
+                        {`Multiplayer · ${multiplayer.onlinePlayers} online`}
+                      </button>
+                    )}
+                    <button
+                      className="menu-action menu-action--full menu-action--hero-secondary"
+                      disabled={!canStartMatch}
+                      onClick={() => beginMode("explore")}
+                      type="button"
+                    >
+                      Explore
+                    </button>
                     <button
                       className="menu-action menu-action--full menu-action--compact"
-                      onClick={openRulesFromMenu}
+                      disabled={!canStartMatch}
+                      onClick={() => beginMode("playNpc")}
                       type="button"
                     >
-                      Rules / Shortcuts
+                      PLAY NPC
                     </button>
-                    {/* <button
-                      className="menu-action menu-action--secondary menu-action--full menu-action--compact"
-                      onClick={onOpenSupportWidget}
-                      type="button"
-                    >
-                      Feedback / bug
-                    </button> */}
                   </div>
-                  <section className="menu-controls-panel">
-                    <button
-                      aria-expanded={menuControlsOpen}
-                      className="menu-controls-panel__toggle"
-                      onClick={() => setMenuControlsOpen((current) => !current)}
-                      type="button"
-                    >
-                      <span className="menu-controls-panel__copy">
-                        <span className="menu-controls-panel__title">
-                          Controls
-                        </span>
-                        <span className="menu-controls-panel__summary">
-                          Saved locally ·{" "}
-                          {getRuntimeControlsSummary(runtimeControlSettings)}
-                        </span>
-                      </span>
-                      <span className="menu-controls-panel__state">
-                        {menuControlsOpen ? "Hide" : "Edit"}
-                      </span>
-                    </button>
-                    {menuControlsOpen && (
-                      <div className="menu-controls-panel__body">
-                        <RuntimeControlsSettings
-                          onReset={handleRuntimeControlSettingsReset}
-                          onSettingsChange={handleRuntimeControlSettingsChange}
-                          settings={runtimeControlSettings}
-                          variant="menu"
-                        />
+                )}
+                {isMultiplayerMenu && (
+                  <section className="multiplayer-menu-screen">
+                    <div className="multiplayer-menu-screen__header">
+                      <div>
+                        <span className="menu-kicker">Multiplayer</span>
+                        <h2>US Rooms</h2>
                       </div>
+                      <button
+                        className="menu-action menu-action--compact"
+                        onClick={returnToMainMenu}
+                        type="button"
+                      >
+                        Back
+                      </button>
+                    </div>
+                    <p className="multiplayer-menu-screen__copy">
+                      {multiplayer.available
+                        ? "Watch the live room flow, quick join the best match, or pick a room."
+                        : "Multiplayer is offline right now. We will keep checking for it."}
+                    </p>
+                    {multiplayer.available && (
+                      <MultiplayerRoomCards
+                        busy={multiplayer.joining}
+                        onJoinRoom={(roomId) => {
+                          void handleJoinSpecificRoom(roomId);
+                        }}
+                        onQuickJoin={() => {
+                          void handleQuickJoinMultiplayer();
+                        }}
+                        rooms={multiplayer.rooms}
+                        sessionReady={!multiplayer.booting && canStartMatch}
+                      />
                     )}
                   </section>
-                  <p className="menu-credit">
-                    Made by{" "}
-                    <a
-                      href="https://x.com/anthonyriera"
-                      rel="noreferrer"
-                      target="_blank"
+                )}
+                {isMenu && (
+                  <div className="menu-utility">
+                    <div
+                      aria-label="Menu links"
+                      className="menu-secondary-actions"
+                      role="group"
                     >
-                      Anthony Riera
-                    </a>{" "}
-                    and{" "}
-                    <a
-                      href="https://cossistant.com"
-                      rel="noreferrer"
-                      target="_blank"
-                    >
-                      cossistant.com
-                    </a>
-                  </p>
-                </div>
-              )}
-            </div>
-          </section>
+                      <button
+                        className="menu-action menu-action--full menu-action--compact"
+                        onClick={openRulesFromMenu}
+                        type="button"
+                      >
+                        Rules / Shortcuts
+                      </button>
+                      {/* <button
+                        className="menu-action menu-action--secondary menu-action--full menu-action--compact"
+                        onClick={onOpenSupportWidget}
+                        type="button"
+                      >
+                        Feedback / bug
+                      </button> */}
+                    </div>
+                    <section className="menu-controls-panel">
+                      <button
+                        aria-expanded={menuControlsOpen}
+                        className="menu-controls-panel__toggle"
+                        onClick={() =>
+                          setMenuControlsOpen((current) => !current)
+                        }
+                        type="button"
+                      >
+                        <span className="menu-controls-panel__copy">
+                          <span className="menu-controls-panel__title">
+                            Controls
+                          </span>
+                          <span className="menu-controls-panel__summary">
+                            Saved locally ·{" "}
+                            {getRuntimeControlsSummary(runtimeControlSettings)}
+                          </span>
+                        </span>
+                        <span className="menu-controls-panel__state">
+                          {menuControlsOpen ? "Hide" : "Edit"}
+                        </span>
+                      </button>
+                      {menuControlsOpen && (
+                        <div className="menu-controls-panel__body">
+                          <RuntimeControlsSettings
+                            onReset={handleRuntimeControlSettingsReset}
+                            onSettingsChange={
+                              handleRuntimeControlSettingsChange
+                            }
+                            settings={runtimeControlSettings}
+                            variant="menu"
+                          />
+                        </div>
+                      )}
+                    </section>
+                    <p className="menu-credit">
+                      Made by{" "}
+                      <a
+                        href="https://x.com/anthonyriera"
+                        rel="noreferrer"
+                        target="_blank"
+                      >
+                        Anthony Riera
+                      </a>{" "}
+                      and{" "}
+                      <a
+                        href="https://cossistant.com"
+                        rel="noreferrer"
+                        target="_blank"
+                      >
+                        cossistant.com
+                      </a>
+                    </p>
+                  </div>
+                )}
+              </div>
+            </section>
 
-          <section aria-label="Chicken Preview" className="menu-preview-stage">
-            <ChickenPreview
-              paletteName={selectedPreviewPaletteName}
-              variant="menu"
-            />
-          </section>
-        </div>
-        {menuLoading && <BootSplashScreen />}
-      </main>
+            <section aria-label="Chicken Preview" className="menu-preview-stage">
+              <ChickenPreview
+                paletteName={selectedPreviewPaletteName}
+                variant="menu"
+              />
+            </section>
+          </div>
+          {menuLoading && <BootSplashScreen />}
+        </main>
+      </div>
     );
   }
 
   if (isRuntimePlay) {
     return (
-      <main className="play-shell">
-        <div className="play-canvas">
-          <GameHost
-            initialDocument={editorDocument}
-            initialSpawnStyle="sky"
-            matchColorSeed={matchColorSeed}
-            mode={activePlayMode}
-            playerProfile={playerProfile}
-            onDiagnostics={setDiagnostics}
-            onEditorStateChange={handleEditorStateChange}
-            onHudStateChange={setHudState}
-            onPauseStateChange={setPauseState}
-            onStatus={updateStatus}
-            qualityTier={rendererQualityProfile.tier}
-            ref={hostRef}
-            runtimeSettings={runtimeControlSettings}
-            workerFactory={
-              activePlayMode === "multiplayer"
-                ? createMultiplayerWorker
-                : undefined
-            }
-          />
-          {launchState && (
-            <LaunchOverlay
-              paletteName={selectedPreviewPaletteName}
-              phase={launchState.phase}
-            />
-          )}
-          {activePlayMode === "multiplayer" && multiplayer.activeRoom && (
-            <MultiplayerRoomOverlay
-              chat={multiplayer.chat}
-              connectionStatus={multiplayer.connectionStatus}
-              localUserId={multiplayer.sessionUserId}
-              onChatSend={(text) => multiplayerClient.sendChat(text)}
-              onReturnToMenu={() => {
-                void returnToMenu();
-              }}
-              room={multiplayer.activeRoom}
-            />
-          )}
-          {isRulesFromPause && <RulesAndControlsScreen onBack={closeRules} />}
-          {!launchState && !isRulesFromPause && (
-            <Hud
-              hudState={hudState}
+      <div className="app-root">
+        <ChickenRadioPlayerHost
+          onPlaybackStateChange={setChickenRadioPlaybackState}
+          playAttemptToken={chickenRadioPlayAttemptToken}
+          playbackPreference={chickenRadioSettings.playbackPreference}
+          station={chickenRadioStation}
+          volume={chickenRadioSettings.volume}
+        />
+        <main className="play-shell">
+          <div className="play-canvas">
+            <GameHost
+              initialDocument={editorDocument}
+              initialSpawnStyle="sky"
+              localPlayerSpawnOverride={portalArrivalSpawnOverride}
+              matchColorSeed={matchColorSeed}
               mode={activePlayMode}
-            />
-          )}
-          {!launchState && !isRulesFromPause && diagnostics?.render && (
-            <RuntimeFpsBadge diagnostics={diagnostics} />
-          )}
-          {pauseState.paused && !launchState && !isRulesFromPause && (
-            <RuntimePauseOverlay
-              hasStarted={pauseState.hasStarted}
-              onRuntimeControlSettingsChange={
-                handleRuntimeControlSettingsChange
+              captureMode={
+                activePlayMode === "explore" ? runtimeCaptureMode : "locked"
               }
-              onRuntimeControlSettingsReset={handleRuntimeControlSettingsReset}
-              onResume={() => hostRef.current?.resumeRuntime()}
-              onShowRules={openRulesFromPause}
-              onReturnToMenu={() => {
-                void returnToMenu();
-              }}
-              pointerCaptureFailureReason={
-                pauseState.pointerCaptureFailureReason
+              portalScene={runtimePortalScene}
+              playerProfile={playerProfile}
+              onDiagnostics={setDiagnostics}
+              onEditorStateChange={handleEditorStateChange}
+              onHudStateChange={setHudState}
+              onPauseStateChange={setPauseState}
+              onPortalTriggered={handlePortalTriggered}
+              onStatus={updateStatus}
+              qualityTier={rendererQualityProfile.tier}
+              ref={hostRef}
+              runtimeSettings={runtimeControlSettings}
+              workerFactory={
+                activePlayMode === "multiplayer"
+                  ? createMultiplayerWorker
+                  : undefined
               }
-              pointerCapturePending={pauseState.pointerCapturePending}
-              runtimeControlSettings={runtimeControlSettings}
             />
-          )}
-        </div>
-      </main>
+            {launchState && (
+              <LaunchOverlay
+                paletteName={selectedPreviewPaletteName}
+                phase={launchState.phase}
+              />
+            )}
+            {activePlayMode === "multiplayer" && multiplayer.activeRoom && (
+              <MultiplayerRoomOverlay
+                chat={multiplayer.chat}
+                connectionStatus={multiplayer.connectionStatus}
+                localUserId={multiplayer.sessionUserId}
+                onChatSend={(text) => multiplayerClient.sendChat(text)}
+                onReturnToMenu={() => {
+                  void returnToMenu();
+                }}
+                room={multiplayer.activeRoom}
+              />
+            )}
+            {isRulesFromPause && <RulesAndControlsScreen onBack={closeRules} />}
+            {!launchState && !isRulesFromPause && (
+              <>
+                <div
+                  className={`runtime-top-right-stack ${activePlayMode === "multiplayer" && multiplayer.activeRoom ? "runtime-top-right-stack--multiplayer" : ""}`.trim()}
+                >
+                  {!pauseState.paused && (
+                    <ChickenRadioRuntimeLabel station={chickenRadioStation} />
+                  )}
+                  {diagnostics?.render && (
+                    <RuntimeFpsIndicator diagnostics={diagnostics} />
+                  )}
+                </div>
+                <Hud
+                  hudState={hudState}
+                  mode={activePlayMode}
+                />
+              </>
+            )}
+            {pauseState.paused && !launchState && !isRulesFromPause && (
+              <RuntimePauseOverlay
+                captureMode={
+                  activePlayMode === "explore" ? runtimeCaptureMode : "locked"
+                }
+                chickenRadioControl={
+                  <ChickenRadioOverlay
+                    expanded={chickenRadioExpanded && chickenRadioCanExpand}
+                    interactive
+                    onSelectStation={handleChickenRadioStationSelect}
+                    onSetExpanded={handleChickenRadioExpandedChange}
+                    onTogglePlayback={handleChickenRadioTogglePlayback}
+                    onVolumeChange={handleChickenRadioVolumeChange}
+                    playbackState={chickenRadioPlaybackState}
+                    station={chickenRadioStation}
+                    stations={chickenRadioStations}
+                    variant="menu"
+                    volume={chickenRadioSettings.volume}
+                  />
+                }
+                hasStarted={pauseState.hasStarted}
+                onRuntimeControlSettingsChange={
+                  handleRuntimeControlSettingsChange
+                }
+                onRuntimeControlSettingsReset={handleRuntimeControlSettingsReset}
+                onResume={() => hostRef.current?.resumeRuntime()}
+                onShowRules={openRulesFromPause}
+                onReturnToMenu={() => {
+                  void returnToMenu();
+                }}
+                pointerCaptureFailureReason={
+                  pauseState.pointerCaptureFailureReason
+                }
+                pointerCapturePending={pauseState.pointerCapturePending}
+                runtimeControlSettings={runtimeControlSettings}
+              />
+            )}
+          </div>
+        </main>
+      </div>
     );
   }
 
   return (
-    <div className="app-shell">
-      <aside className="control-panel">
+    <div className="app-root">
+      <ChickenRadioPlayerHost
+        onPlaybackStateChange={setChickenRadioPlaybackState}
+        playAttemptToken={chickenRadioPlayAttemptToken}
+        playbackPreference={chickenRadioSettings.playbackPreference}
+        station={chickenRadioStation}
+        volume={chickenRadioSettings.volume}
+      />
+      <div className="app-shell">
+        <aside className="control-panel">
         <div className="panel-head">
           <p className="panel-kicker">Voxel Arena Prototype</p>
           <h1>HoldMyEgg</h1>
@@ -1317,9 +1625,9 @@ export function App({
           <h2>Status</h2>
           <p>{statusMessage}</p>
         </section>
-      </aside>
+        </aside>
 
-      <main className="stage">
+        <main className="stage">
         <header className="stage-head">
           <div>
             <p className="panel-kicker">Current View</p>
@@ -1404,7 +1712,8 @@ export function App({
             </div>
           )}
         </div>
-      </main>
+        </main>
+      </div>
     </div>
   );
 }
@@ -1417,7 +1726,7 @@ function BootSplashScreen() {
   );
 }
 
-function RuntimeFpsBadge({ diagnostics }: { diagnostics: GameDiagnostics }) {
+function RuntimeFpsIndicator({ diagnostics }: { diagnostics: GameDiagnostics }) {
   const render = diagnostics.render;
   if (!render) {
     return null;
@@ -1432,11 +1741,29 @@ function RuntimeFpsBadge({ diagnostics }: { diagnostics: GameDiagnostics }) {
 
   return (
     <div
-      className={`fps-badge fps-badge--${badgeTone}`}
+      className={`fps-indicator fps-indicator--${badgeTone}`}
       data-testid="runtime-fps-badge"
     >
-      <span>FPS {render.fps.toFixed(1)}</span>
-      <span>{render.qualityTier.toUpperCase()}</span>
+      FPS {render.fps.toFixed(1)}
+    </div>
+  );
+}
+
+function ChickenRadioRuntimeLabel({
+  station,
+}: {
+  station: ReturnType<typeof getChickenRadioStation>;
+}) {
+  return (
+    <div
+      className="chicken-radio-runtime-label"
+      data-testid="chicken-radio-runtime-label"
+      role="status"
+    >
+      <span className="chicken-radio-runtime-label__title">Chicken Radio</span>
+      <span className="chicken-radio-runtime-label__station">
+        {station.frequencyLabel}
+      </span>
     </div>
   );
 }
@@ -1557,6 +1884,8 @@ function LaunchOverlay({
 }
 
 function RuntimePauseOverlay({
+  captureMode,
+  chickenRadioControl,
   hasStarted,
   onRuntimeControlSettingsChange,
   onRuntimeControlSettingsReset,
@@ -1567,6 +1896,8 @@ function RuntimePauseOverlay({
   pointerCapturePending,
   runtimeControlSettings,
 }: {
+  captureMode: RuntimeCaptureMode;
+  chickenRadioControl: ReactNode;
   hasStarted: boolean;
   onRuntimeControlSettingsChange: (
     patch: Partial<RuntimeControlSettings>,
@@ -1580,30 +1911,38 @@ function RuntimePauseOverlay({
   runtimeControlSettings: RuntimeControlSettings;
 }) {
   const [showControls, setShowControls] = useState(false);
-  const isFirstCapture = !hasStarted;
-  const captureFailed = pointerCaptureFailureReason !== null;
+  const freeLookMode = captureMode === "free";
+  const isFirstCapture = !freeLookMode && !hasStarted;
+  const captureFailed =
+    !freeLookMode && pointerCaptureFailureReason !== null;
   const primaryLabel = pointerCapturePending
     ? "Capturing..."
-    : isFirstCapture || captureFailed
-      ? "Capture Mouse"
-      : "Resume";
+    : freeLookMode
+      ? "Resume"
+      : isFirstCapture || captureFailed
+        ? "Capture Mouse"
+        : "Resume";
   const kicker = pointerCapturePending
     ? "Capturing Mouse"
-    : captureFailed
-      ? "Capture Failed"
-      : hasStarted
-        ? "Paused"
-        : "Click To Start";
+    : freeLookMode
+      ? "Portal Pause"
+      : captureFailed
+        ? "Capture Failed"
+        : hasStarted
+          ? "Paused"
+          : "Click To Start";
   const message = pointerCapturePending
     ? "Trying to capture the mouse now. If it still does not lock, you can retry or head back to the menu."
-    : pointerCaptureFailureReason
-      ? getPointerCaptureFailureMessage(pointerCaptureFailureReason)
-      : hasStarted
-        ? "Mouse unlocked. Resume to jump back in."
-        : "Capture the mouse to drop into the arena.";
+    : freeLookMode
+      ? "Explore mode is paused. Resume to jump back in."
+      : pointerCaptureFailureReason
+        ? getPointerCaptureFailureMessage(pointerCaptureFailureReason)
+        : hasStarted
+          ? "Mouse unlocked. Resume to jump back in."
+          : "Capture the mouse to drop into the arena.";
   const title = pointerCapturePending
     ? "Locking The Arena"
-    : hasStarted
+    : freeLookMode || hasStarted
       ? "Arena On Hold"
       : "Ready To Drop";
 
@@ -1611,7 +1950,9 @@ function RuntimePauseOverlay({
     <div className="runtime-pause-overlay">
       <button
         aria-label={
-          isFirstCapture || captureFailed ? "Capture mouse" : "Resume play"
+          !freeLookMode && (isFirstCapture || captureFailed)
+            ? "Capture mouse"
+            : "Resume play"
         }
         className="runtime-pause-backdrop"
         disabled={pointerCapturePending}
@@ -1629,7 +1970,9 @@ function RuntimePauseOverlay({
               <span className="runtime-pause-strip__status-chip">
                 {pointerCapturePending
                   ? "WAIT"
-                  : isFirstCapture || captureFailed
+                  : freeLookMode
+                    ? "FREE LOOK"
+                    : isFirstCapture || captureFailed
                     ? "UNLOCKED"
                     : "SAFE"}
               </span>
@@ -1690,22 +2033,33 @@ function RuntimePauseOverlay({
               variant="pause"
             />
           </div>
-          {showControls && (
-            <div className="runtime-pause-strip__controls-shell">
+          <div className="runtime-pause-strip__sidebar">
+            <div className="runtime-pause-strip__radio-shell">
               <div className="runtime-pause-strip__section-head">
-                <p className="runtime-pause-strip__label">Aim Setup</p>
+                <p className="runtime-pause-strip__label">Chicken Radio</p>
                 <p className="runtime-pause-strip__meta">
-                  Adjust camera feel before jumping back in.
+                  Same tuner as the home menu.
                 </p>
               </div>
-              <RuntimeControlsSettings
-                onReset={onRuntimeControlSettingsReset}
-                onSettingsChange={onRuntimeControlSettingsChange}
-                settings={runtimeControlSettings}
-                variant="pause"
-              />
+              {chickenRadioControl}
             </div>
-          )}
+            {showControls && (
+              <div className="runtime-pause-strip__controls-shell">
+                <div className="runtime-pause-strip__section-head">
+                  <p className="runtime-pause-strip__label">Aim Setup</p>
+                  <p className="runtime-pause-strip__meta">
+                    Adjust camera feel before jumping back in.
+                  </p>
+                </div>
+                <RuntimeControlsSettings
+                  onReset={onRuntimeControlSettingsReset}
+                  onSettingsChange={onRuntimeControlSettingsChange}
+                  settings={runtimeControlSettings}
+                  variant="pause"
+                />
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>

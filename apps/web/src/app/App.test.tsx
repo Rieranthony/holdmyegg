@@ -3,6 +3,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "re
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDefaultArenaMap, serializeMapDocument } from "@out-of-bounds/map";
 import type { HudState } from "@out-of-bounds/sim";
+import { CHICKEN_RADIO_STORAGE_KEY } from "../data/chickenRadioStorage";
 import { RUNTIME_CONTROL_SETTINGS_STORAGE_KEY } from "../data/runtimeControlSettingsStorage";
 import type { EditorPanelState } from "../engine/types";
 
@@ -116,12 +117,143 @@ const gameHostState = vi.hoisted(() => {
   };
 });
 
+const chickenRadioState = vi.hoisted(() => {
+  const PlayerState = {
+    UNSTARTED: -1,
+    ENDED: 0,
+    PLAYING: 1,
+    PAUSED: 2,
+    BUFFERING: 3,
+    CUED: 5
+  } as const;
+
+  let autoplayBlocked = false;
+  let lastPlayer:
+    | {
+        config: {
+          events?: {
+            onAutoplayBlocked?: (event: { data: number; target: unknown }) => void;
+            onReady?: (event: { data: number; target: unknown }) => void;
+            onStateChange?: (event: { data: number; target: unknown }) => void;
+          };
+          videoId?: string;
+        };
+        currentVideoId: string;
+        destroy: ReturnType<typeof vi.fn>;
+        cueVideoById: ReturnType<typeof vi.fn>;
+        loadVideoById: ReturnType<typeof vi.fn>;
+        pauseVideo: ReturnType<typeof vi.fn>;
+        playVideo: ReturnType<typeof vi.fn>;
+        setVolume: ReturnType<typeof vi.fn>;
+        volume: number;
+      }
+    | null = null;
+
+  const emitState = (player: NonNullable<typeof lastPlayer>, data: number) => {
+    player.config.events?.onStateChange?.({
+      data,
+      target: player
+    });
+  };
+
+  const emitAutoplayBlocked = (player: NonNullable<typeof lastPlayer>) => {
+    player.config.events?.onAutoplayBlocked?.({
+      data: PlayerState.CUED,
+      target: player
+    });
+  };
+
+  class FakeYouTubePlayer {
+    config: NonNullable<typeof lastPlayer>["config"];
+    currentVideoId: string;
+    volume = 0;
+    cueVideoById;
+    destroy;
+    loadVideoById;
+    pauseVideo;
+    playVideo;
+    setVolume;
+
+    constructor(
+      _mountNode: Element,
+      config: NonNullable<typeof lastPlayer>["config"]
+    ) {
+      this.config = config;
+      this.currentVideoId = config.videoId ?? "";
+      this.cueVideoById = vi.fn((videoId: string) => {
+        this.currentVideoId = videoId;
+        emitState(this as never, PlayerState.CUED);
+      });
+      this.destroy = vi.fn(() => {
+        if (lastPlayer === (this as never)) {
+          lastPlayer = null;
+        }
+      });
+      this.loadVideoById = vi.fn((videoId: string) => {
+        this.currentVideoId = videoId;
+        if (autoplayBlocked) {
+          emitAutoplayBlocked(this as never);
+          emitState(this as never, PlayerState.CUED);
+          return;
+        }
+
+        emitState(this as never, PlayerState.BUFFERING);
+        emitState(this as never, PlayerState.PLAYING);
+      });
+      this.pauseVideo = vi.fn(() => {
+        emitState(this as never, PlayerState.PAUSED);
+      });
+      this.playVideo = vi.fn(() => {
+        if (autoplayBlocked) {
+          emitAutoplayBlocked(this as never);
+          emitState(this as never, PlayerState.PAUSED);
+          return;
+        }
+
+        emitState(this as never, PlayerState.PLAYING);
+      });
+      this.setVolume = vi.fn((value: number) => {
+        this.volume = value;
+      });
+      lastPlayer = this as never;
+
+      Promise.resolve().then(() => {
+        config.events?.onReady?.({
+          data: PlayerState.CUED,
+          target: this as never
+        });
+      });
+    }
+  }
+
+  return {
+    install() {
+      Object.assign(window as Window & { YT?: unknown }, {
+        YT: {
+          Player: FakeYouTubePlayer,
+          PlayerState
+        }
+      });
+    },
+    reset() {
+      autoplayBlocked = false;
+      lastPlayer = null;
+    },
+    setAutoplayBlocked(value: boolean) {
+      autoplayBlocked = value;
+    }
+  };
+});
+
 vi.mock("../engine/GameHost", () => ({
   GameHost: forwardRef(
     (
       {
+        captureMode,
         mode,
         initialDocument,
+        localPlayerSpawnOverride,
+        portalScene,
         presentation,
         playerProfile,
         onEditorStateChange,
@@ -130,8 +262,12 @@ vi.mock("../engine/GameHost", () => ({
         onPauseStateChange,
         onReadyToDisplay
       }: {
+        captureMode?: "locked" | "free";
         initialDocument: ReturnType<typeof createDefaultArenaMap>;
+        localPlayerSpawnOverride?: unknown;
         mode: string;
+        onPortalTriggered?: (portalId: string, snapshot: unknown) => void;
+        portalScene?: unknown;
         presentation?: string;
         playerProfile?: { name: string };
         onEditorStateChange?: (state: EditorPanelState) => void;
@@ -175,7 +311,7 @@ vi.mock("../engine/GameHost", () => ({
             | "timeout"
             | "focus-lost"
             | null;
-          pointerCapturePending: boolean;
+        pointerCapturePending: boolean;
           pointerLocked: boolean;
         }) => void;
         onReadyToDisplay?: () => void;
@@ -247,8 +383,8 @@ vi.mock("../engine/GameHost", () => ({
         }
 
         pointerLockedRef.current = false;
-        hasStartedRef.current = false;
-        pausedRef.current = true;
+        hasStartedRef.current = captureMode === "free";
+        pausedRef.current = captureMode !== "free";
         pointerCaptureFailureReasonRef.current = null;
         pointerCapturePendingRef.current = false;
         pendingResumeAfterPointerLockRef.current = false;
@@ -284,7 +420,14 @@ vi.mock("../engine/GameHost", () => ({
         });
         onHudStateChange?.(createHudState(mode as "explore" | "playNpc", playerProfile?.name || "You"));
         emitPauseState();
-      }, [mode, onDiagnostics, onHudStateChange, onPauseStateChange, playerProfile?.name]);
+      }, [
+        captureMode,
+        mode,
+        onDiagnostics,
+        onHudStateChange,
+        onPauseStateChange,
+        playerProfile?.name
+      ]);
 
       useEffect(() => {
         gameHostState.registerPauseBridge({
@@ -325,6 +468,17 @@ vi.mock("../engine/GameHost", () => ({
             }));
           },
           requestPointerLock() {
+            if (captureMode === "free") {
+              pointerLockedRef.current = false;
+              hasStartedRef.current = true;
+              pausedRef.current = false;
+              pointerCapturePendingRef.current = false;
+              pointerCaptureFailureReasonRef.current = null;
+              pendingResumeAfterPointerLockRef.current = false;
+              emitPauseState();
+              return true;
+            }
+
             pendingResumeAfterPointerLockRef.current = false;
             pointerCaptureFailureReasonRef.current = null;
 
@@ -352,6 +506,17 @@ vi.mock("../engine/GameHost", () => ({
             }
           },
           resumeRuntime() {
+            if (captureMode === "free") {
+              pointerLockedRef.current = false;
+              hasStartedRef.current = true;
+              pausedRef.current = false;
+              pointerCapturePendingRef.current = false;
+              pointerCaptureFailureReasonRef.current = null;
+              pendingResumeAfterPointerLockRef.current = false;
+              emitPauseState();
+              return;
+            }
+
             pointerCaptureFailureReasonRef.current = null;
 
             switch (gameHostState.getPointerLockBehavior()) {
@@ -417,12 +582,17 @@ vi.mock("../engine/GameHost", () => ({
           },
           setShellMode() {}
         }),
-        [document, onPauseStateChange]
+        [captureMode, document, onPauseStateChange]
       );
 
       return (
         <div>
           <div data-testid="game-host">{mode}</div>
+          <div data-testid="capture-mode">{captureMode ?? "locked"}</div>
+          <div data-testid="portal-scene">{portalScene ? "present" : "absent"}</div>
+          <div data-testid="spawn-override">
+            {localPlayerSpawnOverride ? "present" : "absent"}
+          </div>
           {mode !== "editor" && (
             <button
               onClick={() => {
@@ -521,6 +691,9 @@ const unlockMenuPlayer = () => {
 const openMenuControls = () => {
   fireEvent.click(screen.getByRole("button", { name: /Controls/i }));
 };
+const openChickenRadio = () => {
+  fireEvent.click(screen.getByRole("button", { name: "Tune Chicken Radio" }));
+};
 
 const createTinyArenaDocument = (name: string) => ({
   version: 1 as const,
@@ -542,6 +715,8 @@ const createTinyArenaDocument = (name: string) => ({
 describe("App", () => {
   beforeEach(() => {
     gameHostState.reset();
+    chickenRadioState.reset();
+    chickenRadioState.install();
     storageState.reset();
     window.localStorage.clear();
     vi.useRealTimers();
@@ -598,6 +773,97 @@ describe("App", () => {
 
     expect(screen.getByRole("button", { name: /Explore/i })).toBeEnabled();
     expect(screen.getByRole("button", { name: /PLAY NPC/i })).toBeEnabled();
+  });
+
+  it("renders a collapsed Chicken Radio in the menu by default", async () => {
+    render(<App />);
+
+    await signalMenuReady();
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: "Pause Chicken Radio" })
+      ).toBeInTheDocument();
+    });
+    expect(screen.getByTestId("chicken-radio-menu")).toBeInTheDocument();
+    expect(screen.getByText("90.5 LOFI")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Tune Chicken Radio" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Powered by LoFi Girl")).not.toBeInTheDocument();
+  });
+
+  it("expands Chicken Radio with all channels and the volume slider", async () => {
+    render(<App />);
+
+    await signalMenuReady();
+    openChickenRadio();
+
+    expect(screen.getByText("CHICKEN RADIO")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /88\.7 SYNTHWAVE/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /90\.5 LOFI/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /94\.3 GENTLE RAIN/i })).toBeInTheDocument();
+    expect(screen.getByLabelText("Chicken Radio Volume")).toHaveValue("35");
+    expect(screen.getByText("Powered by LoFi Girl")).toBeInTheDocument();
+  });
+
+  it("boots straight into explore mode for portal arrivals", async () => {
+    const previousUrl = window.location.href;
+    window.history.replaceState(
+      {},
+      "",
+      "/?portal=true&username=Levels&color=red&speed=5&rotation_y=1.57&ref=https%3A%2F%2Fexample.com%2Fgame"
+    );
+
+    try {
+      render(<App />);
+
+      expect(screen.queryByTestId("boot-splash")).not.toBeInTheDocument();
+      expect(screen.queryByRole("heading", { name: "HoldMyEgg" })).not.toBeInTheDocument();
+      expect(await screen.findByTestId("game-host")).toHaveTextContent("explore");
+      expect(screen.getByTestId("capture-mode")).toHaveTextContent("free");
+      expect(screen.getByTestId("portal-scene")).toHaveTextContent("present");
+      expect(screen.getByTestId("spawn-override")).toHaveTextContent("present");
+      expect(screen.getByLabelText("Matter 24 of 500")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Capture Mouse" })).not.toBeInTheDocument();
+    } finally {
+      window.history.replaceState({}, "", previousUrl);
+    }
+  });
+
+  it("persists Chicken Radio station, volume, and playback preference across remounts", async () => {
+    const { unmount } = render(<App />);
+
+    await signalMenuReady();
+    openChickenRadio();
+
+    fireEvent.click(screen.getByRole("button", { name: /88\.7 SYNTHWAVE/i }));
+    fireEvent.change(screen.getByLabelText("Chicken Radio Volume"), {
+      target: { value: "61" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Pause Chicken Radio" }));
+
+    expect(
+      JSON.parse(window.localStorage.getItem(CHICKEN_RADIO_STORAGE_KEY)!)
+    ).toEqual({
+      version: 1,
+      settings: {
+        stationId: "synthwave",
+        volume: 61,
+        playbackPreference: "pause"
+      }
+    });
+
+    unmount();
+
+    render(<App />);
+    await signalMenuReady();
+
+    expect(screen.getByText("88.7 SYNTHWAVE")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Play Chicken Radio" })).toBeInTheDocument();
+
+    openChickenRadio();
+    expect(screen.getByLabelText("Chicken Radio Volume")).toHaveValue("61");
   });
 
   it("persists menu control settings locally across app remounts", async () => {
@@ -783,8 +1049,103 @@ describe("App", () => {
     APP_FLOW_TIMEOUT
   );
 
+  it("shows Chicken Radio as text during play and reuses the full control in the pause menu", async () => {
+    vi.useFakeTimers();
+    render(<App />);
+
+    await signalMenuReady();
+    unlockMenuPlayer();
+
+    fireEvent.click(screen.getByRole("button", { name: /Explore/i }));
+    await advanceLaunchIntro();
+
+    expect(screen.getByTestId("chicken-radio-runtime-label")).toHaveTextContent(
+      "Chicken Radio",
+    );
+    expect(screen.getByTestId("chicken-radio-runtime-label")).toHaveTextContent(
+      "90.5 LOFI",
+    );
+    expect(
+      screen.queryByRole("button", { name: "Pause Chicken Radio" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Powered by LoFi Girl")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Pause runtime" }));
+    expect(
+      screen.queryByTestId("chicken-radio-runtime-label"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Tune Chicken Radio" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Pause Chicken Radio" }),
+    ).toBeInTheDocument();
+    openChickenRadio();
+    expect(screen.getByText("Powered by LoFi Girl")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+    expect(
+      screen.getByTestId("chicken-radio-runtime-label"),
+    ).toHaveTextContent("90.5 LOFI");
+    expect(screen.queryByText("Powered by LoFi Girl")).not.toBeInTheDocument();
+  });
+
+  it("keeps Chicken Radio state when moving from menu to runtime and back", async () => {
+    vi.useFakeTimers();
+    render(<App />);
+
+    await signalMenuReady();
+    openChickenRadio();
+    fireEvent.click(screen.getByRole("button", { name: /94\.3 GENTLE RAIN/i }));
+    fireEvent.change(screen.getByLabelText("Chicken Radio Volume"), {
+      target: { value: "52" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Pause Chicken Radio" }));
+
+    unlockMenuPlayer();
+    fireEvent.click(screen.getByRole("button", { name: /Explore/i }));
+    await advanceLaunchIntro();
+
+    expect(screen.getAllByText("94.3 GENTLE RAIN")[0]).toBeInTheDocument();
+    expect(screen.getByTestId("chicken-radio-runtime-label")).toHaveTextContent(
+      "94.3 GENTLE RAIN",
+    );
+    expect(
+      screen.queryByRole("button", { name: "Play Chicken Radio" }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Pause runtime" }));
+    expect(screen.getByRole("button", { name: "Play Chicken Radio" })).toBeInTheDocument();
+    openChickenRadio();
+    expect(screen.getByLabelText("Chicken Radio Volume")).toHaveValue("52");
+
+    fireEvent.click(screen.getByRole("button", { name: "Menu" }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await signalMenuReady();
+
+    expect(screen.getAllByText("94.3 GENTLE RAIN")[0]).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Play Chicken Radio" })).toBeInTheDocument();
+  });
+
+  it("shows a playable Chicken Radio state when autoplay is blocked", async () => {
+    chickenRadioState.setAutoplayBlocked(true);
+    render(<App />);
+
+    await signalMenuReady();
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: "Play Chicken Radio" }),
+      ).toBeInTheDocument();
+    });
+    expect(screen.getByRole("button", { name: "Play Chicken Radio" })).toBeInTheDocument();
+    expect(screen.getByText("90.5 LOFI")).toBeInTheDocument();
+  });
+
   it(
-    "shows the worker-sourced FPS badge during runtime play only",
+    "shows the worker-sourced FPS indicator during runtime play only",
     async () => {
       vi.useFakeTimers();
       render(<App />);
@@ -797,7 +1158,6 @@ describe("App", () => {
       await advanceLaunchIntro();
 
       expect(screen.getByTestId("runtime-fps-badge")).toHaveTextContent("FPS 57.4");
-      expect(screen.getByTestId("runtime-fps-badge")).toHaveTextContent("MEDIUM");
 
       fireEvent.click(screen.getByRole("button", { name: "Pause runtime" }));
       expect(screen.getByTestId("runtime-fps-badge")).toBeInTheDocument();

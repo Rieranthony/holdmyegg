@@ -14,6 +14,12 @@ export interface Vector3 {
   z: number;
 }
 
+export interface SimulationPlayerSpawnOverride {
+  anchor: Vector3;
+  velocity?: Vector3;
+  facing?: Vector2;
+}
+
 export interface PlayerCommand {
   moveX: number;
   moveZ: number;
@@ -547,4 +553,5 @@ export interface SimulationResetOptions {
   localPlayerName?: string;
   initialSpawnStyle?: SimulationInitialSpawnStyle;
   initialSpawnSeed?: number;
+  localPlayerSpawnOverride?: SimulationPlayerSpawnOverride;
 }

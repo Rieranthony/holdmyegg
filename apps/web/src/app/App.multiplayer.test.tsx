@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { forwardRef, useEffect, useImperativeHandle } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDefaultArenaMap } from "@out-of-bounds/map";
 import type { MultiplayerSnapshot } from "../multiplayer/client";
 
@@ -16,6 +16,45 @@ const hostState = vi.hoisted(() => ({
     this.props = [];
   }
 }));
+
+const installYouTubeMock = () => {
+  Object.assign(window as Window & { YT?: unknown }, {
+    YT: {
+      Player: class FakeYouTubePlayer {
+        constructor(
+          _mountNode: Element,
+          config: {
+            events?: {
+              onReady?: (event: { data: number; target: unknown }) => void;
+            };
+          }
+        ) {
+          Promise.resolve().then(() => {
+            config.events?.onReady?.({
+              data: 5,
+              target: this
+            });
+          });
+        }
+
+        cueVideoById() {}
+        destroy() {}
+        loadVideoById() {}
+        pauseVideo() {}
+        playVideo() {}
+        setVolume() {}
+      },
+      PlayerState: {
+        UNSTARTED: -1,
+        ENDED: 0,
+        PLAYING: 1,
+        PAUSED: 2,
+        BUFFERING: 3,
+        CUED: 5
+      }
+    }
+  });
+};
 
 const createSnapshot = (
   patch: Partial<MultiplayerSnapshot> = {}
@@ -166,9 +205,13 @@ vi.mock("./useMapPersistence", () => ({
 
 import { App } from "./App";
 
+beforeEach(() => {
+  hostState.reset();
+  installYouTubeMock();
+});
+
 describe("App multiplayer shell", () => {
   it("hides multiplayer on the home menu when the server is unavailable", async () => {
-    hostState.reset();
     const client = new FakeMultiplayerClient(
       createSnapshot({
         available: false,
@@ -187,7 +230,6 @@ describe("App multiplayer shell", () => {
   });
 
   it("hydrates the main menu from a restored session and opens the dedicated multiplayer submenu", async () => {
-    hostState.reset();
     const client = new FakeMultiplayerClient(
       createSnapshot({
         authenticated: true,
@@ -255,7 +297,6 @@ describe("App multiplayer shell", () => {
   });
 
   it("lets a first-time player enter a name, open multiplayer, quick join, and mount the multiplayer worker", async () => {
-    hostState.reset();
     const client = new FakeMultiplayerClient(createSnapshot());
 
     render(<App multiplayerClient={client as never} />);
@@ -285,7 +326,6 @@ describe("App multiplayer shell", () => {
   });
 
   it("returns to the menu cleanly and leaves the room when the player exits multiplayer", async () => {
-    hostState.reset();
     const client = new FakeMultiplayerClient(
       createSnapshot({
         authenticated: true,

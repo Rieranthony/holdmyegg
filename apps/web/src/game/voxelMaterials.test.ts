@@ -4,6 +4,7 @@ import {
   getBlockRenderProfile,
   getTerrainChunkMaterials,
   getTerrainMaterialIndex,
+  getVoxelMaterials,
   terrainMaterialOrder,
   terrainMaterialsByKey,
   voxelTextures
@@ -41,6 +42,30 @@ describe("voxelMaterials", () => {
     expect(getTerrainMaterialIndex("earthSurfaceTop")).not.toBe(getTerrainMaterialIndex("earthSurfaceSide"));
     expect(getTerrainMaterialIndex("earthSubsoil")).not.toBe(getTerrainMaterialIndex("darkness"));
     expect(getTerrainMaterialIndex("waterTop")).not.toBe(getTerrainMaterialIndex("waterSide"));
+  });
+
+  it("exposes textured transient voxel materials that do not require vertex colors", () => {
+    const earthSurfaceMaterials = getVoxelMaterials("earthSurface");
+    const earthSubsoilMaterials = getVoxelMaterials("earthSubsoil");
+    const darknessMaterials = getVoxelMaterials("darkness");
+
+    expect(earthSurfaceMaterials).toHaveLength(6);
+    expect(earthSubsoilMaterials).toHaveLength(6);
+    expect(darknessMaterials).toHaveLength(6);
+
+    for (const material of [...earthSurfaceMaterials, ...earthSubsoilMaterials, ...darknessMaterials]) {
+      expect(material).toBeInstanceOf(THREE.MeshStandardMaterial);
+      expect(material.vertexColors).toBe(false);
+    }
+
+    expect(earthSurfaceMaterials[0]?.map).toBe(voxelTextures.earthSide);
+    expect(earthSurfaceMaterials[1]?.map).toBe(voxelTextures.earthSide);
+    expect(earthSurfaceMaterials[2]?.map).toBe(voxelTextures.earthTop);
+    expect(earthSurfaceMaterials[3]?.map).toBe(voxelTextures.earthBottom);
+    expect(earthSurfaceMaterials[4]?.map).toBe(voxelTextures.earthSide);
+    expect(earthSurfaceMaterials[5]?.map).toBe(voxelTextures.earthSide);
+    expect(earthSubsoilMaterials.every((material) => material.map === voxelTextures.earthBottom)).toBe(true);
+    expect(darknessMaterials.every((material) => material.map === voxelTextures.darkness)).toBe(true);
   });
 
   it("exposes grouped standard materials for stable terrain rendering", () => {

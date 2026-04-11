@@ -323,6 +323,40 @@ describe("OutOfBoundsSimulation", () => {
     expect(respawnedPlayer.velocity.y).toBeLessThan(0);
   });
 
+  it("applies a local spawn override only to the initial local player entry", () => {
+    const map = createArenaDocument();
+    const simulation = new OutOfBoundsSimulation();
+    simulation.reset("explore", map, {
+      localPlayerName: "You",
+      initialSpawnStyle: "sky",
+      localPlayerSpawnOverride: {
+        anchor: { x: 12.5, y: 6.05, z: 18.5 },
+        velocity: { x: 2, y: -4, z: -1 },
+        facing: { x: 0, z: -1 }
+      }
+    });
+
+    const localPlayerId = simulation.getLocalPlayerId()!;
+    const localPlayer = getInternalPlayer(simulation, localPlayerId);
+    expect(localPlayer.position.x).toBeCloseTo(12.5, 5);
+    expect(localPlayer.position.z).toBeCloseTo(18.5, 5);
+    expect(localPlayer.position.y).toBeCloseTo(
+      6.05 + simulation.config.skyDropSpawnHeight,
+      5
+    );
+    expect(localPlayer.velocity).toEqual({ x: 2, y: -4, z: -1 });
+    expect(localPlayer.facing).toEqual({ x: 0, z: -1 });
+
+    const overriddenSpawn = { ...localPlayer.position };
+    (simulation as unknown as { respawnPlayer: (player: typeof localPlayer) => void }).respawnPlayer(localPlayer);
+
+    expect(localPlayer.position).not.toEqual(overriddenSpawn);
+    expect(localPlayer.position.y).not.toBeCloseTo(
+      6.05 + simulation.config.skyDropSpawnHeight,
+      5
+    );
+  });
+
   it("fills waterline breaches immediately and expands as the cavity grows", () => {
     const simulation = createTestSimulation("explore");
     const localPlayerId = simulation.getLocalPlayerId()!;

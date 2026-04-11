@@ -138,6 +138,144 @@ describe("WorkerGameRuntime", () => {
     expect(released.place).toBe(false);
   });
 
+  it("accepts free-look pointer movement without pointer lock", () => {
+    const runtime = new WorkerGameRuntime(createScope());
+    const runtimeState = runtime as unknown as {
+      captureMode: "locked" | "free";
+      handleMessage: (message: {
+        type: "pointer_move";
+        clientX: number;
+        clientY: number;
+        movementX: number;
+        movementY: number;
+      }) => void;
+      mode: "editor" | "explore" | "playNpc" | "multiplayer";
+      pendingLookDeltaX: number;
+      pendingLookDeltaY: number;
+      presentation: "default" | "menu";
+      runtimePaused: boolean;
+    };
+
+    runtimeState.mode = "explore";
+    runtimeState.captureMode = "free";
+    runtimeState.presentation = "default";
+    runtimeState.runtimePaused = false;
+
+    runtimeState.handleMessage({
+      type: "pointer_move",
+      clientX: 0,
+      clientY: 0,
+      movementX: 14,
+      movementY: -6
+    });
+
+    expect(runtimeState.pendingLookDeltaX).toBe(14);
+    expect(runtimeState.pendingLookDeltaY).toBe(-6);
+  });
+
+  it("arms return portals only after the player exits once, and never triggers portals in multiplayer", () => {
+    const scope = createScope();
+    const postMessage = scope.postMessage as ReturnType<typeof vi.fn>;
+    const runtime = new WorkerGameRuntime(scope);
+    const runtimeState = runtime as unknown as {
+      maybeTriggerPortal: (frame: {
+        localPlayerId: string | null;
+        players: Array<{
+          id: string;
+          alive: boolean;
+          fallingOut: boolean;
+          position: { x: number; y: number; z: number };
+          respawning: boolean;
+          velocity: { x: number; y: number; z: number };
+          facing: { x: number; z: number };
+        }>;
+      } | null) => void;
+      mode: "editor" | "explore" | "playNpc" | "multiplayer";
+      portalScene: {
+        portals: Array<{
+          id: string;
+          anchor: { x: number; y: number; z: number };
+          facing: "north" | "south" | "east" | "west";
+          label: string;
+          armed: boolean;
+          triggerRadius: number;
+          triggerHalfHeight: number;
+          variant: "exit" | "return";
+        }>;
+      } | null;
+      portalTraversalPending: boolean;
+      portalTriggerStates: Map<
+        string,
+        {
+          armed: boolean;
+          playerInside: boolean;
+        }
+      >;
+      syncPortalScene: () => void;
+    };
+
+    runtimeState.mode = "explore";
+    runtimeState.portalTraversalPending = false;
+    runtimeState.portalScene = {
+      portals: [
+        {
+          id: "return-portal",
+          anchor: { x: 10, y: 4, z: 10 },
+          facing: "north",
+          label: "MAGIC PORTAL",
+          armed: false,
+          triggerRadius: 1.5,
+          triggerHalfHeight: 2.2,
+          variant: "return"
+        }
+      ]
+    };
+    runtimeState.syncPortalScene();
+
+    const frameAt = (x: number, y: number, z: number) => ({
+      localPlayerId: "human-1",
+      players: [
+        {
+          id: "human-1",
+          alive: true,
+          fallingOut: false,
+          position: { x, y, z },
+          respawning: false,
+          velocity: { x: 1, y: -2, z: 3 },
+          facing: { x: 0, z: -1 }
+        }
+      ]
+    });
+
+    runtimeState.maybeTriggerPortal(frameAt(10.1, 4, 10.2));
+    expect(postMessage).not.toHaveBeenCalled();
+    expect(runtimeState.portalTriggerStates.get("return-portal")?.armed).toBe(false);
+
+    runtimeState.maybeTriggerPortal(frameAt(13, 4, 10));
+    expect(postMessage).not.toHaveBeenCalled();
+    expect(runtimeState.portalTriggerStates.get("return-portal")?.armed).toBe(true);
+
+    runtimeState.maybeTriggerPortal(frameAt(10.2, 4, 10));
+    expect(postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "portal_triggered",
+        portalId: "return-portal",
+        snapshot: expect.objectContaining({
+          speedX: 1,
+          speedY: -2,
+          speedZ: 3
+        })
+      }),
+      []
+    );
+
+    postMessage.mockClear();
+    runtimeState.portalTraversalPending = false;
+    runtimeState.mode = "multiplayer";
+    runtimeState.maybeTriggerPortal(frameAt(10.2, 4, 10));
+    expect(postMessage).not.toHaveBeenCalled();
+  });
+
   it("reuses world-sized scene objects across steady-state frames", () => {
     const runtime = new WorkerGameRuntime(createScope());
     const runtimeState = runtime as unknown as {
@@ -991,5 +1129,143 @@ describe("WorkerGameRuntime", () => {
     expect(visual?.flameEmitters.some((emitter) => emitter.group.visible)).toBe(true);
     expect(visual?.emberMeshes.some((mesh) => mesh.visible)).toBe(true);
     expect(visual?.smokeMeshes.some((mesh) => mesh.visible)).toBe(true);
+  });
+
+  it("spawns visible flame cards on burning ground remains after a tree collapses", () => {
+    const runtime = new WorkerGameRuntime(createScope());
+    const worldDocument = normalizeArenaBudgetMapDocument(createDefaultArenaMap());
+    const prop = worldDocument.props[0]!;
+    worldDocument.props = [prop];
+
+    const runtimeState = runtime as unknown as {
+      mode: "editor" | "explore" | "playNpc" | "multiplayer";
+      applyFullWorld: (
+        document: typeof worldDocument,
+        patches: Array<unknown>
+      ) => void;
+      handleExternalMessage: (message: {
+        type: "frame";
+        frame: {
+          authoritative?: {
+            gameplayEventBatch?: null;
+            terrainDeltaBatch: {
+              tick: number;
+              terrainRevision: number;
+              changes: [];
+              propChanges: Array<{
+                id: string;
+                kind: typeof prop.kind;
+                x: number;
+                y: number;
+                z: number;
+                operation: "remove";
+              }>;
+            } | null;
+          };
+          tick: number;
+          time: number;
+          mode: "multiplayer";
+          localPlayerId: null;
+          hudState: null;
+          focusState: null;
+          players: [];
+          eggs: [];
+          eggScatterDebris: [];
+          burningProps: Array<{
+            id: string;
+            kind: typeof prop.kind;
+            x: number;
+            y: number;
+            z: number;
+            remaining: number;
+            sourceKind: "eggExplosion";
+          }>;
+          voxelBursts: [];
+          skyDrops: [];
+          fallingClusters: [];
+        };
+      }) => void;
+      propRemainsFlameMeshes: Array<{ mesh: { count: number } }>;
+      syncPropRemains: () => void;
+    };
+
+    runtimeState.mode = "multiplayer";
+    runtimeState.applyFullWorld(worldDocument, []);
+
+    runtimeState.handleExternalMessage({
+      type: "frame",
+      frame: {
+        tick: 6,
+        time: 1.1,
+        mode: "multiplayer",
+        localPlayerId: null,
+        hudState: null,
+        focusState: null,
+        authoritative: {
+          terrainDeltaBatch: null,
+          gameplayEventBatch: null
+        },
+        players: [],
+        eggs: [],
+        eggScatterDebris: [],
+        burningProps: [
+          {
+            id: prop.id,
+            kind: prop.kind,
+            x: prop.x,
+            y: prop.y,
+            z: prop.z,
+            remaining: 3.2,
+            sourceKind: "eggExplosion"
+          }
+        ],
+        voxelBursts: [],
+        skyDrops: [],
+        fallingClusters: []
+      }
+    });
+
+    runtimeState.handleExternalMessage({
+      type: "frame",
+      frame: {
+        tick: 7,
+        time: 1.3,
+        mode: "multiplayer",
+        localPlayerId: null,
+        hudState: null,
+        focusState: null,
+        authoritative: {
+          terrainDeltaBatch: {
+            tick: 7,
+            terrainRevision: 2,
+            changes: [],
+            propChanges: [
+              {
+                id: prop.id,
+                kind: prop.kind,
+                x: prop.x,
+                y: prop.y,
+                z: prop.z,
+                operation: "remove"
+              }
+            ]
+          },
+          gameplayEventBatch: null
+        },
+        players: [],
+        eggs: [],
+        eggScatterDebris: [],
+        burningProps: [],
+        voxelBursts: [],
+        skyDrops: [],
+        fallingClusters: []
+      }
+    });
+
+    runtimeState.syncPropRemains();
+
+    expect(
+      runtimeState.propRemainsFlameMeshes.some((resource) => resource.mesh.count > 8)
+    ).toBe(true);
   });
 });

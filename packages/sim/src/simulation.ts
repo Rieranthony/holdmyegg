@@ -57,6 +57,7 @@ import type {
   SkyDropViewState,
   SpacePhase,
   SimulationPerformanceDiagnostics,
+  SimulationPlayerSpawnOverride,
   SimulationConfig,
   SimulationInitialSpawnStyle,
   SimulationResetOptions,
@@ -545,6 +546,7 @@ export class OutOfBoundsSimulation {
               name: options.localPlayerName ?? "You"
             }
           ];
+    const desiredLocalPlayerId = options.localPlayerId ?? humanPlayers[0]?.id ?? null;
     const npcCount =
       mode === "playNpc"
         ? clamp(options.npcCount ?? 9, 1, this.config.maxNpcCount)
@@ -556,17 +558,22 @@ export class OutOfBoundsSimulation {
         ? this.buildPlayNpcInitialSpawnCandidates(requiredPlayerCount, options.initialSpawnSeed)
         : this.spawnCandidates.map((spawn) => ({ ...spawn }));
     for (const [index, humanPlayer] of humanPlayers.entries()) {
+      const spawnOverride =
+        humanPlayer.id === desiredLocalPlayerId
+          ? options.localPlayerSpawnOverride
+          : undefined;
       this.spawnPlayer(
         "human",
         humanPlayer.name,
         index,
         initialSpawnStyle,
-        humanPlayer.id
+        humanPlayer.id,
+        spawnOverride
       );
     }
     this.localPlayerId =
-      options.localPlayerId && this.players.has(options.localPlayerId)
-        ? options.localPlayerId
+      desiredLocalPlayerId && this.players.has(desiredLocalPlayerId)
+        ? desiredLocalPlayerId
         : humanPlayers[0]?.id ?? null;
 
     if (npcCount > 0) {
@@ -1106,11 +1113,22 @@ export class OutOfBoundsSimulation {
     name: string,
     spawnIndex: number,
     initialSpawnStyle: SimulationInitialSpawnStyle = "ground",
-    idOverride?: string
+    idOverride?: string,
+    spawnOverride?: SimulationPlayerSpawnOverride
   ) {
     const id = idOverride ?? `${kind}-${spawnIndex + 1}`;
-    const spawn = this.getSpawnPosition(spawnIndex);
-    const entryState = this.createInitialSpawnState(spawn, initialSpawnStyle);
+    const spawn = spawnOverride?.anchor ?? this.getSpawnPosition(spawnIndex);
+    const entryState = this.createInitialSpawnState(
+      spawn,
+      initialSpawnStyle,
+      spawnOverride?.velocity
+    );
+    const facing =
+      spawnOverride?.facing && Math.hypot(spawnOverride.facing.x, spawnOverride.facing.z) > EPSILON
+        ? normalize2(spawnOverride.facing.x, spawnOverride.facing.z)
+        : kind === "npc"
+          ? { x: -1, z: 0 }
+          : { x: 1, z: 0 };
 
     const player: SimPlayer = {
       id,
@@ -1130,7 +1148,7 @@ export class OutOfBoundsSimulation {
       stunRemaining: 0,
       position: entryState.position,
       velocity: entryState.velocity,
-      facing: kind === "npc" ? { x: -1, z: 0 } : { x: 1, z: 0 },
+      facing,
       eggTauntSequence: 0,
       eggTauntRemaining: 0,
       jumpBufferRemaining: 0,
@@ -1166,11 +1184,17 @@ export class OutOfBoundsSimulation {
     return player;
   }
 
-  private createInitialSpawnState(spawn: Vector3, initialSpawnStyle: SimulationInitialSpawnStyle) {
+  private createInitialSpawnState(
+    spawn: Vector3,
+    initialSpawnStyle: SimulationInitialSpawnStyle,
+    velocityOverride?: Vector3
+  ) {
     if (initialSpawnStyle !== "sky") {
       return {
         position: { ...spawn },
-        velocity: { x: 0, y: 0, z: 0 }
+        velocity: velocityOverride
+          ? { ...velocityOverride }
+          : { x: 0, y: 0, z: 0 }
       };
     }
 
@@ -1180,7 +1204,9 @@ export class OutOfBoundsSimulation {
         y: spawn.y + this.config.skyDropSpawnHeight,
         z: spawn.z
       },
-      velocity: { x: 0, y: INITIAL_SKY_ENTRY_SPEED, z: 0 }
+      velocity: velocityOverride
+        ? { ...velocityOverride }
+        : { x: 0, y: INITIAL_SKY_ENTRY_SPEED, z: 0 }
     };
   }
 

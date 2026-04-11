@@ -1,6 +1,10 @@
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, type MutableRefObject } from "react";
 import type { MapDocumentV1 } from "@out-of-bounds/map";
-import type { HudState, SimulationInitialSpawnStyle } from "@out-of-bounds/sim";
+import type {
+  HudState,
+  SimulationInitialSpawnStyle,
+  SimulationPlayerSpawnOverride
+} from "@out-of-bounds/sim";
 import type { QualityTier } from "../game/quality";
 import type { RuntimeControlSettings } from "../game/runtimeControlSettings";
 import { GameClient } from "./GameClient";
@@ -9,7 +13,10 @@ import type {
   ActiveShellMode,
   EditorPanelState,
   GameDiagnostics,
+  PortalSceneConfig,
+  PortalTraversalSnapshot,
   PlayerProfile,
+  RuntimeCaptureMode,
   RuntimePauseState,
   ShellPresentation
 } from "./types";
@@ -27,8 +34,11 @@ export interface GameHostHandle {
 interface GameHostProps {
   initialDocument: MapDocumentV1;
   initialSpawnStyle?: SimulationInitialSpawnStyle;
+  localPlayerSpawnOverride?: SimulationPlayerSpawnOverride | null;
   matchColorSeed: number;
   mode: ActiveShellMode;
+  captureMode?: RuntimeCaptureMode;
+  portalScene?: PortalSceneConfig | null;
   playerProfile?: PlayerProfile;
   presentation?: ShellPresentation;
   qualityTier?: QualityTier;
@@ -38,6 +48,7 @@ interface GameHostProps {
   onEditorStateChange?: (editorState: EditorPanelState) => void;
   onHudStateChange?: (hudState: HudState | null) => void;
   onPauseStateChange?: (state: RuntimePauseState) => void;
+  onPortalTriggered?: (portalId: string, snapshot: PortalTraversalSnapshot) => void;
   onReadyToDisplay?: () => void;
   onStatus?: (message: string) => void;
 }
@@ -89,8 +100,11 @@ export const GameHost = forwardRef<GameHostHandle, GameHostProps>(function GameH
   {
     initialDocument,
     initialSpawnStyle = "ground",
+    localPlayerSpawnOverride,
     matchColorSeed,
     mode,
+    captureMode = "locked",
+    portalScene = null,
     playerProfile,
     presentation = "default",
     qualityTier = "medium",
@@ -100,6 +114,7 @@ export const GameHost = forwardRef<GameHostHandle, GameHostProps>(function GameH
     onEditorStateChange,
     onHudStateChange,
     onPauseStateChange,
+    onPortalTriggered,
     onReadyToDisplay,
     onStatus
   },
@@ -112,6 +127,7 @@ export const GameHost = forwardRef<GameHostHandle, GameHostProps>(function GameH
     onEditorStateChange,
     onHudStateChange,
     onPauseStateChange,
+    onPortalTriggered,
     onReadyToDisplay,
     onStatus
   });
@@ -120,6 +136,8 @@ export const GameHost = forwardRef<GameHostHandle, GameHostProps>(function GameH
     onEditorStateChange: (editorState: EditorPanelState) => callbackStateRef.current.onEditorStateChange?.(editorState),
     onHudStateChange: (hudState: HudState | null) => callbackStateRef.current.onHudStateChange?.(hudState),
     onPauseStateChange: (state: RuntimePauseState) => callbackStateRef.current.onPauseStateChange?.(state),
+    onPortalTriggered: (portalId: string, snapshot: PortalTraversalSnapshot) =>
+      callbackStateRef.current.onPortalTriggered?.(portalId, snapshot),
     onReadyToDisplay: () => callbackStateRef.current.onReadyToDisplay?.(),
     onStatus: (message: string) => callbackStateRef.current.onStatus?.(message)
   });
@@ -129,6 +147,7 @@ export const GameHost = forwardRef<GameHostHandle, GameHostProps>(function GameH
     onEditorStateChange,
     onHudStateChange,
     onPauseStateChange,
+    onPortalTriggered,
     onReadyToDisplay,
     onStatus
   };
@@ -155,7 +174,10 @@ export const GameHost = forwardRef<GameHostHandle, GameHostProps>(function GameH
         initialDocument,
         initialMode: mode,
         initialSpawnStyle,
+        localPlayerSpawnOverride,
         matchColorSeed,
+        captureMode,
+        portalScene,
         localPlayerName: playerProfile?.name,
         localPlayerPaletteName: playerProfile?.paletteName,
         presentation,
@@ -178,6 +200,9 @@ export const GameHost = forwardRef<GameHostHandle, GameHostProps>(function GameH
     clientRef.current?.setShellState({
       mode,
       initialSpawnStyle,
+      localPlayerSpawnOverride,
+      captureMode,
+      portalScene,
       localPlayerName: playerProfile?.name,
       localPlayerPaletteName: playerProfile?.paletteName,
       presentation,
@@ -186,7 +211,17 @@ export const GameHost = forwardRef<GameHostHandle, GameHostProps>(function GameH
     });
   }, [
     initialSpawnStyle,
+    localPlayerSpawnOverride?.anchor.x,
+    localPlayerSpawnOverride?.anchor.y,
+    localPlayerSpawnOverride?.anchor.z,
+    localPlayerSpawnOverride?.velocity?.x,
+    localPlayerSpawnOverride?.velocity?.y,
+    localPlayerSpawnOverride?.velocity?.z,
+    localPlayerSpawnOverride?.facing?.x,
+    localPlayerSpawnOverride?.facing?.z,
+    captureMode,
     mode,
+    portalScene,
     playerProfile?.name,
     playerProfile?.paletteName,
     presentation,

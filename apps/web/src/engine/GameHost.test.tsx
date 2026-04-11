@@ -3,6 +3,7 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDefaultArenaMap } from "@out-of-bounds/map";
 import type { RuntimeControlSettings } from "../game/runtimeControlSettings";
+import type { PortalSceneConfig } from "./types";
 import type { GameHostHandle } from "./GameHost";
 
 const gameClientState = vi.hoisted(() => {
@@ -113,6 +114,20 @@ describe("GameHost", () => {
 
   it("forwards shell state updates without remounting", async () => {
     const initialDocument = createDefaultArenaMap();
+    const portalScene: PortalSceneConfig = {
+      portals: [
+        {
+          id: "return-portal",
+          anchor: { x: 40.5, y: 7.05, z: 70.5 },
+          facing: "north",
+          label: "MAGIC PORTAL",
+          armed: false,
+          triggerRadius: 1.55,
+          triggerHalfHeight: 2.2,
+          variant: "return"
+        }
+      ]
+    };
     const runtimeSettings: RuntimeControlSettings = {
       lookSensitivity: 1.4,
       invertLookX: true,
@@ -134,8 +149,15 @@ describe("GameHost", () => {
       <GameHost
         initialDocument={initialDocument}
         initialSpawnStyle="sky"
+        localPlayerSpawnOverride={{
+          anchor: { x: 40.5, y: 7.05, z: 70.5 },
+          velocity: { x: 0, y: -5, z: 2 },
+          facing: { x: 0, z: -1 }
+        }}
         matchColorSeed={9}
+        captureMode="free"
         mode="playNpc"
+        portalScene={portalScene}
         playerProfile={{ name: "Anthony", paletteName: "gold" }}
         presentation="menu"
         runtimeSettings={runtimeSettings}
@@ -147,8 +169,15 @@ describe("GameHost", () => {
         expect.objectContaining({
           mode: "playNpc",
           initialSpawnStyle: "sky",
+          localPlayerSpawnOverride: {
+            anchor: { x: 40.5, y: 7.05, z: 70.5 },
+            velocity: { x: 0, y: -5, z: 2 },
+            facing: { x: 0, z: -1 }
+          },
           localPlayerName: "Anthony",
           localPlayerPaletteName: "gold",
+          captureMode: "free",
+          portalScene,
           presentation: "menu",
           runtimeSettings
         })

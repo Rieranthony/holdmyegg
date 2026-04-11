@@ -24,6 +24,7 @@ import {
   type RuntimeSkyDropState,
   type FallingClusterViewState,
   type SimulationInitialSpawnStyle,
+  type SimulationPlayerSpawnOverride,
   type SimulationPerformanceDiagnostics,
   type TerrainDeltaBatch
 } from "@out-of-bounds/sim";
@@ -179,7 +180,11 @@ import type {
   EditorPanelState,
   GameDiagnostics,
   GameRenderDiagnostics,
+  PortalSceneConfig,
+  PortalSceneDescriptor,
+  PortalTraversalSnapshot,
   RuntimeRenderFrame as EngineRuntimeRenderFrame,
+  RuntimeCaptureMode,
   ShellPresentation,
   TerrainChunkPatchPayload
 } from "./types";
@@ -495,6 +500,21 @@ interface EggTrajectoryPreviewResource {
   group: THREE.Group;
 }
 
+interface PortalVisual {
+  descriptor: PortalSceneDescriptor;
+  fillMaterial: THREE.MeshBasicMaterial;
+  group: THREE.Group;
+  materials: THREE.Material[];
+  signMaterial: THREE.MeshBasicMaterial;
+  signTexture: THREE.Texture | null;
+}
+
+interface PortalTriggerState {
+  armed: boolean;
+  descriptor: PortalSceneDescriptor;
+  playerInside: boolean;
+}
+
 const AVATAR_TURN_SPEED = 4.5;
 const AVATAR_BOB_BASE_Y = 0.74;
 const PLAYER_DETAIL_DISTANCE = 18;
@@ -513,7 +533,7 @@ const MAX_BURNING_PROP_SMOKE_PARTICLES = 36;
 const MAX_PROP_REMAINS_INSTANCES_PER_MATERIAL = 4096;
 const MAX_PROP_REMAINS_EMBER_INSTANCES = 768;
 const MAX_PROP_REMAINS_SMOKE_INSTANCES = 1024;
-const MAX_PROP_REMAINS_FLAME_INSTANCES = 384;
+const MAX_PROP_REMAINS_FLAME_INSTANCES = 896;
 const MAX_TRACKED_PROP_DELTA_KEYS = 1024;
 const RECENT_EXPLOSION_IMPACT_WINDOW_SECONDS = 2.8;
 const voxelFxProfiles = ["earthSurface", "earthSubsoil", "darkness"] as const satisfies readonly BlockRenderProfile[];
@@ -525,9 +545,16 @@ const propRemainsMaterialEntries = [
 ] as const satisfies readonly [PropShatterMaterialKey, THREE.Material][];
 const cloudGeometry = new THREE.BoxGeometry(1.6, 0.9, 1.6);
 const flameCardGeometry = new THREE.PlaneGeometry(0.92, 1.24);
+const portalFrameSideGeometry = new THREE.BoxGeometry(0.28, 4.2, 0.4);
+const portalFrameLintelGeometry = new THREE.BoxGeometry(2.7, 0.28, 0.4);
+const portalThresholdGeometry = new THREE.BoxGeometry(2.7, 0.18, 0.55);
+const portalFillGeometry = new THREE.PlaneGeometry(2.1, 3.6);
+const portalHaloGeometry = new THREE.PlaneGeometry(2.45, 3.95);
+const portalSignGeometry = new THREE.PlaneGeometry(3.25, 0.84);
 const cloudTempObject = new THREE.Object3D();
 const voxelFxTempObject = new THREE.Object3D();
 const clusterTempObject = new THREE.Object3D();
+const portalTempColor = new THREE.Color();
 
 interface RecentExplosionImpact {
   position: { x: number; y: number; z: number };
@@ -662,6 +689,135 @@ const createEggTrajectoryPreview = (maxPoints: number): EggTrajectoryPreviewReso
     landingRing,
     group
   };
+};
+
+const getPortalYaw = (facing: PortalSceneDescriptor["facing"]) => {
+  switch (facing) {
+    case "north":
+      return Math.PI;
+    case "south":
+      return 0;
+    case "east":
+      return -Math.PI / 2;
+    case "west":
+      return Math.PI / 2;
+  }
+};
+
+const portalDescriptorsMatch = (
+  left: PortalSceneDescriptor,
+  right: PortalSceneDescriptor
+) =>
+  left.id === right.id &&
+  left.label === right.label &&
+  left.variant === right.variant &&
+  left.facing === right.facing &&
+  left.armed === right.armed &&
+  left.triggerRadius === right.triggerRadius &&
+  left.triggerHalfHeight === right.triggerHalfHeight &&
+  left.anchor.x === right.anchor.x &&
+  left.anchor.y === right.anchor.y &&
+  left.anchor.z === right.anchor.z;
+
+const createPortalLabelTexture = (label: string) => {
+  if (typeof OffscreenCanvas === "undefined") {
+    return null;
+  }
+
+  const canvas = new OffscreenCanvas(512, 144);
+  const context = canvas.getContext("2d");
+  if (!context) {
+    return null;
+  }
+
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.fillStyle = "#120d07";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.strokeStyle = "#f4c769";
+  context.lineWidth = 12;
+  context.strokeRect(8, 8, canvas.width - 16, canvas.height - 16);
+  context.fillStyle = "#fff7df";
+  context.font = "700 54px sans-serif";
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillText(label, canvas.width / 2, canvas.height / 2 + 2);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.needsUpdate = true;
+  return texture;
+};
+
+const createPortalVisual = (descriptor: PortalSceneDescriptor) => {
+  const frameMaterial = new THREE.MeshStandardMaterial({
+    color: descriptor.variant === "exit" ? "#7f5a28" : "#533b22",
+    emissive: descriptor.variant === "exit" ? "#f29b38" : "#6dc4ff",
+    emissiveIntensity: 0.2,
+    roughness: 0.62,
+    metalness: 0.16
+  });
+  const fillMaterial = new THREE.MeshBasicMaterial({
+    color: descriptor.variant === "exit" ? "#ffbf64" : "#83e0ff",
+    transparent: true,
+    opacity: descriptor.armed ? 0.86 : 0.28,
+    side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    toneMapped: false
+  });
+  const haloMaterial = new THREE.MeshBasicMaterial({
+    color: descriptor.variant === "exit" ? "#fff1c7" : "#c6f5ff",
+    transparent: true,
+    opacity: descriptor.armed ? 0.26 : 0.08,
+    side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    toneMapped: false
+  });
+  const signTexture = createPortalLabelTexture(descriptor.label);
+  const signMaterial = new THREE.MeshBasicMaterial({
+    color: "#fff7df",
+    map: signTexture,
+    transparent: signTexture !== null,
+    toneMapped: false
+  });
+
+  const group = new THREE.Group();
+  group.position.set(descriptor.anchor.x, descriptor.anchor.y, descriptor.anchor.z);
+  group.rotation.y = getPortalYaw(descriptor.facing);
+
+  const leftFrame = new THREE.Mesh(portalFrameSideGeometry, frameMaterial);
+  leftFrame.position.set(-1.34, 1.92, 0);
+  const rightFrame = new THREE.Mesh(portalFrameSideGeometry, frameMaterial);
+  rightFrame.position.set(1.34, 1.92, 0);
+  const lintel = new THREE.Mesh(portalFrameLintelGeometry, frameMaterial);
+  lintel.position.set(0, 3.94, 0);
+  const threshold = new THREE.Mesh(portalThresholdGeometry, frameMaterial);
+  threshold.position.set(0, 0.09, 0.06);
+  const fill = new THREE.Mesh(portalFillGeometry, fillMaterial);
+  fill.position.set(0, 1.92, 0.02);
+  const halo = new THREE.Mesh(portalHaloGeometry, haloMaterial);
+  halo.position.set(0, 1.92, -0.04);
+  const sign = new THREE.Mesh(portalSignGeometry, signMaterial);
+  sign.position.set(0, 5.15, 0.04);
+
+  leftFrame.castShadow = true;
+  rightFrame.castShadow = true;
+  lintel.castShadow = true;
+  threshold.castShadow = true;
+  sign.renderOrder = 18;
+  fill.renderOrder = 14;
+  halo.renderOrder = 13;
+
+  group.add(leftFrame, rightFrame, lintel, threshold, halo, fill, sign);
+
+  return {
+    descriptor,
+    fillMaterial,
+    group,
+    materials: [frameMaterial, fillMaterial, haloMaterial, signMaterial],
+    signMaterial,
+    signTexture
+  } satisfies PortalVisual;
 };
 
 const finalizeDynamicOpacityMesh = (resource: DynamicOpacityMeshResource | null, count: number) => {
@@ -805,6 +961,13 @@ const disposePlayerVisual = (visual: PlayerVisual) => {
   visual.bombMaterial.dispose();
 };
 
+const disposePortalVisual = (visual: PortalVisual) => {
+  for (const material of visual.materials) {
+    material.dispose();
+  }
+  visual.signTexture?.dispose();
+};
+
 const cloneFallingClusterMaterialSet = (profile: BlockRenderProfile) =>
   fallingClusterMaterialsByProfile[profile].map((material) => material.clone());
 
@@ -840,6 +1003,10 @@ export class WorkerGameRuntime {
   private localPlayerName = "You";
   private localPlayerPaletteName: ChickenPaletteName | null = null;
   private initialSpawnStyle: SimulationInitialSpawnStyle = "ground";
+  private localPlayerSpawnOverride: SimulationPlayerSpawnOverride | null = null;
+  private captureMode: RuntimeCaptureMode = "locked";
+  private portalScene: PortalSceneConfig | null = null;
+  private portalTraversalPending = false;
   private matchColorSeed = 0;
 
   private offscreenCanvas: OffscreenCanvas | null = null;
@@ -929,6 +1096,7 @@ export class WorkerGameRuntime {
   private readonly spaceBackdropGroup = new THREE.Group();
   private readonly terrainGroup = new THREE.Group();
   private readonly waterfallsGroup = new THREE.Group();
+  private readonly portalsGroup = new THREE.Group();
   private readonly propsGroup = new THREE.Group();
   private readonly playersGroup = new THREE.Group();
   private readonly eggsGroup = new THREE.Group();
@@ -950,6 +1118,8 @@ export class WorkerGameRuntime {
   private readonly skyDropVisuals = new Map<string, SkyDropVisual>();
   private readonly clusterVisuals = new Map<string, ClusterVisual>();
   private readonly spacePlanetVisuals: SpacePlanetVisual[] = [];
+  private readonly portalVisuals = new Map<string, PortalVisual>();
+  private readonly portalTriggerStates = new Map<string, PortalTriggerState>();
   private readonly propRemainsStates = new Map<string, PropRemainsState>();
   private readonly processedPropDeltaKeys = new Set<string>();
   private readonly processedPropDeltaKeyOrder: string[] = [];
@@ -1035,6 +1205,7 @@ export class WorkerGameRuntime {
     this.scene.add(this.skyBirdsGroup);
     this.scene.add(this.terrainGroup);
     this.scene.add(this.waterfallsGroup);
+    this.scene.add(this.portalsGroup);
     this.scene.add(this.propsGroup);
     this.scene.add(this.playersGroup);
     this.scene.add(this.eggsGroup);
@@ -1103,7 +1274,7 @@ export class WorkerGameRuntime {
         this.applyEditorAction(message.voxel, message.normal);
         return;
       case "pointer_move":
-        if (this.pointerLocked && isRuntimeMode(this.mode)) {
+        if (this.canAcceptRuntimeInput()) {
           this.pendingLookDeltaX += message.movementX;
           this.pendingLookDeltaY += message.movementY;
         }
@@ -1134,6 +1305,9 @@ export class WorkerGameRuntime {
     this.localPlayerName = message.localPlayerName?.trim() || "You";
     this.localPlayerPaletteName = message.localPlayerPaletteName ?? null;
     this.initialSpawnStyle = message.initialSpawnStyle ?? "ground";
+    this.localPlayerSpawnOverride = message.localPlayerSpawnOverride ?? null;
+    this.captureMode = message.captureMode ?? "locked";
+    this.portalScene = message.portalScene ?? null;
     this.matchColorSeed = message.matchColorSeed ?? 0;
     this.editorWorld = createEditorWorld(message.document);
     this.editorState = createDefaultEditorState(this.editorWorld);
@@ -1156,7 +1330,10 @@ export class WorkerGameRuntime {
       runtimeSettings: message.runtimeSettings,
       localPlayerName: message.localPlayerName,
       localPlayerPaletteName: message.localPlayerPaletteName,
-      initialSpawnStyle: message.initialSpawnStyle
+      initialSpawnStyle: message.initialSpawnStyle,
+      localPlayerSpawnOverride: message.localPlayerSpawnOverride,
+      captureMode: message.captureMode,
+      portalScene: message.portalScene
     });
     this.ensureLoop();
   }
@@ -1175,7 +1352,20 @@ export class WorkerGameRuntime {
         ? message.localPlayerPaletteName
         : this.localPlayerPaletteName;
     this.initialSpawnStyle = message.initialSpawnStyle ?? this.initialSpawnStyle;
-    this.runtimePaused = this.mode !== "editor";
+    this.localPlayerSpawnOverride =
+      message.localPlayerSpawnOverride !== undefined
+        ? message.localPlayerSpawnOverride ?? null
+        : this.localPlayerSpawnOverride;
+    this.captureMode = message.captureMode ?? this.captureMode;
+    this.portalScene =
+      message.portalScene !== undefined ? message.portalScene ?? null : this.portalScene;
+    this.runtimePaused =
+      this.mode === "editor"
+        ? false
+        : isRuntimeMode(this.mode)
+          ? this.captureMode !== "free"
+          : false;
+    this.portalTraversalPending = false;
     this.pushQueued = false;
     this.pendingTypedText = "";
     this.quickEggQueued = false;
@@ -1195,6 +1385,7 @@ export class WorkerGameRuntime {
     this.hasInitializedSpectatorCamera = false;
     this.keyboardState = { ...initialKeyboardInputState };
     this.syncSunShadowMode();
+    this.syncPortalScene();
 
     if (this.mode === "editor") {
       this.latestRuntimeFrame = null;
@@ -1218,9 +1409,10 @@ export class WorkerGameRuntime {
     this.runtime.reset(this.mode as GameMode, this.editorWorld.toDocument(), {
       npcCount: this.mode === "playNpc" ? 9 : 0,
       localPlayerName: this.localPlayerName,
-      initialSpawnStyle: this.initialSpawnStyle
+      initialSpawnStyle: this.initialSpawnStyle,
+      localPlayerSpawnOverride: this.localPlayerSpawnOverride ?? undefined
     });
-    this.runtimePaused = true;
+    this.runtimePaused = this.captureMode !== "free";
     this.runtimeAccumulator = 0;
     this.lastRuntimeTerrainRevision = this.runtime.getWorld().getTerrainRevision();
     this.latestRuntimeFrame = createLocalRuntimeFrame(this.runtime);
@@ -1240,6 +1432,19 @@ export class WorkerGameRuntime {
     this.resetHoldAction(this.eggKeyAction);
     this.resetHoldAction(this.eggPointerAction);
     this.keyboardState = { ...initialKeyboardInputState };
+  }
+
+  private hasActiveRuntimeCapture() {
+    return this.captureMode === "free" || this.pointerLocked;
+  }
+
+  private canAcceptRuntimeInput() {
+    return (
+      isRuntimeMode(this.mode) &&
+      this.presentation !== "menu" &&
+      !this.runtimePaused &&
+      this.hasActiveRuntimeCapture()
+    );
   }
 
   private getCurrentFrame() {
@@ -1343,7 +1548,7 @@ export class WorkerGameRuntime {
 
     const localPlayer = this.getLocalRuntimePlayer();
     const eggStatus = this.getLocalEggStatus(localPlayer);
-    const tappedQuickEgg = !action.holdTriggered && this.pointerLocked && !this.runtimePaused;
+    const tappedQuickEgg = !action.holdTriggered && this.canAcceptRuntimeInput();
 
     if (this.eggChargeState.active && this.eggChargeState.source === source) {
       this.queueGroundEggThrow();
@@ -1369,7 +1574,7 @@ export class WorkerGameRuntime {
     }
 
     action.holdTriggered = true;
-    if (!this.pointerLocked || this.runtimePaused) {
+    if (!this.canAcceptRuntimeInput()) {
       return;
     }
 
@@ -1393,7 +1598,7 @@ export class WorkerGameRuntime {
     if (
       !this.isEggChargeInputHeld() ||
       this.runtimePaused ||
-      !this.pointerLocked ||
+      !this.hasActiveRuntimeCapture() ||
       !this.canStartGroundEggCharge(localPlayer)
     ) {
       this.cancelEggCharge(false);
@@ -1425,7 +1630,7 @@ export class WorkerGameRuntime {
       localPlayer === null ||
       !this.eggChargeState.active ||
       this.runtimePaused ||
-      !this.pointerLocked ||
+      !this.hasActiveRuntimeCapture() ||
       !this.canStartGroundEggCharge(localPlayer)
     ) {
       this.hideEggTrajectoryPreview();
@@ -2003,28 +2208,61 @@ export class WorkerGameRuntime {
           continue;
         }
 
-        if (fragmentIndex % 10 === 0 && this.propRemainsFlameMeshes.length > 0) {
-          const frameIndex =
-            Math.floor((state.elapsed * 9.5 + fragmentIndex * 0.7) % this.propRemainsFlameMeshes.length);
-          const flameResource = this.propRemainsFlameMeshes[frameIndex]!;
-          const flameCount = flameCounts[frameIndex] ?? 0;
-          if (flameCount < MAX_PROP_REMAINS_FLAME_INSTANCES) {
-            voxelFxTempObject.position.set(
-              fragment.position.x,
-              fragment.position.y + 0.18 + fragment.burningAlpha * 0.16,
-              fragment.position.z
+        const flameStride =
+          fragment.phase === "collapse"
+            ? 4
+            : fragment.phase === "settled"
+              ? 2
+              : 6;
+        const flameCardCopies =
+          fragment.phase === "settled"
+            ? 2
+            : fragment.phase === "collapse"
+              ? 2
+              : 1;
+        if (fragmentIndex % flameStride === 0 && this.propRemainsFlameMeshes.length > 0) {
+          for (let cardIndex = 0; cardIndex < flameCardCopies; cardIndex += 1) {
+            const frameIndex = Math.floor(
+              (state.elapsed * 10.8 + fragmentIndex * 0.9 + cardIndex * 0.7) %
+                this.propRemainsFlameMeshes.length
             );
-            voxelFxTempObject.rotation.set(0, (fragmentIndex % 8) * (Math.PI / 4), 0);
+            const flameResource = this.propRemainsFlameMeshes[frameIndex]!;
+            const flameCount = flameCounts[frameIndex] ?? 0;
+            if (flameCount >= MAX_PROP_REMAINS_FLAME_INSTANCES) {
+              continue;
+            }
+
+            const lateralOffset = cardIndex === 0 ? -0.05 : 0.05;
+            const flameHeightBoost =
+              fragment.phase === "settled"
+                ? 0.24
+                : fragment.phase === "collapse"
+                  ? 0.2
+                  : 0.16;
+            voxelFxTempObject.position.set(
+              fragment.position.x + lateralOffset,
+              fragment.position.y + flameHeightBoost + fragment.burningAlpha * 0.22,
+              fragment.position.z + (cardIndex === 0 ? 0.03 : -0.03)
+            );
+            voxelFxTempObject.rotation.set(
+              0,
+              (fragmentIndex % 8) * (Math.PI / 4) + cardIndex * (Math.PI / 2),
+              0
+            );
             voxelFxTempObject.scale.set(
-              0.16 + fragment.burningAlpha * 0.22,
-              0.28 + fragment.burningAlpha * 0.34,
-              0.16 + fragment.burningAlpha * 0.22
+              0.2 + fragment.burningAlpha * 0.28,
+              0.38 + fragment.burningAlpha * 0.46,
+              0.2 + fragment.burningAlpha * 0.28
             );
             voxelFxTempObject.updateMatrix();
             flameResource.mesh.setMatrixAt(flameCount, voxelFxTempObject.matrix);
             flameResource.opacityAttribute.setX(
               flameCount,
-              Math.min(1, fragment.burningAlpha * 0.9)
+              Math.min(
+                1,
+                fragment.burningAlpha *
+                  (fragment.phase === "settled" ? 1 : fragment.phase === "collapse" ? 0.95 : 0.7)
+              )
             );
             flameCounts[frameIndex] = flameCount + 1;
           }
@@ -2160,6 +2398,7 @@ export class WorkerGameRuntime {
     this.latestRuntimeDiagnostics = currentDiagnostics;
     const previousBurningPropIds = this.getFrameBurningPropIds(this.latestRuntimeFrame);
     this.latestRuntimeFrame = createLocalRuntimeFrame(this.runtime);
+    this.maybeTriggerPortal(this.latestRuntimeFrame);
     this.recordRecentExplosionImpacts(
       this.latestRuntimeFrame.authoritative?.gameplayEventBatch ?? null,
       this.latestRuntimeFrame.time
@@ -2758,6 +2997,7 @@ export class WorkerGameRuntime {
       ? frame.players.find((player) => player.id === frame.localPlayerId) ?? null
       : null;
     this.updateSkyEnvironment(localPlayer, delta, elapsed);
+    this.syncPortalVisuals(elapsed);
     this.syncPlayers(frame?.players ?? [], frame?.localPlayerId ?? null, delta, elapsed);
     this.syncEggs(frame?.eggs ?? [], elapsed);
     this.syncEggScatterDebris(frame?.eggScatterDebris ?? []);
@@ -3396,6 +3636,164 @@ export class WorkerGameRuntime {
     }
   }
 
+  private clearPortalScene() {
+    for (const visual of this.portalVisuals.values()) {
+      this.portalsGroup.remove(visual.group);
+      disposePortalVisual(visual);
+    }
+    this.portalVisuals.clear();
+    this.portalTriggerStates.clear();
+    this.portalsGroup.visible = false;
+  }
+
+  private syncPortalScene() {
+    if (this.mode !== "explore" || !this.portalScene || this.portalScene.portals.length === 0) {
+      this.clearPortalScene();
+      return;
+    }
+
+    this.portalsGroup.visible = true;
+    const remaining = new Set(this.portalVisuals.keys());
+
+    for (const descriptor of this.portalScene.portals) {
+      const currentVisual = this.portalVisuals.get(descriptor.id);
+      if (
+        currentVisual &&
+        !portalDescriptorsMatch(currentVisual.descriptor, descriptor)
+      ) {
+        this.portalsGroup.remove(currentVisual.group);
+        disposePortalVisual(currentVisual);
+        this.portalVisuals.delete(descriptor.id);
+        this.portalTriggerStates.delete(descriptor.id);
+      }
+
+      if (!this.portalVisuals.has(descriptor.id)) {
+        const visual = createPortalVisual(descriptor);
+        this.portalVisuals.set(descriptor.id, visual);
+        this.portalsGroup.add(visual.group);
+      }
+
+      if (!this.portalTriggerStates.has(descriptor.id)) {
+        this.portalTriggerStates.set(descriptor.id, {
+          armed: descriptor.armed,
+          descriptor,
+          playerInside: false
+        });
+      }
+
+      remaining.delete(descriptor.id);
+    }
+
+    for (const portalId of remaining) {
+      const visual = this.portalVisuals.get(portalId);
+      if (visual) {
+        this.portalsGroup.remove(visual.group);
+        disposePortalVisual(visual);
+      }
+      this.portalVisuals.delete(portalId);
+      this.portalTriggerStates.delete(portalId);
+    }
+  }
+
+  private syncPortalVisuals(elapsed: number) {
+    if (this.portalVisuals.size === 0) {
+      return;
+    }
+
+    for (const [portalId, visual] of this.portalVisuals) {
+      const triggerState = this.portalTriggerStates.get(portalId);
+      const armed = triggerState?.armed ?? visual.descriptor.armed;
+      const pulse = 0.74 + Math.sin(elapsed * 4.8 + hashString(portalId) * 0.0005) * 0.14;
+      visual.fillMaterial.opacity = (armed ? 0.82 : 0.28) * pulse;
+      portalTempColor
+        .set(visual.descriptor.variant === "exit" ? "#ffbf64" : "#83e0ff")
+        .multiplyScalar(armed ? 1 : 0.62);
+      visual.fillMaterial.color.copy(portalTempColor);
+      visual.group.position.y =
+        visual.descriptor.anchor.y + Math.sin(elapsed * 2.4 + hashString(portalId) * 0.0002) * 0.04;
+      visual.group.scale.setScalar(armed ? 1 : 0.96);
+    }
+  }
+
+  private isPlayerInsidePortal(
+    player: Pick<RuntimePlayerState, "position">,
+    descriptor: PortalSceneDescriptor
+  ) {
+    const deltaX = player.position.x - descriptor.anchor.x;
+    const deltaY = player.position.y - descriptor.anchor.y;
+    const deltaZ = player.position.z - descriptor.anchor.z;
+    return (
+      Math.hypot(deltaX, deltaZ) <= descriptor.triggerRadius &&
+      Math.abs(deltaY) <= descriptor.triggerHalfHeight
+    );
+  }
+
+  private buildPortalTraversalSnapshot(player: RuntimePlayerState): PortalTraversalSnapshot {
+    const speed = Math.hypot(player.velocity.x, player.velocity.y, player.velocity.z);
+    const rotationY = this.lookYaw ?? getYawFromPlanarVector(player.facing);
+    return {
+      speed,
+      speedX: player.velocity.x,
+      speedY: player.velocity.y,
+      speedZ: player.velocity.z,
+      rotationX: this.lookPitch,
+      rotationY,
+      rotationZ: 0
+    };
+  }
+
+  private maybeTriggerPortal(frame: EngineRuntimeRenderFrame | null) {
+    if (
+      this.mode !== "explore" ||
+      this.portalTraversalPending ||
+      !frame?.localPlayerId ||
+      this.portalTriggerStates.size === 0
+    ) {
+      return;
+    }
+
+    const localPlayer =
+      frame.players.find((player) => player.id === frame.localPlayerId) ?? null;
+    if (
+      !localPlayer ||
+      !localPlayer.alive ||
+      localPlayer.respawning ||
+      localPlayer.fallingOut
+    ) {
+      return;
+    }
+
+    for (const triggerState of this.portalTriggerStates.values()) {
+      const inside = this.isPlayerInsidePortal(localPlayer, triggerState.descriptor);
+
+      if (!triggerState.armed) {
+        if (inside) {
+          triggerState.playerInside = true;
+          continue;
+        }
+
+        if (triggerState.playerInside) {
+          triggerState.armed = true;
+          triggerState.playerInside = false;
+        }
+        continue;
+      }
+
+      if (inside && !triggerState.playerInside) {
+        this.portalTraversalPending = true;
+        triggerState.playerInside = true;
+        this.post({
+          type: "portal_triggered",
+          portalId: triggerState.descriptor.id,
+          snapshot: this.buildPortalTraversalSnapshot(localPlayer)
+        });
+        return;
+      }
+
+      triggerState.playerInside = inside;
+    }
+  }
+
   private renderFrame(delta: number) {
     if (!this.renderer) {
       return;
@@ -3558,7 +3956,15 @@ export class WorkerGameRuntime {
   }
 
   private handleKeyEvent(message: Extract<WorkerRequestMessage, { type: "key_event" }>) {
-    if (message.eventType === "down" && message.key.length === 1 && isRuntimeMode(this.mode) && this.pointerLocked && !message.metaKey && !message.ctrlKey) {
+    if (
+      message.eventType === "down" &&
+      message.key.length === 1 &&
+      isRuntimeMode(this.mode) &&
+      this.hasActiveRuntimeCapture() &&
+      !this.runtimePaused &&
+      !message.metaKey &&
+      !message.ctrlKey
+    ) {
       this.pendingTypedText += message.key;
     }
 
@@ -3643,6 +4049,7 @@ export class WorkerGameRuntime {
     switch (message.type) {
       case "world_sync":
         this.mode = message.mode;
+        this.syncPortalScene();
         this.latestDirtyChunkCount = message.world.chunkPatches.length;
         this.applyFullWorld(message.world.document, message.world.chunkPatches);
         this.readyToDisplayPending = true;

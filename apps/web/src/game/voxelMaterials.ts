@@ -281,11 +281,11 @@ const createTerrainMaterial = (
     columnTintStrength
   );
 
-const earthSideMaterial = createTerrainMaterial(voxelTextures.earthSide, {}, 0.11);
-const earthTopMaterial = createTerrainMaterial(voxelTextures.earthTop, {}, 0.14);
-const earthBottomMaterial = createTerrainMaterial(voxelTextures.earthBottom, {}, 0.09);
-const earthSubsoilMaterial = createTerrainMaterial(voxelTextures.earthBottom, {}, 0.07);
-const darknessMaterial = createStandardMaterial(voxelTextures.darkness, { vertexColors: true });
+const terrainEarthSideMaterial = createTerrainMaterial(voxelTextures.earthSide, {}, 0.11);
+const terrainEarthTopMaterial = createTerrainMaterial(voxelTextures.earthTop, {}, 0.14);
+const terrainEarthBottomMaterial = createTerrainMaterial(voxelTextures.earthBottom, {}, 0.09);
+const terrainEarthSubsoilMaterial = createTerrainMaterial(voxelTextures.earthBottom, {}, 0.07);
+const terrainDarknessMaterial = createStandardMaterial(voxelTextures.darkness, { vertexColors: true });
 const waterTopMaterial = createStandardMaterial(voxelTextures.waterTop, {
   transparent: true,
   opacity: 0.76,
@@ -297,30 +297,36 @@ const waterSideMaterial = createStandardMaterial(voxelTextures.waterSide, {
   depthWrite: false
 });
 
-export const voxelMaterialsByProfile: Record<BlockRenderProfile, THREE.Material[]> = {
+const voxelEarthSideMaterial = createStandardMaterial(voxelTextures.earthSide);
+const voxelEarthTopMaterial = createStandardMaterial(voxelTextures.earthTop);
+const voxelEarthBottomMaterial = createStandardMaterial(voxelTextures.earthBottom);
+const voxelEarthSubsoilMaterial = createStandardMaterial(voxelTextures.earthBottom);
+const voxelDarknessMaterial = createStandardMaterial(voxelTextures.darkness);
+
+export const voxelMaterialsByProfile: Record<BlockRenderProfile, THREE.MeshStandardMaterial[]> = {
   earthSurface: [
-    earthSideMaterial,
-    earthSideMaterial,
-    earthTopMaterial,
-    earthBottomMaterial,
-    earthSideMaterial,
-    earthSideMaterial
+    voxelEarthSideMaterial,
+    voxelEarthSideMaterial,
+    voxelEarthTopMaterial,
+    voxelEarthBottomMaterial,
+    voxelEarthSideMaterial,
+    voxelEarthSideMaterial
   ],
   earthSubsoil: [
-    earthSubsoilMaterial,
-    earthSubsoilMaterial,
-    earthSubsoilMaterial,
-    earthSubsoilMaterial,
-    earthSubsoilMaterial,
-    earthSubsoilMaterial
+    voxelEarthSubsoilMaterial,
+    voxelEarthSubsoilMaterial,
+    voxelEarthSubsoilMaterial,
+    voxelEarthSubsoilMaterial,
+    voxelEarthSubsoilMaterial,
+    voxelEarthSubsoilMaterial
   ],
   darkness: [
-    darknessMaterial,
-    darknessMaterial,
-    darknessMaterial,
-    darknessMaterial,
-    darknessMaterial,
-    darknessMaterial
+    voxelDarknessMaterial,
+    voxelDarknessMaterial,
+    voxelDarknessMaterial,
+    voxelDarknessMaterial,
+    voxelDarknessMaterial,
+    voxelDarknessMaterial
   ]
 };
 
@@ -350,11 +356,11 @@ const terrainMaterialIndexByKey = terrainMaterialOrder.reduce<Record<TerrainMate
 });
 
 export const terrainMaterialsByKey: Record<TerrainMaterialKey, THREE.MeshStandardMaterial> = {
-  earthSurfaceTop: earthTopMaterial,
-  earthSurfaceSide: earthSideMaterial,
-  earthSurfaceBottom: earthBottomMaterial,
-  earthSubsoil: earthSubsoilMaterial,
-  darkness: darknessMaterial,
+  earthSurfaceTop: terrainEarthTopMaterial,
+  earthSurfaceSide: terrainEarthSideMaterial,
+  earthSurfaceBottom: terrainEarthBottomMaterial,
+  earthSubsoil: terrainEarthSubsoilMaterial,
+  darkness: terrainDarknessMaterial,
   waterTop: waterTopMaterial,
   waterSide: waterSideMaterial
 };

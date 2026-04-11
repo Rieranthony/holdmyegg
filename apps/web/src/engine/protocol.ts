@@ -1,5 +1,9 @@
 import type { MapDocumentV1 } from "@out-of-bounds/map";
-import type { HudState, SimulationInitialSpawnStyle } from "@out-of-bounds/sim";
+import type {
+  HudState,
+  SimulationInitialSpawnStyle,
+  SimulationPlayerSpawnOverride
+} from "@out-of-bounds/sim";
 import type { ChickenPaletteName } from "../game/colors";
 import type { QualityTier } from "../game/quality";
 import type { RuntimeControlSettings } from "../game/runtimeControlSettings";
@@ -8,7 +12,10 @@ import type {
   EditorPanelState,
   EditorTool,
   GameDiagnostics,
+  PortalSceneConfig,
+  PortalTraversalSnapshot,
   RuntimeRenderFrame,
+  RuntimeCaptureMode,
   ShellPresentation,
   StaticWorldPayload
 } from "./types";
@@ -28,6 +35,9 @@ export interface WorkerInitMessage {
   localPlayerName?: string;
   localPlayerPaletteName?: ChickenPaletteName | null;
   initialSpawnStyle?: SimulationInitialSpawnStyle;
+  localPlayerSpawnOverride?: SimulationPlayerSpawnOverride | null;
+  captureMode?: RuntimeCaptureMode;
+  portalScene?: PortalSceneConfig | null;
 }
 
 export interface WorkerSetModeMessage {
@@ -39,6 +49,9 @@ export interface WorkerSetModeMessage {
   localPlayerName?: string;
   localPlayerPaletteName?: ChickenPaletteName | null;
   initialSpawnStyle?: SimulationInitialSpawnStyle;
+  localPlayerSpawnOverride?: SimulationPlayerSpawnOverride | null;
+  captureMode?: RuntimeCaptureMode;
+  portalScene?: PortalSceneConfig | null;
 }
 
 export interface WorkerRuntimeInputMessage {
@@ -195,6 +208,12 @@ export interface WorkerRuntimeInputPacketMessage {
   buffer: ArrayBuffer;
 }
 
+export interface WorkerPortalTriggeredMessage {
+  type: "portal_triggered";
+  portalId: string;
+  snapshot: PortalTraversalSnapshot;
+}
+
 export type SourceWorkerResponseMessage =
   | WorkerDiagnosticsMessage
   | WorkerDocumentResponseMessage
@@ -208,5 +227,6 @@ export type SourceWorkerResponseMessage =
 
 export type WorkerResponseMessage =
   | SourceWorkerResponseMessage
+  | WorkerPortalTriggeredMessage
   | WorkerReadyToDisplayMessage
   | WorkerRuntimeInputPacketMessage;

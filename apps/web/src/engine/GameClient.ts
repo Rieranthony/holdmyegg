@@ -1,5 +1,9 @@
 import { createDefaultArenaMap, type MapDocumentV1 } from "@out-of-bounds/map";
-import type { HudState, SimulationInitialSpawnStyle } from "@out-of-bounds/sim";
+import type {
+  HudState,
+  SimulationInitialSpawnStyle,
+  SimulationPlayerSpawnOverride
+} from "@out-of-bounds/sim";
 import type { ChickenPaletteName } from "../game/colors";
 import type { QualityTier } from "../game/quality";
 import type { RuntimeControlSettings } from "../game/runtimeControlSettings";
@@ -17,7 +21,10 @@ import type {
   ActiveShellMode,
   EditorPanelState,
   GameDiagnostics,
+  PortalSceneConfig,
+  PortalTraversalSnapshot,
   PointerCaptureFailureReason,
+  RuntimeCaptureMode,
   RuntimePauseState,
   ShellPresentation
 } from "./types";
@@ -27,6 +34,7 @@ interface GameClientCallbacks {
   onEditorStateChange?: (editorState: EditorPanelState) => void;
   onHudStateChange?: (hudState: HudState | null) => void;
   onPauseStateChange?: (state: RuntimePauseState) => void;
+  onPortalTriggered?: (portalId: string, snapshot: PortalTraversalSnapshot) => void;
   onReadyToDisplay?: () => void;
   onStatus?: (message: string) => void;
 }
@@ -36,9 +44,12 @@ interface GameClientMountOptions extends GameClientCallbacks {
   initialDocument?: MapDocumentV1;
   initialMode: ActiveShellMode;
   initialSpawnStyle?: SimulationInitialSpawnStyle;
+  localPlayerSpawnOverride?: SimulationPlayerSpawnOverride | null;
   localPlayerName?: string;
   localPlayerPaletteName?: ChickenPaletteName | null;
   matchColorSeed: number;
+  captureMode?: RuntimeCaptureMode;
+  portalScene?: PortalSceneConfig | null;
   presentation?: ShellPresentation;
   qualityTier?: QualityTier;
   runtimeSettings?: RuntimeControlSettings;
@@ -84,9 +95,12 @@ export class GameClient {
   private localPlayerName: string | undefined;
   private localPlayerPaletteName: ChickenPaletteName | null | undefined;
   private initialSpawnStyle: SimulationInitialSpawnStyle;
+  private localPlayerSpawnOverride: SimulationPlayerSpawnOverride | null;
   private matchColorSeed: number;
+  private captureMode: RuntimeCaptureMode;
+  private portalScene: PortalSceneConfig | null;
   private runtimePaused = true;
-  private runtimeHasCapturedPointer = false;
+  private runtimeHasStarted = false;
   private pointerLocked = false;
   private pointerCapturePending = false;
   private pointerCaptureFailureReason: PointerCaptureFailureReason | null = null;
@@ -100,9 +114,12 @@ export class GameClient {
     initialDocument,
     initialMode,
     initialSpawnStyle = "ground",
+    localPlayerSpawnOverride = null,
     localPlayerName,
     localPlayerPaletteName,
     matchColorSeed,
+    captureMode = "locked",
+    portalScene = null,
     presentation = "default",
     qualityTier = "medium",
     runtimeSettings,
@@ -118,7 +135,12 @@ export class GameClient {
     this.localPlayerName = localPlayerName;
     this.localPlayerPaletteName = localPlayerPaletteName;
     this.initialSpawnStyle = initialSpawnStyle;
+    this.localPlayerSpawnOverride = localPlayerSpawnOverride;
     this.matchColorSeed = matchColorSeed;
+    this.captureMode = captureMode;
+    this.portalScene = portalScene;
+    this.runtimePaused = isRuntimeMode(this.mode) ? this.captureMode !== "free" : false;
+    this.runtimeHasStarted = isRuntimeMode(this.mode) && this.captureMode === "free";
     this.callbacks = callbacks;
     this.renderWorker = createLocalGameWorker();
     this.externalWorker = workerFactory ? workerFactory() : null;
@@ -146,6 +168,9 @@ export class GameClient {
           return;
         case "status":
           this.callbacks.onStatus?.(message.message);
+          return;
+        case "portal_triggered":
+          this.callbacks.onPortalTriggered?.(message.portalId, message.snapshot);
           return;
         case "diagnostics":
           this.callbacks.onDiagnostics?.(message.diagnostics);
@@ -232,7 +257,12 @@ export class GameClient {
           ? { localPlayerPaletteName: this.localPlayerPaletteName }
           : {}),
         ...(isRuntimeMode(this.mode)
-          ? { initialSpawnStyle: this.initialSpawnStyle }
+          ? {
+              initialSpawnStyle: this.initialSpawnStyle,
+              localPlayerSpawnOverride: this.localPlayerSpawnOverride,
+              captureMode: this.captureMode,
+              portalScene: this.portalScene
+            }
           : {})
       } satisfies WorkerRequestMessage,
       offscreenCanvas ? [offscreenCanvas] : []
@@ -250,7 +280,12 @@ export class GameClient {
       mode: this.mode,
       ...(this.localPlayerName ? { localPlayerName: this.localPlayerName } : {}),
       ...(isRuntimeMode(this.mode)
-        ? { initialSpawnStyle: this.initialSpawnStyle }
+        ? {
+            initialSpawnStyle: this.initialSpawnStyle,
+            localPlayerSpawnOverride: this.localPlayerSpawnOverride,
+            captureMode: this.captureMode,
+            portalScene: this.portalScene
+          }
         : {})
     } satisfies WorkerRequestMessage);
   }
@@ -258,13 +293,21 @@ export class GameClient {
   setShellState(nextState: {
     mode: ActiveShellMode;
     initialSpawnStyle?: SimulationInitialSpawnStyle;
+    localPlayerSpawnOverride?: SimulationPlayerSpawnOverride | null;
     localPlayerName?: string;
     localPlayerPaletteName?: ChickenPaletteName | null;
+    captureMode?: RuntimeCaptureMode;
+    portalScene?: PortalSceneConfig | null;
     presentation?: ShellPresentation;
     qualityTier?: QualityTier;
     runtimeSettings?: RuntimeControlSettings;
   }) {
+    const previousMode = this.mode;
+    const previousCaptureMode = this.captureMode;
     this.mode = nextState.mode;
+    this.captureMode = nextState.captureMode ?? this.captureMode;
+    this.portalScene =
+      "portalScene" in nextState ? nextState.portalScene ?? null : this.portalScene;
     this.presentation = nextState.presentation ?? this.presentation;
     this.qualityTier = nextState.qualityTier ?? this.qualityTier;
     this.runtimeSettings =
@@ -278,10 +321,15 @@ export class GameClient {
       this.localPlayerPaletteName = nextState.localPlayerPaletteName ?? null;
     }
     this.initialSpawnStyle = nextState.initialSpawnStyle ?? this.initialSpawnStyle;
+    if ("localPlayerSpawnOverride" in nextState) {
+      this.localPlayerSpawnOverride = nextState.localPlayerSpawnOverride ?? null;
+    }
 
     this.renderWorker.postMessage({
       type: "set_mode",
       mode: this.mode,
+      captureMode: this.captureMode,
+      portalScene: this.portalScene,
       presentation: this.presentation,
       qualityTier: this.qualityTier,
       runtimeSettings: this.runtimeSettings,
@@ -290,7 +338,10 @@ export class GameClient {
         ? { localPlayerPaletteName: this.localPlayerPaletteName }
         : {}),
       ...(isRuntimeMode(this.mode)
-        ? { initialSpawnStyle: this.initialSpawnStyle }
+        ? {
+            initialSpawnStyle: this.initialSpawnStyle,
+            localPlayerSpawnOverride: this.localPlayerSpawnOverride
+          }
         : {})
     } satisfies WorkerRequestMessage);
 
@@ -298,9 +349,14 @@ export class GameClient {
       this.externalWorker.postMessage({
         type: "set_mode",
         mode: this.mode,
+        captureMode: this.captureMode,
+        portalScene: this.portalScene,
         ...(this.localPlayerName ? { localPlayerName: this.localPlayerName } : {}),
         ...(isRuntimeMode(this.mode)
-          ? { initialSpawnStyle: this.initialSpawnStyle }
+          ? {
+              initialSpawnStyle: this.initialSpawnStyle,
+              localPlayerSpawnOverride: this.localPlayerSpawnOverride
+            }
           : {})
       } satisfies WorkerRequestMessage);
     }
@@ -308,6 +364,15 @@ export class GameClient {
     if (!isRuntimeMode(this.mode)) {
       this.runtimePaused = false;
       this.pendingResumeAfterPointerLock = false;
+    } else if (!isRuntimeMode(previousMode) || previousCaptureMode !== this.captureMode) {
+      this.pendingResumeAfterPointerLock = false;
+      if (this.captureMode === "free") {
+        this.runtimePaused = false;
+        this.runtimeHasStarted = true;
+        this.resetPointerCaptureState();
+      } else {
+        this.runtimePaused = true;
+      }
     }
     this.emitPauseState();
   }
@@ -341,6 +406,13 @@ export class GameClient {
   requestPointerLock() {
     if (!isRuntimeMode(this.mode) || this.presentation === "menu") {
       return false;
+    }
+
+    if (this.captureMode === "free") {
+      this.runtimeHasStarted = true;
+      this.resetPointerCaptureState();
+      this.emitPauseState();
+      return true;
     }
 
     if (this.pointerLocked) {
@@ -380,6 +452,12 @@ export class GameClient {
       return;
     }
 
+    if (this.captureMode === "free") {
+      this.runtimeHasStarted = true;
+      this.setRuntimePaused(false);
+      return;
+    }
+
     if (this.pointerLocked) {
       this.pendingResumeAfterPointerLock = false;
       this.setRuntimePaused(false);
@@ -394,6 +472,9 @@ export class GameClient {
 
   setRuntimePaused(paused: boolean) {
     this.runtimePaused = paused;
+    if (!paused && isRuntimeMode(this.mode)) {
+      this.runtimeHasStarted = true;
+    }
     this.renderWorker.postMessage({
       type: "set_runtime_paused",
       paused
@@ -435,6 +516,19 @@ export class GameClient {
       return;
     }
 
+    if (
+      this.captureMode === "free" &&
+      isRuntimeMode(this.mode) &&
+      event.code === "Escape" &&
+      !event.repeat
+    ) {
+      event.preventDefault();
+      if (!this.runtimePaused) {
+        this.setRuntimePaused(true);
+      }
+      return;
+    }
+
     this.renderWorker.postMessage({
       type: "key_event",
       code: event.code,
@@ -471,7 +565,11 @@ export class GameClient {
       return;
     }
 
-    if (isRuntimeMode(this.mode) && !this.pointerLocked) {
+    if (
+      isRuntimeMode(this.mode) &&
+      this.captureMode !== "free" &&
+      !this.pointerLocked
+    ) {
       this.requestPointerLock();
       return;
     }
@@ -526,7 +624,7 @@ export class GameClient {
   private readonly handlePointerLockChange = () => {
     const locked = document.pointerLockElement === this.canvas;
     this.pointerLocked = locked;
-    this.runtimeHasCapturedPointer = this.runtimeHasCapturedPointer || locked;
+    this.runtimeHasStarted = this.runtimeHasStarted || locked;
     this.renderWorker.postMessage({
       type: "pointer_lock_change",
       locked
@@ -622,7 +720,7 @@ export class GameClient {
   private emitPauseState() {
     this.callbacks.onPauseStateChange?.({
       paused: this.runtimePaused,
-      hasStarted: this.runtimeHasCapturedPointer,
+      hasStarted: this.runtimeHasStarted,
       pointerLocked: this.pointerLocked,
       pointerCapturePending: this.pointerCapturePending,
       pointerCaptureFailureReason: this.pointerCaptureFailureReason

@@ -33,8 +33,10 @@ export type ShellMode =
 export type ActiveShellMode = "editor" | GameMode;
 export type ActiveMode = ActiveShellMode;
 export type ShellPresentation = "default" | "menu";
+export type RuntimeCaptureMode = "locked" | "free";
 export type EditorTool = "add" | "erase" | "spawn" | "prop" | "feature";
 export type EditorFeatureKind = "waterfall";
+export type PortalFacing = "north" | "south" | "east" | "west";
 export type PointerCaptureFailureReason =
   | "unsupported"
   | "error"
@@ -61,6 +63,37 @@ export interface RuntimeOverlayState {
   spaceSuccessPulseActive: boolean;
   spaceLocalTargetKey: string | null;
   spaceLocalHitCount: number;
+}
+
+export interface PortalAnchor {
+  x: number;
+  y: number;
+  z: number;
+}
+
+export interface PortalSceneDescriptor {
+  id: string;
+  anchor: PortalAnchor;
+  facing: PortalFacing;
+  label: string;
+  armed: boolean;
+  triggerRadius: number;
+  triggerHalfHeight: number;
+  variant: "exit" | "return";
+}
+
+export interface PortalSceneConfig {
+  portals: PortalSceneDescriptor[];
+}
+
+export interface PortalTraversalSnapshot {
+  speed: number;
+  speedX: number;
+  speedY: number;
+  speedZ: number;
+  rotationX: number;
+  rotationY: number;
+  rotationZ: number;
 }
 
 export const blockKindOptions: BlockKind[] = ["ground", "boundary", "hazard", "water"];
